@@ -1,0 +1,60 @@
+{
+  "name": "fixed_window_with_grace",
+  "description": "A fixed timer. `spawn_at` is present because the timer is fixed and `progress_bp` is null; `close_at` is `open_at + fixed_grace_seconds`, which is the only thing that makes `in_window` reachable at all for a fixed target. §6.",
+  "now": "2026-08-18T08:24:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "fixed",
+    "window_open_offset_seconds": 21600,
+    "window_close_offset_seconds": 21600,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    }
+  ],
+  "want": {
+    "status": "in_window",
+    "died_at": "2026-08-18T02:14:07.000000Z",
+    "up_since": null,
+    "window": {
+      "kind": "fixed",
+      "open_at": "2026-08-18T08:14:07.000000Z",
+      "close_at": "2026-08-18T08:29:07.000000Z",
+      "spawn_at": "2026-08-18T08:14:07.000000Z",
+      "progress_bp": null,
+      "seconds_until_open": -600,
+      "seconds_until_close": 300
+    },
+    "confidence": "medium",
+    "contested": false,
+    "contest_reason": null,
+    "alternatives": [],
+    "alternatives_total": 0,
+    "evidence": {
+      "report_count": 1,
+      "distinct_reporter_count": 1,
+      "log_line_count": 1,
+      "spread_seconds": 0,
+      "revoked_reporter_count": 0,
+      "report_ids": [
+        "01K3R000000000000000000R01"
+      ]
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-18T08:24:07.000000Z"
+  }
+}

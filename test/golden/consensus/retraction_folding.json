@@ -1,0 +1,91 @@
+{
+  "name": "retraction_folding",
+  "description": "Every report of the latest cluster retracted, so the previous cluster becomes current. The retraction row is never itself clustered. §1, §8.",
+  "now": "2026-08-25T02:14:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "variance",
+    "window_open_offset_seconds": 561600,
+    "window_close_offset_seconds": 648000,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R02",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:15:07.000000Z",
+      "reported_at": "2026-08-18T02:16:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M02",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R03",
+      "kind": "kill",
+      "died_at": "2026-08-21T02:14:07.000000Z",
+      "reported_at": "2026-08-21T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M03",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R04",
+      "kind": "retraction",
+      "died_at": "2026-08-21T02:24:07.000000Z",
+      "reported_at": "2026-08-21T02:24:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M03",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": "01K3R000000000000000000R03"
+    }
+  ],
+  "want": {
+    "status": "in_window",
+    "died_at": "2026-08-18T02:14:07.000000Z",
+    "up_since": null,
+    "window": {
+      "kind": "variance",
+      "open_at": "2026-08-24T14:14:07.000000Z",
+      "close_at": "2026-08-25T14:14:07.000000Z",
+      "spawn_at": null,
+      "progress_bp": 5000,
+      "seconds_until_open": -43200,
+      "seconds_until_close": 43200
+    },
+    "confidence": "high",
+    "contested": false,
+    "contest_reason": null,
+    "alternatives": [],
+    "alternatives_total": 0,
+    "evidence": {
+      "report_count": 2,
+      "distinct_reporter_count": 2,
+      "log_line_count": 2,
+      "spread_seconds": 60,
+      "revoked_reporter_count": 0,
+      "report_ids": [
+        "01K3R000000000000000000R01",
+        "01K3R000000000000000000R02"
+      ]
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-25T02:14:07.000000Z"
+  }
+}

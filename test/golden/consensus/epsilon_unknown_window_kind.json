@@ -1,0 +1,100 @@
+{
+  "name": "epsilon_unknown_window_kind",
+  "description": "`window_kind = 'unknown'` has no offset to divide, so epsilon is the flat thirty minutes. Clustering still happens and history is still visible; only the window is absent. A window that can never close never expires an alternative, so the earlier cluster stays visible. §3, §7.",
+  "now": "2026-08-18T04:14:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "unknown",
+    "window_open_offset_seconds": null,
+    "window_close_offset_seconds": null,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R02",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:42:27.000000Z",
+      "reported_at": "2026-08-18T02:43:27.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M02",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R03",
+      "kind": "kill",
+      "died_at": "2026-08-18T03:14:07.000000Z",
+      "reported_at": "2026-08-18T03:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M03",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    }
+  ],
+  "want": {
+    "status": "no_timer",
+    "died_at": "2026-08-18T03:14:07.000000Z",
+    "up_since": null,
+    "window": {
+      "kind": "unknown",
+      "open_at": null,
+      "close_at": null,
+      "spawn_at": null,
+      "progress_bp": null,
+      "seconds_until_open": null,
+      "seconds_until_close": null
+    },
+    "confidence": "low",
+    "contested": true,
+    "contest_reason": "thin_supersede",
+    "alternatives": [
+      {
+        "died_at": "2026-08-18T02:14:07.000000Z",
+        "report_count": 2,
+        "distinct_reporter_count": 2,
+        "confidence": "medium",
+        "window": {
+          "kind": "unknown",
+          "open_at": null,
+          "close_at": null,
+          "spawn_at": null,
+          "progress_bp": null,
+          "seconds_until_open": null,
+          "seconds_until_close": null
+        },
+        "report_ids": [
+          "01K3R000000000000000000R01",
+          "01K3R000000000000000000R02"
+        ]
+      }
+    ],
+    "alternatives_total": 1,
+    "evidence": {
+      "report_count": 1,
+      "distinct_reporter_count": 1,
+      "log_line_count": 0,
+      "spread_seconds": 0,
+      "revoked_reporter_count": 0,
+      "report_ids": [
+        "01K3R000000000000000000R03"
+      ]
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-18T04:14:07.000000Z"
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "name": "pending_supersede",
+  "description": "The same reports with `min_reporters_to_supersede = 2`. The lone new cluster cannot take the board from a live, better corroborated one, so the earlier cluster stays current and the later one surfaces as a pending alternative. §4.",
+  "now": "2026-08-24T19:02:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 2
+  },
+  "timer": {
+    "kind": "variance",
+    "window_open_offset_seconds": 561600,
+    "window_close_offset_seconds": 648000,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R02",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:15:07.000000Z",
+      "reported_at": "2026-08-18T02:16:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M02",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R03",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:16:07.000000Z",
+      "reported_at": "2026-08-18T02:17:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M03",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R04",
+      "kind": "kill",
+      "died_at": "2026-08-24T16:38:07.000000Z",
+      "reported_at": "2026-08-24T16:39:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M04",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    }
+  ],
+  "want": {
+    "status": "in_window",
+    "died_at": "2026-08-18T02:15:07.000000Z",
+    "up_since": null,
+    "window": {
+      "kind": "variance",
+      "open_at": "2026-08-24T14:15:07.000000Z",
+      "close_at": "2026-08-25T14:15:07.000000Z",
+      "spawn_at": null,
+      "progress_bp": 1993,
+      "seconds_until_open": -17220,
+      "seconds_until_close": 69180
+    },
+    "confidence": "high",
+    "contested": true,
+    "contest_reason": "pending_supersede",
+    "alternatives": [
+      {
+        "died_at": "2026-08-24T16:38:07.000000Z",
+        "report_count": 1,
+        "distinct_reporter_count": 1,
+        "confidence": "low",
+        "window": {
+          "kind": "variance",
+          "open_at": "2026-08-31T04:38:07.000000Z",
+          "close_at": "2026-09-01T04:38:07.000000Z",
+          "spawn_at": null,
+          "progress_bp": 0,
+          "seconds_until_open": 552960,
+          "seconds_until_close": 639360
+        },
+        "report_ids": [
+          "01K3R000000000000000000R04"
+        ]
+      }
+    ],
+    "alternatives_total": 1,
+    "evidence": {
+      "report_count": 3,
+      "distinct_reporter_count": 3,
+      "log_line_count": 3,
+      "spread_seconds": 120,
+      "revoked_reporter_count": 0,
+      "report_ids": [
+        "01K3R000000000000000000R01",
+        "01K3R000000000000000000R02",
+        "01K3R000000000000000000R03"
+      ]
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-24T19:02:07.000000Z"
+  }
+}
