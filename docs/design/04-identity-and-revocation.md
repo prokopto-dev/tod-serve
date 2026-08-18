@@ -168,7 +168,9 @@ GET  /api/v1/auth/callback/{provider_key}    completeAuthorization    Hidden: tr
      No call to /users/@me/guilds. One endpoint answers membership AND roles. [see below]
   6. Re-read the invite, if there was one. If it is no longer live, mint NOTHING.
   7. DISCARD the access token. Write a single-use credential_ticket (TTL 120s) carrying
-     subject, display_name and guild_roles_json (gated guild id -> role ids, absent when 404).
+     subject, display_name and guild_roles_json: gated guild id -> {member, roles}, with
+     `member: false` recording a 404 and the ENTRY ABSENT when the call never settled.
+     Section 8 needs those to be two different facts.
   8. 302 to  <spa>/join#ticket=<ticket>  on success,  <spa>/join#error=<code>  on failure.
      Always the FRAGMENT, never the query. [see below]
 
@@ -456,7 +458,7 @@ The gate therefore lives on `circle_provider`, which is already circle-scoped:
 | Column | Meaning |
 |---|---|
 | `discord_guild_id` | `TEXT NULL` — the guild this circle requires membership of. `NULL` means no guild gate |
-| `discord_required_role_ids_json` | `TEXT NOT NULL DEFAULT '[]'` — **an empty list means "anyone in the guild"** |
+| `discord_required_role_ids_json` | `TEXT NOT NULL DEFAULT '[]'` — **an empty list means "anyone in the guild"**, and a non-empty one admits anybody holding **any** listed role |
 
 **The instance owns the application; the circle owns the gate.** Two circles on one instance may
 point at two different guilds, which is why this is not an instance setting. It is evaluated in
@@ -471,9 +473,24 @@ the circles the verified identity already belongs to, and carried on the ticket 
 `roles` on a `200` decide `guild_role_required`. The flow never requests the broader `guilds` scope
 or the guild list it returns — see §5.
 
+**Any one listed role admits, not all of them.** The list *widens* as it grows — `[]` is "anyone in
+the guild", `["raider", "officer"]` is "anyone in the guild who is a raider or an officer" — so
+"empty means anyone" is the same rule at its most permissive rather than a special case bolted on
+the front. Requiring all of them would mean a circle naming two roles admitted only the people who
+hold both, which is usually nobody, and the failure would be indistinguishable from a broken gate.
+
 **If the required facts are absent, the gate rejects.** No member object means no evaluation, and no
 evaluation means no entry: `403 guild_role_required`. An implementation that read an absent role
 list as an empty one would disable the gate for every user while appearing to enforce it.
+
+**`guild_roles_json` therefore records three states per guild, not two.** An entry that is *absent*
+means the call was never made or did not complete; an entry with `"member": false` means Discord
+answered `404`, which is a fact we hold. Collapsing those two makes `guild_membership_required`
+unreportable, because the gate can no longer tell "not in the guild" from "we never looked". The
+shape is `{"<guild id>": {"member": true, "roles": ["..."]}}`.
+
+**Enforced by:** `TestEvaluateGate_EveryOutcome` and `TestFacts_RoundTripThroughTheTicketColumn` in
+`internal/identity/discord`.
 
 **Enforced by:** `TestGuildGate_EvaluatedOnJoinAndSessions` and
 `TestGuildGate_MissingRoleFacts_Refused`.

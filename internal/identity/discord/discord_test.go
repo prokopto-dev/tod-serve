@@ -135,7 +135,7 @@ func TestVerify_GlobalName_IsPreferredOverUsername(t *testing.T) {
 
 // A scope the user declined is reported as a declined scope, never as a role failure. The two
 // point at completely different fixes and this flow knows which one happened.
-func TestVerify_DeclinedGuildScope_ReportsScopeDeclinedNotRoleFailure(t *testing.T) {
+func TestGuildGate_DeclinedScope_ReportsScopeDeclinedNotRoleFailure(t *testing.T) {
 	t.Parallel()
 
 	doer := &stubDoer{answers: map[string]*outbound.Response{
