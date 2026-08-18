@@ -38,7 +38,7 @@ const corpusDir = "consensus"
 // deletion looks exactly like a passing build unless something counts. Raising this number is how
 // you record that the specification grew; lowering it needs the review that /test/golden/ already
 // demands.
-const corpusFloor = 31
+const corpusFloor = 32
 
 // fixture is one whole call to consensus.Derive and its whole expected State.
 type fixture struct {

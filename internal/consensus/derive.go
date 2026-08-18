@@ -291,22 +291,21 @@ func evidenceOf(members []Report) Evidence {
 // is the weakest evidence in the system. And "≥1 log_line reporter plus ≥1 **corroborating**
 // reporter" never defines corroboration, so it is read as "within the same five minutes the row
 // above uses" — a second reporter forty minutes off the estimate corroborates nothing, and calling
-// that `high` would be a confident mistake.
+// that `high` would be a confident mistake. See [corroborated]: the log line has to be on the
+// estimate too, not merely somewhere in the cluster.
 func confidenceOf(members []Report, died core.Micros) Confidence {
 	if len(members) == 0 {
 		return ConfidenceUnknown
 	}
 	reporters := make(map[core.MembershipID]struct{}, len(members))
-	logLine := make(map[core.MembershipID]struct{}, len(members))
+	anyLogLine := false
 	for _, r := range members {
 		reporters[r.ReporterMembershipID] = struct{}{}
-		if r.Source == SourceLogLine {
-			logLine[r.ReporterMembershipID] = struct{}{}
-		}
+		anyLogLine = anyLogLine || r.Source == SourceLogLine
 	}
 
 	if len(reporters) == 1 {
-		if len(logLine) > 0 {
+		if anyLogLine {
 			return ConfidenceMedium
 		}
 		return ConfidenceLow
@@ -314,30 +313,34 @@ func confidenceOf(members []Report, died core.Micros) Confidence {
 	if spread(members) <= spreadTolerance {
 		return ConfidenceHigh
 	}
-	if corroborated(members, logLine, died) {
+	if corroborated(members, died) {
 		return ConfidenceHigh
 	}
 	return ConfidenceMedium
 }
 
-// corroborated reports whether some log-line reporter has a *different* reporter sitting on the
-// estimate with them.
-func corroborated(members []Report, logLine map[core.MembershipID]struct{}, died core.Micros) bool {
-	if len(logLine) == 0 {
-		return false
-	}
+// corroborated reports whether the estimate has a log line sitting on it and a second, different
+// reporter sitting there too.
+//
+// Both halves have to be near the estimate. Counting a distant log line would call the widest
+// possible cluster `high`: two log-line reports ten minutes apart estimate to the earlier of them,
+// and the later one is then a *second log-line reporter* who agrees with nothing. That is the
+// disagreement `wide_spread` exists to report, not corroboration.
+func corroborated(members []Report, died core.Micros) bool {
+	near := make(map[core.MembershipID]struct{}, len(members))
+	logLineOnEstimate := false
 	for _, r := range members {
 		if absMicros(r.DiedAt-died) > spreadTolerance {
 			continue
 		}
-		if len(logLine) > 1 {
-			return true
-		}
-		if _, self := logLine[r.ReporterMembershipID]; !self {
-			return true
+		near[r.ReporterMembershipID] = struct{}{}
+		if r.Source == SourceLogLine {
+			logLineOnEstimate = true
 		}
 	}
-	return false
+	// Two distinct reporters on the estimate and a log line among them means whichever reporter
+	// filed that log line has a different one agreeing with them, which is what §7 asks for.
+	return logLineOnEstimate && len(near) > 1
 }
 
 // distinctReporters counts the memberships behind a cluster, which is what §4 and §7 both weigh —

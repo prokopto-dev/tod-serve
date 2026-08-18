@@ -342,3 +342,30 @@ func TestDerive_CalledTwice_ReturnsEqualStates(t *testing.T) {
 		require.Empty(t, cmp.Diff(first, consensus.Derive(reports, nil, vulak(), seconds(605000), cfg)))
 	}
 }
+
+func TestDerive_TwoLogLineReportersTenMinutesApart_IsMediumNotHigh(t *testing.T) {
+	t.Parallel()
+
+	// §7's `high` needs a log line ON the estimate and a different reporter sitting there with it.
+	// Two log lines ten minutes apart estimate to the earlier of the two, which leaves the later
+	// one a second log-line *reporter* agreeing with nothing. Counting it would call the widest
+	// possible cluster `high` — the confident mistake, with a machine timestamp behind it.
+	cfg := consensus.CircleConfig{MinReportersToSupersede: 1}
+	distant := []consensus.Report{
+		kill(1, 1, 0, consensus.SourceLogLine),
+		kill(2, 2, seconds(600), consensus.SourceLogLine),
+	}
+	got := consensus.Derive(distant, nil, vulak(), seconds(600000), cfg)
+	require.Equal(t, consensus.ConfidenceMedium, got.Confidence)
+	require.True(t, got.Contested)
+	require.NotNil(t, got.ContestReason)
+	require.Equal(t, consensus.ContestWideSpread, *got.ContestReason)
+
+	// The same cluster with one reporter actually on the estimate is corroborated, so it is `high`
+	// — and still `wide_spread`, because the distant log line has not gone anywhere.
+	corroborated := append(append([]consensus.Report{}, distant...),
+		kill(3, 3, seconds(120), consensus.SourceManual))
+	got = consensus.Derive(corroborated, nil, vulak(), seconds(600000), cfg)
+	require.Equal(t, consensus.ConfidenceHigh, got.Confidence)
+	require.Equal(t, consensus.ContestWideSpread, *got.ContestReason)
+}
