@@ -38,15 +38,36 @@ type ColumnInfo struct {
 	PrimaryKeyPosition int
 }
 
-// ForeignKeyInfo is one foreign-key column reference.
+// ForeignKeyInfo is one whole foreign-key constraint, composite ones included.
+//
+// It is a constraint rather than a column because the schema's tenancy depends on composite keys:
+// `(circle_id, reporter_membership_id) REFERENCES membership (circle_id, id)` is a different fact
+// from two separate references, and a type that flattened it to columns could not tell them apart.
 type ForeignKeyInfo struct {
-	// Column is the referring column on this table.
-	Column string
+	// Columns are the referring columns on this table, in key order.
+	Columns []string
 	// RefTable is the table referred to.
 	RefTable string
-	// RefColumn is the column referred to. SQLite reports it empty when the reference is to the
-	// parent's primary key by omission; it is filled in here so a caller never has to.
-	RefColumn string
+	// RefColumns are the columns referred to, in the same order. SQLite reports one empty when a
+	// single-column reference omitted the parent column, meaning its primary key; it is filled in
+	// here so a caller never has to.
+	RefColumns []string
+}
+
+// References reports whether this key maps column to refTable.refColumn as its only pair.
+func (f ForeignKeyInfo) References(column, refTable, refColumn string) bool {
+	return len(f.Columns) == 1 && f.Columns[0] == column &&
+		f.RefTable == refTable && len(f.RefColumns) == 1 && f.RefColumns[0] == refColumn
+}
+
+// Has reports whether column appears anywhere in this key.
+func (f ForeignKeyInfo) Has(column string) bool {
+	for _, c := range f.Columns {
+		if c == column {
+			return true
+		}
+	}
+	return false
 }
 
 // TriggerInfo is one trigger in the applied schema.
@@ -159,7 +180,11 @@ func (d *DB) ForeignKeys(ctx context.Context, table string) ([]ForeignKeyInfo, e
 	}
 	defer closeRows(rows)
 
-	var out []ForeignKeyInfo
+	// PRAGMA foreign_key_list reports one row per COLUMN, keyed by an id shared across the columns
+	// of one constraint and ordered by seq. They are regrouped here, because a composite key read
+	// as separate columns is exactly the mistake the composite keys exist to prevent.
+	var order []int
+	byID := map[int]*ForeignKeyInfo{}
 	for rows.Next() {
 		var (
 			id, seq                   int
@@ -170,19 +195,37 @@ func (d *DB) ForeignKeys(ctx context.Context, table string) ([]ForeignKeyInfo, e
 		if err := rows.Scan(&id, &seq, &refTable, &from, &to, &onUpdate, &onDelete, &match); err != nil {
 			return nil, fmt.Errorf("read foreign keys of %s: %w", table, err)
 		}
-		ref := to.String
-		if ref == "" {
-			// SQLite reports the referenced column as NULL when the DDL omitted it, meaning the
-			// parent's primary key. Resolving it here keeps every caller from having to know that.
-			ref, err = d.primaryKeyColumn(ctx, refTable)
-			if err != nil {
-				return nil, err
-			}
+		if _, seen := byID[id]; !seen {
+			byID[id] = &ForeignKeyInfo{RefTable: refTable}
+			order = append(order, id)
 		}
-		out = append(out, ForeignKeyInfo{Column: from, RefTable: refTable, RefColumn: ref})
+		byID[id].Columns = append(byID[id].Columns, from)
+		byID[id].RefColumns = append(byID[id].RefColumns, to.String)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read foreign keys of %s: %w", table, err)
+	}
+
+	out := make([]ForeignKeyInfo, 0, len(order))
+	for _, id := range order {
+		fk := *byID[id]
+		for i, ref := range fk.RefColumns {
+			if ref != "" {
+				continue
+			}
+			// SQLite reports the referenced column as NULL when the DDL omitted it, meaning the
+			// parent's primary key. That spelling is only unambiguous for a single-column key.
+			if len(fk.Columns) != 1 {
+				return nil, fmt.Errorf("read foreign keys of %s: composite key on %v names no "+
+					"parent columns", table, fk.Columns)
+			}
+			resolved, err := d.primaryKeyColumn(ctx, fk.RefTable)
+			if err != nil {
+				return nil, err
+			}
+			fk.RefColumns[i] = resolved
+		}
+		out = append(out, fk)
 	}
 	return out, nil
 }

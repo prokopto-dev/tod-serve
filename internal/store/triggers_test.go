@@ -349,3 +349,114 @@ func firstColumn(t *testing.T, ctx context.Context, db *DB, table string) string
 	require.NotEmpty(t, columns)
 	return columns[0].Name
 }
+
+// SQLite treats a CHECK whose expression evaluates to NULL as SATISFIED. The domain model's three
+// window rules, spelled the obvious way, therefore accept a fixed timer with a NULL close offset,
+// an unknown timer that kept a close offset, and any row whose ordering comparison went NULL —
+// each of which reaches the consensus derivation as a window it cannot read.
+//
+// Both tables carry the same four constraints, so both are driven through the same table.
+func TestTimerWindow_MalformedRows_AreRefused(t *testing.T) {
+	t.Parallel()
+
+	type offsets struct{ open, close *int64 }
+	at := func(v int64) *int64 { return &v }
+
+	tests := []struct {
+		name   string
+		kind   string
+		window offsets
+		accept bool
+		why    string
+	}{
+		{
+			name: "fixed, one instant", kind: schemaenum.RaidTargetTimerWindowKindFixed,
+			window: offsets{at(604800), at(604800)}, accept: true,
+			why: "a fixed timer is a point, and fixed_grace_seconds is what makes it renderable",
+		},
+		{
+			name: "variance, a real band", kind: schemaenum.RaidTargetTimerWindowKindVariance,
+			window: offsets{at(561600), at(648000)}, accept: true,
+			why: `"7 days plus or minus 12h", as two offsets rather than a sign convention`,
+		},
+		{
+			name: "unknown, no offsets at all", kind: schemaenum.RaidTargetTimerWindowKindUnknown,
+			window: offsets{nil, nil}, accept: true,
+			why: "an unseeded instance reports no_timer and still records ToDs correctly",
+		},
+		{
+			name: "fixed with no offsets", kind: schemaenum.RaidTargetTimerWindowKindFixed,
+			window: offsets{nil, nil},
+			why:    "a fixed timer with nothing to be fixed at is not a timer",
+		},
+		{
+			name: "fixed with only an open offset", kind: schemaenum.RaidTargetTimerWindowKindFixed,
+			window: offsets{at(604800), nil},
+			why:    "the NULL comparison the old CHECK made here was read as satisfied",
+		},
+		{
+			name: "variance with only an open offset", kind: schemaenum.RaidTargetTimerWindowKindVariance,
+			window: offsets{at(561600), nil},
+			why:    "an offset alone is not a window; the band has no far edge",
+		},
+		{
+			name: "variance with only a close offset", kind: schemaenum.RaidTargetTimerWindowKindVariance,
+			window: offsets{nil, at(648000)},
+			why:    "the unknown check only ever inspected the open offset",
+		},
+		{
+			name: "unknown that kept a close offset", kind: schemaenum.RaidTargetTimerWindowKindUnknown,
+			window: offsets{nil, at(648000)},
+			why:    "an unknown window that half-answers is worse than one that says nothing",
+		},
+		{
+			name: "variance whose offsets are equal", kind: schemaenum.RaidTargetTimerWindowKindVariance,
+			window: offsets{at(604800), at(604800)},
+			why:    "equal offsets IS a fixed timer, and calling it variance loses spawn_at",
+		},
+		{
+			name: "variance closing before it opens", kind: schemaenum.RaidTargetTimerWindowKindVariance,
+			window: offsets{at(648000), at(561600)},
+			why:    "a window that closes before it opens renders as permanently overdue",
+		},
+		{
+			name: "fixed whose offsets differ", kind: schemaenum.RaidTargetTimerWindowKindFixed,
+			window: offsets{at(561600), at(648000)},
+			why:    "spawn_at is present iff the timer is fixed, so a fixed band would lie",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, db := openMigrated(t)
+			f := seed(t, ctx, db)
+
+			catalogue := exec(t, ctx, db, `
+				INSERT INTO raid_target_timer (target_id, server, window_kind,
+					window_open_offset_seconds, window_close_offset_seconds, fixed_grace_seconds,
+					note, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, 900, '', ?, ?)`,
+				f.TargetID, schemaenum.ServerBlue, tc.kind, tc.window.open, tc.window.close,
+				int64(now), int64(now))
+
+			// circle_timer_override carries the same window columns and must answer identically:
+			// an officer overriding a disputed timer is the likeliest source of a malformed one.
+			override := exec(t, ctx, db, `
+				INSERT INTO circle_timer_override (circle_id, target_id, window_kind,
+					window_open_offset_seconds, window_close_offset_seconds, fixed_grace_seconds,
+					note, created_by_membership_id, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, 900, '', ?, ?, ?)`,
+				f.CircleID, f.TargetID, tc.kind, tc.window.open, tc.window.close,
+				f.MembershipID, int64(now), int64(now))
+
+			if tc.accept {
+				require.NoError(t, catalogue, "raid_target_timer: %s", tc.why)
+				require.NoError(t, override, "circle_timer_override: %s", tc.why)
+				return
+			}
+			require.Error(t, catalogue, "raid_target_timer accepted it: %s", tc.why)
+			require.Error(t, override, "circle_timer_override accepted it: %s", tc.why)
+		})
+	}
+}

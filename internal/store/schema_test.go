@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -80,7 +82,7 @@ func TestInstanceScopedAllowlist_MatchesTheAppliedSchema(t *testing.T) {
 		fks, err := db.ForeignKeys(ctx, tbl.Name)
 		require.NoError(t, err)
 		for _, fk := range fks {
-			if fk.Column == "circle_id" && fk.RefTable == tenantRoot && fk.RefColumn == "id" {
+			if fk.References("circle_id", tenantRoot, "id") {
 				references = true
 			}
 		}
@@ -325,4 +327,136 @@ func TestSchemaHCL_DeclaredShape_MatchesTheAppliedSchema(t *testing.T) {
 			"run `make gen` to author the missing migration",
 			dbschema.SchemaHCLPath, diff)
 	}
+}
+
+// A single-column foreign key proves the referenced row EXISTS. It does not prove the row belongs
+// to this circle — so `tod_report.reporter_membership_id REFERENCES membership(id)` accepts a
+// report filed in circle B naming a reporter from circle A, with both foreign keys satisfied and
+// the tenant boundary gone.
+//
+// Every circle-scoped reference to another circle-scoped table therefore carries circle_id, and
+// this is the gate that says so. Writing the twelfth one correctly is not something to leave to
+// whoever adds the twelfth table.
+func TestSchema_EveryCircleScopedForeignKey_NamesTheCircle(t *testing.T) {
+	t.Parallel()
+	ctx, db := openMigrated(t)
+
+	allowed, err := canondoc.InstanceScopedTables()
+	require.NoError(t, err)
+	instanceScoped := map[string]bool{}
+	for _, name := range allowed {
+		instanceScoped[name] = true
+	}
+
+	tables, err := db.Tables(ctx)
+	require.NoError(t, err)
+
+	checked := 0
+	for _, tbl := range tables {
+		// An instance-scoped table has no circle to match against: `api_token.membership_id` and
+		// `identity.blocked_by_membership_id` name a membership in whichever circle it is in, and
+		// that is the whole fact. Only a table that HAS a circle can be asked to match it.
+		if instanceScoped[tbl.Name] || tbl.Name == tenantRoot {
+			continue
+		}
+		fks, err := db.ForeignKeys(ctx, tbl.Name)
+		require.NoError(t, err)
+
+		for _, fk := range fks {
+			if instanceScoped[fk.RefTable] || fk.RefTable == tenantRoot {
+				continue // nothing tenant-shaped on the other end
+			}
+			checked++
+			require.True(t, fk.Has("circle_id"),
+				"%s references circle-scoped %s via %v without naming circle_id: a row in one "+
+					"circle can point at a row in another", tbl.Name, fk.RefTable, fk.Columns)
+
+			// The circle on this row must be compared against the circle on THAT row, not against
+			// some other column that happens to be named circle_id on the parent.
+			for i, col := range fk.Columns {
+				if col == "circle_id" {
+					require.Equal(t, "circle_id", fk.RefColumns[i],
+						"%s maps circle_id to %s.%s", tbl.Name, fk.RefTable, fk.RefColumns[i])
+				}
+			}
+		}
+	}
+	require.Greater(t, checked, 8, "almost no circle-scoped references were checked")
+}
+
+// The reviewer's case, made permanent: a report filed in one circle naming a reporter from another
+// is refused by the database, not merely by whichever handler remembered to check.
+func TestTodReport_ReporterFromAnotherCircle_IsRefused(t *testing.T) {
+	t.Parallel()
+	ctx, db := openMigrated(t)
+	mine := seed(t, ctx, db)
+	rival := seedRivalCircle(t, ctx, db, mine)
+
+	err := exec(t, ctx, db, `
+		INSERT INTO tod_report (id, circle_id, target_id, kind, died_at, reported_at,
+			reporter_membership_id, source, self_confidence)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		newIDs(rand.Reader).next(t), rival.CircleID, mine.TargetID, schemaenum.TodReportKindKill,
+		int64(now), int64(now), mine.MembershipID, schemaenum.TodReportSourceLogLine,
+		schemaenum.TodReportSelfConfidenceCertain)
+	require.Error(t, err, "a report in one circle named a reporter from another")
+	require.Contains(t, err.Error(), "FOREIGN KEY")
+
+	// The rival's own membership works, so the constraint is a tenant boundary rather than a wall.
+	mustExec(t, ctx, db, `
+		INSERT INTO tod_report (id, circle_id, target_id, kind, died_at, reported_at,
+			reporter_membership_id, source, self_confidence)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		newIDs(rand.Reader).next(t), rival.CircleID, mine.TargetID, schemaenum.TodReportKindKill,
+		int64(now), int64(now), rival.MembershipID, schemaenum.TodReportSourceLogLine,
+		schemaenum.TodReportSelfConfidenceCertain)
+}
+
+// A retraction that reached across circles would delete another tenant's ToD from their board
+// while their own reports stayed put — the derivation folds a retraction by id, and it has no
+// tenant of its own to check against.
+func TestTodReport_RetractionAcrossCircles_IsRefused(t *testing.T) {
+	t.Parallel()
+	ctx, db := openMigrated(t)
+	mine := seed(t, ctx, db)
+	rival := seedRivalCircle(t, ctx, db, mine)
+	victim := insertReport(t, ctx, db, mine, now)
+
+	err := exec(t, ctx, db, `
+		INSERT INTO tod_report (id, circle_id, target_id, kind, died_at, reported_at,
+			reporter_membership_id, source, self_confidence, retracts_report_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		newIDs(rand.Reader).next(t), rival.CircleID, mine.TargetID,
+		schemaenum.TodReportKindRetraction, int64(now), int64(now), rival.MembershipID,
+		schemaenum.TodReportSourceManual, schemaenum.TodReportSelfConfidenceCertain, victim)
+	require.Error(t, err, "a retraction reached into another circle's report log")
+	require.Contains(t, err.Error(), "FOREIGN KEY")
+}
+
+// seedRivalCircle builds a second, fully separate circle: the tenant a cross-circle write would
+// reach into.
+func seedRivalCircle(t *testing.T, ctx context.Context, db *DB, mine fixture) fixture {
+	t.Helper()
+	id := newIDs(rand.Reader)
+	rival := mine
+	rival.CircleID = id.next(t)
+	rival.IdentityID = id.next(t)
+	rival.MembershipID = id.next(t)
+
+	mustExec(t, ctx, db, `
+		INSERT INTO identity (id, provider_id, subject, display_name, created_at, updated_at)
+		VALUES (?, ?, '9999999999', 'Rival', ?, ?)`,
+		rival.IdentityID, mine.ProviderID, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO circle (id, name, name_norm, description, server, timezone,
+			min_reporters_to_supersede, revoke_invalidates_invites, state, created_at, updated_at)
+		VALUES (?, 'Rival Blue', 'rivalblue', '', ?, 'UTC', 1, 1, ?, ?, ?)`,
+		rival.CircleID, schemaenum.ServerBlue, schemaenum.CircleStateActive, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO membership (id, circle_id, identity_id, kind, display_name, display_name_norm,
+			role, joined_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'Rival', 'rival', ?, ?, ?, ?)`,
+		rival.MembershipID, rival.CircleID, rival.IdentityID, schemaenum.MembershipKindHuman,
+		schemaenum.MembershipRoleOwner, int64(now), int64(now), int64(now))
+	return rival
 }

@@ -146,9 +146,19 @@ the same split merchant-mode draws between an item's id and its price.
 
 ```sql
 CHECK ((window_kind = 'unknown') = (window_open_offset_seconds IS NULL))
-CHECK ((window_kind = 'fixed')   = (window_open_offset_seconds = window_close_offset_seconds))
-CHECK (window_close_offset_seconds >= window_open_offset_seconds)
+CHECK ((window_open_offset_seconds IS NULL) = (window_close_offset_seconds IS NULL))
+CHECK ((window_kind = 'fixed') = (window_open_offset_seconds IS NOT NULL
+                                  AND window_close_offset_seconds IS NOT NULL
+                                  AND window_open_offset_seconds = window_close_offset_seconds))
+CHECK (window_open_offset_seconds IS NULL OR window_close_offset_seconds IS NULL
+       OR window_close_offset_seconds >= window_open_offset_seconds)
 ```
+
+**Four, not three, and none of them may evaluate to NULL.** SQLite treats a `CHECK` whose expression
+is NULL as *satisfied*, so the three-rule version above accepts a `fixed` timer with a NULL close
+offset, a `variance` band with only one edge, and an `unknown` window that kept a close offset —
+each reaching the derivation as a window it cannot read. The pairing rule is the branch the other
+three were leaning on and never stated.
 
 *Rejected: storing `(base_respawn, variance)`.* It cannot express an asymmetric window without
 inventing a sign convention, and P99 community data is quoted both ways — "7 days ±12h" and "16 to 24
@@ -186,6 +196,13 @@ CHECK (died_at <= reported_at + 120000000)   -- Micros; +120s clock-skew toleran
 CREATE UNIQUE INDEX ux_tod_report_natural
   ON tod_report(circle_id, target_id, reporter_membership_id, died_at) WHERE kind = 'kill';
 ```
+
+**Every reference from a circle-scoped table to a circle-scoped table carries `circle_id`** — the
+foreign key is `(circle_id, reporter_membership_id) REFERENCES membership (circle_id, id)`, not
+`(reporter_membership_id) REFERENCES membership (id)`. A single-column key proves the reporter
+exists; it does not prove they are in *this* circle, and a report filed in circle B naming a
+reporter from circle A would satisfy both keys individually while corrupting B's consensus. The same
+applies to `retracts_report_id`, to every `*_membership_id`, and to `admitted_by_invite_id`.
 
 That natural key is a second line of defence behind `Idempotency-Key`: the same reporter cannot lodge
 the same kill twice even if the header is botched. A *correction* by the same reporter has a

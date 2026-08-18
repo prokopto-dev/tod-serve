@@ -705,14 +705,28 @@ table "raid_target_timer" {
   check "ck_raid_target_timer_window_kind" {
     expr = local.check_raid_target_timer_window_kind
   }
+  // These four are written so that not one of them can evaluate to NULL. SQLite treats a CHECK
+  // whose expression is NULL as SATISFIED, so the obvious spelling of the domain model's three
+  // rules -- `(window_kind = 'fixed') = (open = close)` -- accepts a fixed timer with a NULL close
+  // offset, an unknown timer that kept a close offset, and any row whose ordering comparison went
+  // NULL. Each of those reaches the consensus derivation as a window it cannot read.
   check "ck_raid_target_timer_unknown_has_no_offsets" {
     expr = "((window_kind = 'unknown') = (window_open_offset_seconds IS NULL))"
   }
-  check "ck_raid_target_timer_fixed_is_a_point" {
-    expr = "((window_kind = 'fixed') = (window_open_offset_seconds = window_close_offset_seconds))"
+  // An offset alone is not a window. This is the branch the three domain rules were missing: with
+  // it, "both present or both absent" is decided before anything compares them.
+  check "ck_raid_target_timer_offsets_are_paired" {
+    expr = "((window_open_offset_seconds IS NULL) = (window_close_offset_seconds IS NULL))"
   }
+  // Equal offsets IFF fixed, and the IS NOT NULL terms keep it total: `1 AND 0 AND NULL` is 0 in
+  // SQLite, so a half-populated row is false here rather than NULL.
+  check "ck_raid_target_timer_fixed_is_a_point" {
+    expr = "((window_kind = 'fixed') = (window_open_offset_seconds IS NOT NULL AND window_close_offset_seconds IS NOT NULL AND window_open_offset_seconds = window_close_offset_seconds))"
+  }
+  // Ordering is only a question when both offsets exist; the pairing check above owns the case
+  // where one does not, so this one says so explicitly rather than going NULL and passing.
   check "ck_raid_target_timer_window_is_ordered" {
-    expr = "window_close_offset_seconds >= window_open_offset_seconds"
+    expr = "window_open_offset_seconds IS NULL OR window_close_offset_seconds IS NULL OR window_close_offset_seconds >= window_open_offset_seconds"
   }
   check "ck_raid_target_timer_fixed_grace_seconds" {
     expr = "fixed_grace_seconds >= 0"
@@ -1162,16 +1176,20 @@ table "membership" {
     ref_columns = [table.identity.column.id]
   }
   foreign_key "fk_membership_owner" {
-    columns     = [column.owner_membership_id]
-    ref_columns = [table.membership.column.id]
+    columns     = [column.circle_id, column.owner_membership_id]
+    ref_columns = [table.membership.column.circle_id, table.membership.column.id]
   }
   foreign_key "fk_membership_invite" {
-    columns     = [column.admitted_by_invite_id]
-    ref_columns = [table.invite.column.id]
+    columns     = [column.circle_id, column.admitted_by_invite_id]
+    ref_columns = [table.invite.column.circle_id, table.invite.column.id]
   }
   foreign_key "fk_membership_revoked_by" {
-    columns     = [column.revoked_by_membership_id]
-    ref_columns = [table.membership.column.id]
+    columns     = [column.circle_id, column.revoked_by_membership_id]
+    ref_columns = [table.membership.column.circle_id, table.membership.column.id]
+  }
+  index "ux_membership_circle_id" {
+    unique  = true
+    columns = [column.circle_id, column.id]
   }
   index "ux_membership_identity" {
     unique  = true
@@ -1280,15 +1298,16 @@ table "invite" {
     ref_columns = [table.circle.column.id]
   }
   foreign_key "fk_invite_created_by" {
-    columns     = [column.created_by_membership_id]
-    ref_columns = [table.membership.column.id]
+    columns     = [column.circle_id, column.created_by_membership_id]
+    ref_columns = [table.membership.column.circle_id, table.membership.column.id]
   }
   index "ux_invite_code_hash" {
     unique  = true
     columns = [column.code_hash]
   }
-  index "ix_invite_circle" {
-    columns = [column.circle_id]
+  index "ux_invite_circle_id" {
+    unique  = true
+    columns = [column.circle_id, column.id]
   }
   check "ck_invite_role" {
     expr = local.check_invite_role
@@ -1343,12 +1362,12 @@ table "invite_redemption" {
     ref_columns = [table.circle.column.id]
   }
   foreign_key "fk_invite_redemption_invite" {
-    columns     = [column.invite_id]
-    ref_columns = [table.invite.column.id]
+    columns     = [column.circle_id, column.invite_id]
+    ref_columns = [table.invite.column.circle_id, table.invite.column.id]
   }
   foreign_key "fk_invite_redemption_membership" {
-    columns     = [column.membership_id]
-    ref_columns = [table.membership.column.id]
+    columns     = [column.circle_id, column.membership_id]
+    ref_columns = [table.membership.column.circle_id, table.membership.column.id]
   }
   foreign_key "fk_invite_redemption_identity" {
     columns     = [column.identity_id]
@@ -1449,12 +1468,16 @@ table "tod_report" {
     ref_columns = [table.raid_target.column.id]
   }
   foreign_key "fk_tod_report_reporter" {
-    columns     = [column.reporter_membership_id]
-    ref_columns = [table.membership.column.id]
+    columns     = [column.circle_id, column.reporter_membership_id]
+    ref_columns = [table.membership.column.circle_id, table.membership.column.id]
   }
   foreign_key "fk_tod_report_retracts" {
-    columns     = [column.retracts_report_id]
-    ref_columns = [table.tod_report.column.id]
+    columns     = [column.circle_id, column.retracts_report_id]
+    ref_columns = [table.tod_report.column.circle_id, table.tod_report.column.id]
+  }
+  index "ux_tod_report_circle_id" {
+    unique  = true
+    columns = [column.circle_id, column.id]
   }
   index "ux_tod_report_natural" {
     unique  = true
@@ -1538,8 +1561,8 @@ table "quake_event" {
     ref_columns = [table.circle.column.id]
   }
   foreign_key "fk_quake_event_reporter" {
-    columns     = [column.reported_by_membership_id]
-    ref_columns = [table.membership.column.id]
+    columns     = [column.circle_id, column.reported_by_membership_id]
+    ref_columns = [table.membership.column.circle_id, table.membership.column.id]
   }
   index "ix_quake_event_circle_occurred" {
     columns = [column.circle_id, column.occurred_at]
@@ -1620,20 +1643,34 @@ table "circle_timer_override" {
     ref_columns = [table.raid_target.column.id]
   }
   foreign_key "fk_circle_timer_override_created_by" {
-    columns     = [column.created_by_membership_id]
-    ref_columns = [table.membership.column.id]
+    columns     = [column.circle_id, column.created_by_membership_id]
+    ref_columns = [table.membership.column.circle_id, table.membership.column.id]
   }
   check "ck_circle_timer_override_window_kind" {
     expr = local.check_circle_timer_override_window_kind
   }
+  // These four are written so that not one of them can evaluate to NULL. SQLite treats a CHECK
+  // whose expression is NULL as SATISFIED, so the obvious spelling of the domain model's three
+  // rules -- `(window_kind = 'fixed') = (open = close)` -- accepts a fixed timer with a NULL close
+  // offset, an unknown timer that kept a close offset, and any row whose ordering comparison went
+  // NULL. Each of those reaches the consensus derivation as a window it cannot read.
   check "ck_circle_timer_override_unknown_has_no_offsets" {
     expr = "((window_kind = 'unknown') = (window_open_offset_seconds IS NULL))"
   }
-  check "ck_circle_timer_override_fixed_is_a_point" {
-    expr = "((window_kind = 'fixed') = (window_open_offset_seconds = window_close_offset_seconds))"
+  // An offset alone is not a window. This is the branch the three domain rules were missing: with
+  // it, "both present or both absent" is decided before anything compares them.
+  check "ck_circle_timer_override_offsets_are_paired" {
+    expr = "((window_open_offset_seconds IS NULL) = (window_close_offset_seconds IS NULL))"
   }
+  // Equal offsets IFF fixed, and the IS NOT NULL terms keep it total: `1 AND 0 AND NULL` is 0 in
+  // SQLite, so a half-populated row is false here rather than NULL.
+  check "ck_circle_timer_override_fixed_is_a_point" {
+    expr = "((window_kind = 'fixed') = (window_open_offset_seconds IS NOT NULL AND window_close_offset_seconds IS NOT NULL AND window_open_offset_seconds = window_close_offset_seconds))"
+  }
+  // Ordering is only a question when both offsets exist; the pairing check above owns the case
+  // where one does not, so this one says so explicitly rather than going NULL and passing.
   check "ck_circle_timer_override_window_is_ordered" {
-    expr = "window_close_offset_seconds >= window_open_offset_seconds"
+    expr = "window_open_offset_seconds IS NULL OR window_close_offset_seconds IS NULL OR window_close_offset_seconds >= window_open_offset_seconds"
   }
   check "ck_circle_timer_override_fixed_grace_seconds" {
     expr = "fixed_grace_seconds >= 0"
@@ -1749,8 +1786,8 @@ table "target_state_cache" {
     ref_columns = [table.raid_target.column.id]
   }
   foreign_key "fk_target_state_cache_latest_report" {
-    columns     = [column.latest_report_id]
-    ref_columns = [table.tod_report.column.id]
+    columns     = [column.circle_id, column.latest_report_id]
+    ref_columns = [table.tod_report.column.circle_id, table.tod_report.column.id]
   }
   index "ix_target_state_cache_circle_status" {
     columns = [column.circle_id, column.status]
@@ -1838,8 +1875,8 @@ table "audit_log" {
     ref_columns = [table.circle.column.id]
   }
   foreign_key "fk_audit_log_actor" {
-    columns     = [column.actor_membership_id]
-    ref_columns = [table.membership.column.id]
+    columns     = [column.circle_id, column.actor_membership_id]
+    ref_columns = [table.membership.column.circle_id, table.membership.column.id]
   }
   index "ux_audit_log_hash" {
     unique  = true
