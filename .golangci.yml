@@ -48,6 +48,11 @@ linters:
         - pattern: ^log\.(Print|Fatal|Panic).*$
           msg: Use slog. The stdlib log package has no structure and no level.
 
+    goconst:
+      # A test table legitimately repeats a literal — that is what makes it readable as a table.
+      # Extracting one into a constant to satisfy a linter makes the table worse, not better.
+      tests: false
+
     errcheck:
       # check-blank is deliberately off: `_ = f()` is a WAIVER, caught in review, and it has to stay
       # rare enough to notice. A linter that accepts it silently would make it the default.
