@@ -1,7 +1,8 @@
 # Invariants
 
 **Status:** design phase. Every mechanism below lands with the subsystem it guards; the **Lands in**
-column says when. A row with no phase is enforceable today.
+column says when, and `landed` means it is enforced today — the named test or gate exists and runs
+in `make check`.
 
 A rule without a mechanism is a wish. Every rule on this page names the thing that enforces it — a
 database trigger, a lint rule, a test, or a CI gate — because a rule enforced only by review is a
@@ -26,6 +27,8 @@ rule that survives until the first tired Friday.
 | An `identity_link` participant has `verifiable_subject = 1` | A DB trigger plus `TestIdentityLink_LocalProvider_Rejected` | Phase 1 |
 | `identity_provider.verifiable_subject` matches its `kind` | A `CHECK` constraint — it is not an operator toggle | Phase 1 |
 | Enum values are identical in the SQL `CHECK`, the JSON and the OpenAPI | One Go catalogue in `internal/schemaenum`; `make gen` writes all three; a test asserts the copies agree | Phase 1 |
+| The enum catalogue cannot drift from the canonical conventions | `TestAll_Catalogue_MatchesCanonicalConventions` parses the fenced block in [canonical §5](../design/00-canonical-conventions.md#5-enums) and compares element by element | landed |
+| The ordered enums rank in the order the canonical conventions state | `TestRank_OrderedEnums_MatchTheCanonicalOrdering` reads the ordering out of the document's own sentence | landed |
 | A migration that has shipped in a tagged release is never edited | CI compares migration checksums against the previous release | Phase 1 |
 | Migrations are forward-only | Every `Down` block contains `RAISE(ABORT, …)`; `lint / repo` fails any migration whose `Down` contains DDL | Phase 1 |
 
@@ -51,7 +54,8 @@ rule that survives until the first tired Friday.
 | `internal/consensus` is pure | See the consensus table above | Phase 2 |
 | Outbound HTTP originates only from `internal/identity/discord` and `internal/identity/oidc`, to allowlisted hosts | `NET001` grepping `http.Get`, `http.Client` and `net.Dial` outside those packages, plus a unit test on the dialer's deny list — which must deny link-local and cloud-metadata addresses, not merely RFC1918 | Phase 1 |
 | `web/src` contains no `fetch` or `XMLHttpRequest` outside `web/src/api` | An ESLint rule plus a CI grep | Phase 4 |
-| `time.Now` appears only in `internal/clock` | `CLOCK001`, an AST analyser, so an aliased import does not defeat it | Phase 1 |
+| `time.Now` appears only in `internal/clock` | `CLOCK001`, an AST analyser in `internal/repogate` run by `TestCLOCK001_Repository_HasNoTimeNowOutsideClock`, so an aliased import does not defeat it. The grep in `scripts/repo-gates.sh` is a pre-check, not the authority | landed |
+| Every typed id names a table that exists | `TestEntityMarkers_EveryName_IsATableInTheDomainModel` reads the markers out of `internal/core/id.go` with the Go parser and checks each against the [domain model](../design/01-domain-model.md) | landed |
 
 ## API invariants
 
@@ -63,7 +67,10 @@ rule that survives until the first tired Friday.
 | Every POST that creates domain state requires `Idempotency-Key` | An architectural test over the route registry | Phase 1 |
 | Errors are RFC 9457 with a `code` from a closed enum, and never HTTP 200 with an error body | Response-validation middleware run across the whole integration suite | Phase 1 |
 | Every error code has a documentation page | A Go test enumerating the enum against the docs tree | Phase 1 |
-| The capability floor cannot drift from the canonical conventions | `TestCapabilityFloor_MatchesCanonicalConventions` parses the fenced block in [canonical §6](../design/00-canonical-conventions.md#6-permissions-and-scopes--one-catalogue-generated) and compares element by element, both directions | Phase 1 |
+| The capability floor cannot drift from the canonical conventions | `TestCapabilityFloor_MatchesCanonicalConventions` parses the fenced block in [canonical §6](../design/00-canonical-conventions.md#6-permissions-and-scopes--one-catalogue-generated) and compares element by element, both directions | landed |
+| No PAT scope reaches a capability-floor permission — there is no `admin:*` scope and no all-powerful token | `TestScopes_NoScope_ReachesACapabilityFloorPermission`, over every scope held by the strongest role | landed |
+| A higher role never holds fewer permissions than a lower one | `TestRolePermissions_EachRole_ContainsTheRoleBelow` — a non-cumulative row would mean promoting somebody takes a capability away | landed |
+| `docs/reference/permissions.md` is generated from the catalogue, never edited | `TestPermissionsDoc_Generated_MatchesTheCheckedInPage`; `-update` is refused when `CI=true` | landed |
 | No token appears in a URL | Query-string tokens are rejected with `401`, **with no exception** — asserted by a test | Phase 1 |
 | An invite code never reaches the server in a URL path or query | The link carries it in the **fragment** (`/join#TODI-…`), which no browser transmits; `previewInvite` and `redeemInvite` take it in a POST body. A route-registry test asserts no operation declares an invite code as a path or query parameter | Phase 1 |
 | The Discord guild gate is evaluated on **both** `/join` and `/sessions` | `TestGuildGate_EvaluatedOnJoinAndSessions`. Evaluated against the facts on the `credential_ticket`, never a cached copy and never a client-supplied claim. A gate on join alone would let `/sessions` mint a fresh PAT for someone who has left the guild | Phase 1 |
@@ -86,6 +93,7 @@ The ones that exist because the fastest route to a green build is to change the 
 |---|---|
 | The consensus golden corpus is not rewritten to go green | `test/golden/` is CODEOWNERS-protected; `-update` is refused when `CI=true`; a test asserts the fixture count is non-decreasing |
 | Tests are not skipped or weakened to land a change | Review, plus a coverage floor per package |
+| No test sleeps | `SLEEP001` in `internal/repogate`, run by `TestSLEEP001_Tests_DoNotSleep`; time-dependent tests use `testing/synctest` |
 | No goroutine leaks in the event package | `goleak.VerifyTestMain` in `TestMain` |
 
 ## Operational invariants
@@ -94,9 +102,9 @@ The ones that exist because the fastest route to a green build is to change the 
 |---|---|
 | The container health check never touches the database | The Dockerfile calls `/healthz`, which does not. A DB-touching healthcheck lets Docker kill the container mid-migration |
 | `/metrics` is not exposed by default | Default `TOD_METRICS_ENABLED=false`; when enabled it binds a separate listener and requires a token. Never gated by a PAT scope |
-| No secret is ever logged | `type Secret` renders as `***` in `String`, `MarshalJSON` and `LogValue`; a test marshals the whole config and asserts no known secret value appears |
+| No secret is ever logged | `core.Secret` renders as `***` in `String`, `GoString`, `MarshalJSON`, `LogValue` and every `fmt` verb; `TestSecret_NeverRendered` and `TestSecret_NestedInAStruct_NeverRendered` marshal and log a whole config and assert no known secret value appears. The one hole — `fmt` reflecting over an **unexported** field — is pinned by `TestSecret_InAnUnexportedField_IsNotProtectedByFmt` rather than left to be rediscovered |
 | A Discord access token is never persisted | Read and discarded inside the OAuth callback; only the derived subject, display name, guild ids and role ids reach `credential_ticket`. `TestDiscord_AccessToken_NeverPersisted` asserts no store call receives it |
-| `identity_provider.client_secret` is never serialised or logged | It is a `core.Secret` — `***` in `String`, `MarshalJSON` and `LogValue` — and `listIdentityProviders` returns `client_id` but never the secret. Covered by the no-secret-is-ever-logged test above |
+| `identity_provider.client_secret` is never serialised or logged | It is a `core.Secret` — `***` on every rendering path above — and `listIdentityProviders` returns `client_id` but never the secret. Covered by the no-secret-is-ever-logged test |
 
 ## Licence invariants
 
