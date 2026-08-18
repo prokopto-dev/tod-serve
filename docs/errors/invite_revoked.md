@@ -16,3 +16,8 @@ An officer revoked the invite before you redeemed it.
 
 Ask an officer. If a batch of invites died at once, the second cause above is almost certainly why,
 and it was not an accident.
+
+A browser flow can surface this at the **callback** rather than at `/join`: if the invite dies while
+the user is on the provider's consent screen, the callback mints no ticket and redirects to
+`<spa>/join#error=invite_revoked`. The check there is an early-out — `/join`
+re-checks at redemption and is the authority.

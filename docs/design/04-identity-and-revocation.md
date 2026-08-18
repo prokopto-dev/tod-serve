@@ -152,21 +152,52 @@ GET  /api/v1/auth/callback/{provider_key}    completeAuthorization    Hidden: tr
   2. GET /oauth2/@me  -> REJECT unless application.id == our client_id.   [see section 7]
   3. GET /users/@me   -> subject, display_name.
   4. GET /users/@me/guilds/{guild.id}/member  for the gated guild -> roles.
-  5. DISCARD the access token. Write a single-use credential_ticket (TTL 120s) carrying
+  5. Re-read the invite. If it is no longer live, mint NOTHING and stop at step 6 with an error.
+  6. DISCARD the access token. Write a single-use credential_ticket (TTL 120s) carrying
      subject, display_name, guild_id and role_ids.
-  6. 302 to  <spa>/join#ticket=<ticket>   -- the ticket rides in the FRAGMENT. [see below]
+  7. 302 to  <spa>/join#ticket=<ticket>  on success,  <spa>/join#error=<code>  on failure.
+     Always the FRAGMENT, never the query. [see below]
 
 POST /api/v1/join       credential: { "kind": "provider_ticket", "ticket": "..." }
 POST /api/v1/sessions   same
 ```
 
-**Which guild, and why the callback can know it.** `auth_flow` records `invite_code_hash` or
-`circle_id` at step 1, so the callback resolves the circle — invite → circle, or the circle
-directly — and reads `circle_provider.discord_guild_id` from it. That is the guild it fetches the
-member object for. `GET /users/@me/guilds` returns **partial** guild objects and carries **no
-roles**, which is why the per-guild member endpoint is named here explicitly: a design that fetched
-only the guild list would have nothing to evaluate a non-empty
-`discord_required_role_ids_json` against.
+**Which guild, and why the flow can know it.** `createAuthorizationURL` resolves the circle behind
+the supplied `invite_code` (or takes `circle_id` directly) and reads
+`circle_provider.discord_guild_id` from it. It has to: the scope set is decided *before* the browser
+leaves — `guilds.members.read` is requested only when the circle actually gates on a guild — and the
+callback needs to know which guild to fetch a member object for. `auth_flow` records the resolved
+`circle_id` for that purpose.
+
+`GET /users/@me/guilds` returns **partial** guild objects and carries **no roles**, which is why the
+per-guild member endpoint is named explicitly above: a design that fetched only the guild list would
+have nothing to evaluate a non-empty `discord_required_role_ids_json` against.
+
+**This reads an invite's circle before redemption, and that is deliberate.**
+[Canonical §9](00-canonical-conventions.md#9-tenancy--this-project-diverges-from-dkp) permits
+resolving an invite's circle to *parameterise authorization*; what it forbids is **binding**
+`auth_flow` or `credential_ticket` to that circle as a tenancy key. The recorded `circle_id` is
+advisory. **Redemption re-derives the circle from the invite and is the authority**, so a flow that
+resolved one circle can never cause a join into a different one.
+
+### If the invite dies mid-flow
+
+A user can sit on Discord's consent screen for minutes, so the invite can be revoked, expire or be
+exhausted between `createAuthorizationURL` and the callback, or between the callback and `/join`.
+
+| Moment | What happens |
+|---|---|
+| Between authorization and callback | The callback re-reads the invite. If it is no longer live it mints **no ticket** and redirects to `<spa>/join#error=invite_revoked` (or `invite_expired`, `invite_exhausted`) |
+| Between callback and redemption | The ticket is valid but `/join` rejects with the same codes. The ticket is single-use and simply expires unredeemed |
+| The circle *adds* a guild gate mid-flow | The authorization did not request `guilds.members.read`, so the ticket carries no member object — and an absent fact is a rejection, so the join fails closed with `403 guild_role_required` rather than sliding past an ungated check |
+
+**The callback's invite check is an early-out, not the gate.** It exists so the server does not mint
+a credential for an invite that is already dead; `/join` re-checks at redemption and is what
+actually decides. Anything else would make a 120-second-old snapshot authoritative over the live
+row, which is the same mistake as trusting `target_state_cache`.
+
+Everything the callback hands back rides in the **fragment** — `#ticket=…` on success,
+`#error=<code>` on failure — so there is one rule for the redirect rather than one per outcome.
 
 **A missing fact is a rejection, never a skip.** If the ticket carries no member object for a guild
 the circle gates on — the scope was not granted, the call failed, or the flow named no circle — the

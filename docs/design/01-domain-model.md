@@ -232,7 +232,8 @@ CHECK ((kind = 'discord') = (client_id IS NOT NULL))
 ```
 
 `auth_flow` — `id`, `state` (unique), `pkce_verifier`, `provider_id`, `invite_code_hash` (nullable),
-`circle_id` (nullable), `expires_at`, `consumed_at`. **The PKCE verifier stays on the server**: a
+`circle_id` (nullable, **advisory** — it selects the OAuth scopes and the guild to check, and is
+re-derived at redemption), `expires_at`, `consumed_at`. **The PKCE verifier stays on the server**: a
 confidential client has a `client_secret` to bind the exchange, and handing the verifier to the
 browser would buy nothing and leak it into `sessionStorage`. `invite_code_hash`, not the code —
 the same reasoning as `invite.code_hash`.
@@ -244,8 +245,13 @@ access token can be discarded inside the request that read them.
 
 Both are instance-scoped and on the
 [canonical §9](00-canonical-conventions.md#9-tenancy--this-project-diverges-from-dkp) allowlist
-because they exist **before a circle is known** — the circle behind an invite code is not resolved
-until redemption. Both are prunable on expiry; neither is authority for anything.
+because **no circle owns them**, not because a circle cannot be identified early. `auth_flow`'s
+`circle_id` is nullable and advisory — it parameterises the provider request — and a
+`credential_ticket` is redeemable at either `/join` or `/sessions`, so which circle it lands in is
+settled at redemption. Making either circle-scoped would demand `circle_id NOT NULL`, which is a
+false statement about a row that exists before the caller holds any membership. Both are looked up
+by an unguessable secret on a unique index and never by circle, so a missing `WHERE circle_id = ?`
+cannot leak across tenants here. Both are prunable on expiry; neither is authority for anything.
 
 ### `identity.blocked_at` — the instance-wide block
 

@@ -16,3 +16,8 @@ The invite reached `max_uses`. It was valid, and somebody else used the last one
 
 Ask for a new invite. If you expected more uses, check whether it was minted by a bot rather than a
 session.
+
+A browser flow can surface this at the **callback** rather than at `/join`: if the invite dies while
+the user is on the provider's consent screen, the callback mints no ticket and redirects to
+`<spa>/join#error=invite_exhausted`. The check there is an early-out — `/join`
+re-checks at redemption and is the authority.

@@ -266,15 +266,28 @@ The instance-scoped allowlist is explicit and short: `tod_meta`, `instance`, `id
 `raid_target_timer`, `api_token`, `idempotency_record`, `event_outbox`. Adding a table to it is a
 reviewed decision, not a convenience.
 
-The two newest entries are on it because **they exist before a circle is known**, not as an
-exemption:
+The two newest entries are on it because **no circle owns them** — not because a circle cannot be
+identified before redemption:
 
-- `auth_flow` holds the OAuth `state` and the server-side PKCE verifier from the moment the browser
-  is sent to the provider. At that point the caller may hold nothing but an invite code, and the
-  circle behind that code is not resolved until redemption, so there is no `circle_id` to write.
-- `credential_ticket` carries a verified subject for 120 seconds between the OAuth callback and
-  whichever of `/join` or `/sessions` redeems it. The same ticket is valid for either, and `/join`
-  discovers the circle from the invite, so binding it to a circle at mint time would be a guess.
+- `auth_flow` holds the OAuth `state` and the server-side PKCE verifier. It may record a
+  **nullable** `circle_id`, because the authorization request has to be parameterised before the
+  browser leaves — which scopes to ask for, which guild the gate names. That is a hint for building
+  a provider request, not a tenancy key.
+- `credential_ticket` carries a verified subject for 120 seconds and is redeemable at **either**
+  `/join` or `/sessions`. Which circle it lands in is settled at redemption, by the invite or by the
+  request.
+
+**Reading an invite's circle before redemption is permitted; binding these rows to that circle is
+not.** A circle-scoped table carries `circle_id NOT NULL REFERENCES circle(id)`, and that would be a
+false statement about a row which exists before the caller holds any membership and which may be
+redeemed into a circle chosen later. Both rows are looked up by an unguessable server-minted secret
+— `state`, `ticket_hash` — on a unique index and **never by circle**, so there is no query here
+whose missing `WHERE circle_id = ?` could leak across tenants; the bug class the tenancy rule exists
+to catch does not arise.
+
+**Redemption is the authority on which circle a person joins.** Anything either row recorded
+earlier is advisory and re-checked there — including whether the invite is still live. See
+[04-identity §5](04-identity-and-revocation.md#5-one-join-endpoint).
 
 This list and `INSTANCE_SCOPED` in `scripts/repo-gates.sh` are two copies of one fact.
 **Enforced by:** `TestInstanceScopedAllowlist_MatchesRepoGates`, which parses both and compares them

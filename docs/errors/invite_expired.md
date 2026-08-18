@@ -15,3 +15,8 @@ is `NOT NULL` by design.
 
 Ask for a new invite. Nothing on the client can recover this one, and an expired invite is not
 re-openable by design.
+
+A browser flow can surface this at the **callback** rather than at `/join`: if the invite dies while
+the user is on the provider's consent screen, the callback mints no ticket and redirects to
+`<spa>/join#error=invite_expired`. The check there is an early-out — `/join`
+re-checks at redemption and is the authority.
