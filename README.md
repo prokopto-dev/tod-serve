@@ -73,7 +73,7 @@ Membership binds to an `(provider, subject)` pair, so an instance can offer more
 | Provider | How you join | Revocation |
 |---|---|---|
 | `discord` | Browser OAuth against **the operator's own** Discord application — see [ADR-0011](docs/adr/0011-operator-registered-discord-application.md) | **Durable** — banned by Discord id, so a revoked member cannot re-redeem under a new name |
-| `oidc` | Any issuer the operator configures — Authentik, Keycloak, Google, GitHub | **Durable**. Uses the same browser flow as `discord`, so the console has one code path |
+| `oidc` | Any issuer the operator configures — Authentik, Keycloak, Google, GitHub | **Durable**. Uses the same browser flow as `discord`, so the console has one code path, and its `aud` makes cross-instance replay structurally impossible |
 | `local` | An invite code and a name you pick yourself | **Advisory** — a revoked person with another invite returns as a new member |
 
 `local` ships disabled and enabling it requires saying so explicitly, because the damage from a weak

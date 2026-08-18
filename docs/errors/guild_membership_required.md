@@ -20,3 +20,8 @@ Join the guild, then re-run the authorization so a fresh ticket carries the new 
 **Why a guild and not a channel:** Discord has no channel-membership API. Channel visibility is
 derived from guild membership plus roles, so that is what the server can actually verify. Modelling
 a channel-level rule we cannot check would be a guess dressed as a rule.
+
+Membership itself is answered by `GET /users/@me/guilds`. That call returns **partial** guild
+objects and no roles, which is why a role requirement needs a second call —
+`GET /users/@me/guilds/{guild.id}/member` — and reports
+[`guild_role_required`](guild_role_required.md) rather than this code.

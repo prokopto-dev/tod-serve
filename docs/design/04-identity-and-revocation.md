@@ -37,7 +37,7 @@ At most one `discord` row and at most one `local` row, by partial unique index. 
 
 | Kind | How the server verifies | Credential persisted? |
 |---|---|---|
-| `discord` | Server-side code exchange against the **operator's own** application, then `GET users/@me` and `GET users/@me/guilds`. Subject = the snowflake `id`; display name = `global_name ?? username`. | **Never.** The access token is read and discarded inside the callback request; only the derived facts reach `credential_ticket`. |
+| `discord` | **`GET /oauth2/@me` first**, rejecting unless `application.id` equals this instance's `client_id` — see §7. Then `GET /users/@me` for the subject (the snowflake `id`) and display name (`global_name ?? username`), and `GET /users/@me/guilds/{guild.id}/member` for the gated guild's `roles`. | **Never.** The access token is read and discarded inside the request; only the derived facts reach `credential_ticket`. |
 | `oidc` | Verify the **ID token** offline: signature against cached JWKS, `iss`, `aud = client_id`, `exp`, `nonce`. Subject = `subject_claim`, default `sub`. | No. |
 | `local` | Nothing to verify. Subject is a server-minted ULID; display name is self-asserted. | n/a |
 
@@ -145,15 +145,50 @@ POST /api/v1/auth/authorization-url          createAuthorizationURL   public
   { provider, invite_code?, circle_id? } -> { authorization_url, expires_at }
   Writes auth_flow(state, pkce_verifier, provider_id, invite_code_hash?, circle_id?, expires_at).
   The PKCE verifier stays SERVER-side. Expired or unknown state -> 409 auth_flow_expired.
+  Scopes: identify, plus guilds.members.read when the resolved circle gates on a guild.
 
 GET  /api/v1/auth/callback/{provider_key}    completeAuthorization    Hidden: true
-  Exchanges the code, calls users/@me and users/@me/guilds (guilds.members.read for roles),
-  DISCARDS the Discord access token, writes a single-use credential_ticket (TTL 120s) carrying
-  subject, display_name, guild ids and role ids, then 302s to the SPA with the ticket.
+  1. Exchange the code (client_id + client_secret + pkce_verifier).
+  2. GET /oauth2/@me  -> REJECT unless application.id == our client_id.   [see section 7]
+  3. GET /users/@me   -> subject, display_name.
+  4. GET /users/@me/guilds/{guild.id}/member  for the gated guild -> roles.
+  5. DISCARD the access token. Write a single-use credential_ticket (TTL 120s) carrying
+     subject, display_name, guild_id and role_ids.
+  6. 302 to  <spa>/join#ticket=<ticket>   -- the ticket rides in the FRAGMENT. [see below]
 
 POST /api/v1/join       credential: { "kind": "provider_ticket", "ticket": "..." }
 POST /api/v1/sessions   same
 ```
+
+**Which guild, and why the callback can know it.** `auth_flow` records `invite_code_hash` or
+`circle_id` at step 1, so the callback resolves the circle — invite → circle, or the circle
+directly — and reads `circle_provider.discord_guild_id` from it. That is the guild it fetches the
+member object for. `GET /users/@me/guilds` returns **partial** guild objects and carries **no
+roles**, which is why the per-guild member endpoint is named here explicitly: a design that fetched
+only the guild list would have nothing to evaluate a non-empty
+`discord_required_role_ids_json` against.
+
+**A missing fact is a rejection, never a skip.** If the ticket carries no member object for a guild
+the circle gates on — the scope was not granted, the call failed, or the flow named no circle — the
+gate returns `403 guild_role_required`. It does **not** treat absent roles as "no roles required".
+The tempting shortcut here silently disables the gate for everyone, which is the confident-mistake
+failure this project is built against.
+
+### The ticket rides in the fragment
+
+A `provider_ticket` is a bearer credential that mints a PAT, so it obeys the same rule as an invite
+code and for the same reason. The callback redirects to `<spa>/join#ticket=…`, **never** to
+`?ticket=…`: a query string lands in access logs, `Referer` headers and proxy logs, and
+[canonical §7](00-canonical-conventions.md#7-http-conventions) says no token appears in a URL **with
+no exception**. The SPA reads `location.hash`, POSTs the ticket, and **clears `location.hash`
+immediately**.
+
+*The callback's own query string is not an exception to that rule.* It carries `code` and `state`,
+and neither is a credential for this API: `code` is single-use, PKCE-bound and exchanged server-side
+within the same request, and `state` is a CSRF nonce whose only meaning is a row in `auth_flow`.
+
+**Enforced by:** `TestNoTokenInURL_CallbackRedirectUsesFragment`, alongside the existing
+query-string-token rejection test.
 
 `Hidden: true` on the callback is permitted for exactly this by
 [canonical §7](00-canonical-conventions.md#7-http-conventions) — it is a browser redirect target,
@@ -209,24 +244,55 @@ demo, and CI fixtures. Those are real, so it ships — it just ships honest.
 
 ## 7. The Discord trust boundary, after ADR-0011
 
-This section used to record two unresolved risks.
-**[ADR-0011](../adr/0011-operator-registered-discord-application.md) closed both**, by making the
-Discord application per-instance and operator-registered rather than one project-wide app. They are
-named here with their resolutions rather than deleted, because the next person to propose a shared
-app needs to find out why there isn't one.
+This section used to record three unresolved risks, all of them consequences of one project-wide
+Discord application. **[ADR-0011](../adr/0011-operator-registered-discord-application.md) closed all
+three** — though not all in the same way, and the replay one needed more than the ADR first claimed.
+They are named here with their resolutions rather than deleted, because the next person to propose a
+shared app needs to find out why there isn't one.
 
 | Was | Now |
 |---|---|
-| **Cross-instance token replay.** One shared app meant a user's access token was valid at *every* instance, so a hostile instance could replay it elsewhere. PKCE did not help — it is a bearer token and instance-agnostic. Mitigated only by a 60-second freshness rule (`credential_stale`) | **Closed.** A token is minted for the operator's *own* client id and is worthless at any other instance. The token is also never handed to a client at all: it is exchanged server-side and discarded inside the callback |
+| **Cross-instance token replay.** One shared app meant a user's access token was valid at *every* instance, so a hostile instance could replay it elsewhere. PKCE did not help — it is a bearer token and instance-agnostic. Mitigated only by a 60-second freshness rule (`credential_stale`) | **Closed — by the audience check below, not by registration alone.** See the correction that follows: this one needed more than a per-instance `client_id` |
 | **Discord's developer terms.** One application relaying arbitrary third-party self-hosted servers' end-user tokens was not obviously within them, and a human had to read the ToS before `discord` could ship | **Closed.** There is no shared application. Each operator registers their own and agrees to Discord's terms directly, exactly as any other Discord app author does |
 | **Unowned operational health.** A join storm made the shared app a heavily rate-limited client, and a ban hit every instance at once | **Closed.** Rate limits and bans are per-instance, and the operator owns theirs |
 
-`credential_stale` remains in the error enum for the non-browser `bearer_token` path, but it is no
-longer load-bearing: it was the mitigation for a hole that no longer exists.
+### The audience check, and why registration alone is not enough
+
+**Per-instance registration does not by itself make a Discord user access token unusable
+elsewhere.** It is tempting to think it does, and the first draft of this design said so. It is
+wrong. A Discord access token is a bearer token, and `GET /users/@me` honours **any** valid token
+regardless of which application minted it. So a hostile instance holding a user's token can still
+present it to another instance's verifier and be told which user it belongs to. The code *exchange*
+is client-bound; the resource request that follows is not.
+
+The browser flow is safe on its own — a second instance never receives a raw token, because it runs
+its own exchange with its own `client_secret`. But the non-browser `bearer_token` credential accepts
+a token the caller supplies, and that is the open door.
+
+**So audience binding is explicit, and it is the mechanism:**
+
+> Before any other call, verification of a Discord access token performs `GET /oauth2/@me` and
+> rejects unless `application.id` equals this instance's configured `client_id`.
+> Failure is `401 credential_audience_mismatch`.
+
+This applies to **every** Discord access token the instance verifies — the one it just minted in the
+callback, where it is redundant, and the one a client hands it on the `bearer_token` path, where it
+is load-bearing. One uniform rule, because a rule with a carve-out is a rule somebody implements on
+the wrong side.
+
+That is the same job OIDC's `aud` does, which is why `oidc` never had this problem. `oidc` remains
+structurally immune with no extra call.
+
+**Enforced by:** `TestDiscord_ForeignApplicationToken_Refused`, which presents a token whose
+`application.id` is not ours on **both** the callback and the `bearer_token` path and asserts `401`.
+
+`credential_stale` remains on the `bearer_token` path as defence in depth. It is no longer the
+*primary* mitigation — the audience check is — but it still bounds how long a stolen same-instance
+token is useful, which the audience check does not address.
 
 ### What is honestly still weak
 
-Three costs, stated rather than discovered:
+Four costs, stated rather than discovered:
 
 - **Operator setup friction.** `discord` does not work until an operator registers an application
   and pastes a client id, a client secret and a redirect URI. That is real work on the most common
@@ -238,6 +304,10 @@ Three costs, stated rather than discovered:
   PAT-forbidden, and by the no-secret-is-ever-logged test — mitigated, not removed.
 - **Removing a Discord role does not revoke an already-issued PAT.** See §8. This is the one to read
   twice, because it is the gap most likely to be assumed closed.
+- **The `bearer_token` path still accepts a token the caller supplies**, so its safety rests
+  entirely on the audience check above rather than on the shape of the flow. The browser path does
+  not need that trust. If the audience check is ever weakened or skipped, cross-instance replay is
+  back — which is why it is a named test rather than a code review habit.
 
 ## 8. The Discord access gate is per circle
 
@@ -256,11 +326,21 @@ The gate therefore lives on `circle_provider`, which is already circle-scoped:
 
 **The instance owns the application; the circle owns the gate.** Two circles on one instance may
 point at two different guilds, which is why this is not an instance setting. It is evaluated in
-**both** `/join` and `/sessions`, against the guild ids and role ids carried on the 120-second
+**both** `/join` and `/sessions`, against the guild and role ids carried on the 120-second
 `credential_ticket` — never against a cached copy, and never against a client-supplied claim.
 Failure is `403 guild_membership_required` or `403 guild_role_required`.
 
-**Enforced by:** `TestGuildGate_EvaluatedOnJoinAndSessions`.
+Those role ids come from `GET /users/@me/guilds/{guild.id}/member` under the `guilds.members.read`
+scope, fetched for **this circle's** gated guild during the callback. `GET /users/@me/guilds` alone
+returns partial guild objects with no roles, so it can answer `guild_membership_required` and
+nothing else — see §5.
+
+**If the required facts are absent, the gate rejects.** No member object means no evaluation, and no
+evaluation means no entry: `403 guild_role_required`. An implementation that read an absent role
+list as an empty one would disable the gate for every user while appearing to enforce it.
+
+**Enforced by:** `TestGuildGate_EvaluatedOnJoinAndSessions` and
+`TestGuildGate_MissingRoleFacts_Refused`.
 
 ### The gap, stated plainly
 

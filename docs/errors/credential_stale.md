@@ -15,8 +15,14 @@ you presented it.
 Mint a fresh credential immediately before the call and do not cache it.
 
 **A note on why this exists.** It was the mitigation for cross-instance token replay under the old
-shared-application design: it shrank the replay window without closing it.
-[ADR-0011](../adr/0011-operator-registered-discord-application.md) closed that hole outright by
-making the Discord application per-instance, so a token minted for one operator's client id is
-worthless at any other instance. This code remains on the non-browser `bearer_token` path as
-defence in depth; it is no longer load-bearing.
+shared-application design: it shrank the replay window without closing it. What closes that hole is
+the audience check introduced by
+[ADR-0011](../adr/0011-operator-registered-discord-application.md) — `GET /oauth2/@me` must report
+this instance's own `client_id`, or the token is refused with
+[`credential_audience_mismatch`](credential_audience_mismatch.md). Note that per-instance
+registration *alone* would not have been enough: `GET /users/@me` honours any valid bearer token
+whichever application minted it.
+
+This code is therefore no longer the primary defence, but it is not redundant either: it still
+bounds how long a **stolen same-instance** token is useful, which the audience check does not
+address.

@@ -16,7 +16,7 @@ Cross-circle access returns **`404`, never `403`** — see
 | GET | `/meta` | `getServerMeta` | public | — | Version, api versions, feature flags, whether self-service circle creation is on |
 | GET | `/identity-providers` | `listIdentityProviders` | public | — | Enabled providers: key, kind, display name, `verifiable_subject`, and for OIDC the issuer, client id and authorization endpoint. Never a secret. Needed *before* auth. |
 | POST | `/auth/authorization-url` | `createAuthorizationURL` | public | — | Start a browser OAuth flow. `{provider, invite_code?, circle_id?}` → `{authorization_url, expires_at}`. Stores `auth_flow(state, pkce_verifier, …)`; the **verifier never leaves the server**. |
-| GET | `/auth/callback/{provider_key}` | `completeAuthorization` | public | — | The OAuth redirect target. `Hidden: true`. Exchanges the code, reads the provider's facts, **discards the provider access token**, mints a single-use `credential_ticket`, `302`s to the SPA. |
+| GET | `/auth/callback/{provider_key}` | `completeAuthorization` | public | — | The OAuth redirect target. `Hidden: true`. Exchanges the code, checks the token's audience (`GET /oauth2/@me`), reads the provider's facts, **discards the provider access token**, mints a single-use `credential_ticket`, and `302`s to `<spa>/join#ticket=…` — **fragment, never query**. |
 | GET | `/me` | `getCurrentPrincipal` | self | any | Membership, circle, role, effective permissions, token prefix, scopes, expiry |
 | POST | `/invites/preview` | `previewInvite` | public | — | Code **in the body, never the path**. Returns circle name, server, granted role, accepted providers, `revocation_strength`. Hard rate limit. |
 | POST | `/join` | `redeemInvite` | public | — | Redeem, verify credential, create identity + membership, mint a PAT. `Idempotency-Key` required. |
@@ -43,8 +43,8 @@ an invite with `max_uses = 1`.
 
 | `kind` | Carries | Used by |
 |---|---|---|
-| `provider_ticket` | `ticket` — from `completeAuthorization`, single-use, 120-second TTL | Any browser flow: `discord` **and** `oidc` |
-| `bearer_token` | `token` | Non-browser `discord` clients |
+| `provider_ticket` | `ticket` — from `completeAuthorization`, single-use, 120-second TTL, delivered in the redirect **fragment** | Any browser flow: `discord` **and** `oidc` |
+| `bearer_token` | `token` — audience-checked against this instance's `client_id` before anything else | Non-browser `discord` clients |
 | `id_token` | `id_token` + `nonce` | Non-browser `oidc` clients |
 | `none` | nothing | `local` |
 
@@ -204,4 +204,11 @@ retract_not_permitted (403)      unknown_target (422)          ambiguous_target 
 last_owner (409)                 field_immutable (422)         link_requires_verifiable_identity (422)
 guild_membership_required (403)  guild_role_required (403)     auth_ticket_invalid (401)
 auth_ticket_expired (401)        auth_flow_expired (409)       identity_blocked (403)
+credential_audience_mismatch (401)
 ```
+
+A `provider_ticket` is a bearer credential, so it reaches the SPA in the redirect **fragment** and
+never in a query string — the same rule, and the same reason, as the invite link above.
+`credential_audience_mismatch` is the check that makes a per-instance Discord application actually
+close cross-instance replay; see
+[04-identity §7](04-identity-and-revocation.md#7-the-discord-trust-boundary-after-adr-0011).

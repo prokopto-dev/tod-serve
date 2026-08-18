@@ -11,8 +11,9 @@ access-token replay — were consequences of a single assumption: **one project-
 application shared by every instance.**
 [ADR-0011](docs/adr/0011-operator-registered-discord-application.md) removes that assumption. Each
 operator registers their own Discord application, so there is no shared app to violate anyone's
-terms and a token minted for one operator's client id is worthless at any other instance.
-Operational health is per-instance for the same reason.
+terms. Replay closes too, but by an explicit **audience check** the per-instance `client_id` makes
+possible — `GET /oauth2/@me` must report our own application — because registration on its own
+does not close it. Operational health is per-instance for the same reason.
 
 What it cost is recorded in the ADR and in
 [04-identity §7](docs/design/04-identity-and-revocation.md): operator setup friction, a
