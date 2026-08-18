@@ -75,7 +75,7 @@ fi
 # --- TEN001 — every circle-scoped query names circle_id in its WHERE --------------------------
 # The allowlist is the instance-scoped table list from docs/design/00-canonical-conventions.md §9.
 # Adding to it is a reviewed decision, which is why it is spelled out here rather than inferred.
-INSTANCE_SCOPED='tod_meta|instance|identity_provider|identity|identity_link|raid_target|raid_target_alias|raid_target_timer|api_token|idempotency_record|event_outbox'
+INSTANCE_SCOPED='tod_meta|instance|identity_provider|identity|identity_link|auth_flow|credential_ticket|raid_target|raid_target_alias|raid_target_timer|api_token|idempotency_record|event_outbox'
 if compgen -G "db/queries/*.sql" >/dev/null; then
   for f in db/queries/*.sql; do
     base=$(basename "$f" .sql)

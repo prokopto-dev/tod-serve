@@ -2,6 +2,10 @@
 
 **Status:** accepted · **Date:** 2026-08-18 · **Deciders:** Courtney Caldwell
 
+The `(provider, subject)` decision below **stands**. Its three shared-Discord-app consequences are
+superseded by [ADR-0011](0011-operator-registered-discord-application.md), which makes the Discord
+application per-instance and operator-registered; they are marked in place rather than deleted.
+
 ## Context and problem statement
 
 Membership must be revocable in a way that sticks. On P99 the person most worth revoking is a rival
@@ -59,19 +63,19 @@ adding a provider does not require an SDK regeneration and a plugin release.
 - **Bad, because unlinked duplicate identities inflate consensus confidence.** One person with a
   Discord and an OIDC identity counts as two distinct reporters until an officer links them. The
   member list flags `possible_duplicate` and deliberately does not act on it.
-- **Bad, because the shared Discord app permits cross-instance token replay.** The same access token
-  is valid at *every* tod-serve instance, so a hostile instance can present a user's token to another
-  instance and impersonate them there. PKCE does not help — it is a bearer token and
-  instance-agnostic. The mitigation shipped is a 60-second freshness requirement
-  (`credential_stale`), which shrinks the window and does not close it. Closing it needs either
-  central verification infrastructure the self-hostable property was meant to avoid, or `oidc`, whose
-  `aud` makes replay structurally impossible. **This is accepted knowingly.**
+- **Bad, because the shared Discord app permits cross-instance token replay.** A token valid at
+  *every* instance lets a hostile instance impersonate a user elsewhere; PKCE does not help, and the
+  60-second freshness rule (`credential_stale`) shrank the window without closing it.
+  **Superseded by [ADR-0011](0011-operator-registered-discord-application.md)** — a token minted for
+  the operator's own client id is worthless at any other instance.
 - **Bad, because Discord's developer terms may not permit this arrangement.** One application used by
   arbitrary third-party self-hosted servers, receiving end-user access tokens, is not obviously within
-  them. **A human must read the ToS before the `discord` provider ships.** This is a release blocker,
-  not a footnote.
+  them. **Superseded by [ADR-0011](0011-operator-registered-discord-application.md)** — there is no
+  shared application, so each operator's app is their own agreement with Discord.
 - **Bad, because nobody owns the shared app's operational health.** A join storm makes it a heavily
   rate-limited client, and a ban hits every instance at once.
+  **Superseded by [ADR-0011](0011-operator-registered-discord-application.md)** — rate limits and
+  bans are now per-instance, and the operator owns theirs.
 - **Bad, because operator-supplied OIDC discovery and JWKS URLs are an SSRF surface** that would not
   exist under option A.
 

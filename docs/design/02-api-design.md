@@ -15,6 +15,8 @@ Cross-circle access returns **`404`, never `403`** — see
 |---|---|---|---|---|---|
 | GET | `/meta` | `getServerMeta` | public | — | Version, api versions, feature flags, whether self-service circle creation is on |
 | GET | `/identity-providers` | `listIdentityProviders` | public | — | Enabled providers: key, kind, display name, `verifiable_subject`, and for OIDC the issuer, client id and authorization endpoint. Never a secret. Needed *before* auth. |
+| POST | `/auth/authorization-url` | `createAuthorizationURL` | public | — | Start a browser OAuth flow. `{provider, invite_code?}` → `{authorization_url, expires_at}`. **Takes no `circle_id`** — see below. Stores `auth_flow(state, pkce_verifier, …)`; the **verifier never leaves the server**. Shares `previewInvite`'s hard rate limit. |
+| GET | `/auth/callback/{provider_key}` | `completeAuthorization` | public | — | The OAuth redirect target. `Hidden: true`. Exchanges the code, checks the token's audience (`GET /oauth2/@me`), reads the provider's facts, **discards the provider access token**, mints a single-use `credential_ticket`, and `302`s to `<spa>/join#ticket=…` — **fragment, never query**. |
 | GET | `/me` | `getCurrentPrincipal` | self | any | Membership, circle, role, effective permissions, token prefix, scopes, expiry |
 | POST | `/invites/preview` | `previewInvite` | public | — | Code **in the body, never the path**. Returns circle name, server, granted role, accepted providers, `revocation_strength`. Hard rate limit. |
 | POST | `/join` | `redeemInvite` | public | — | Redeem, verify credential, create identity + membership, mint a PAT. `Idempotency-Key` required. |
@@ -24,6 +26,71 @@ Cross-circle access returns **`404`, never `403`** — see
 
 `previewInvite` takes the code in a POST body rather than `GET /invites/{code}` because a code is a
 bearer credential and a path segment lands in access logs, browser history and referrers.
+
+**An invite link carries its code in the URL *fragment*, never a path segment:**
+`https://tod.example.com/join#TODI-4KQ7M-9XPB2`. A fragment is never sent to any server — not to
+ours, not to a proxy, and not in a `Referer` — which is the same reason the code travels in a POST
+body one paragraph up, applied to the link an officer actually pastes into Discord. The SPA reads
+`location.hash`, POSTs it to `previewInvite`, and **clears `location.hash` immediately** so a
+screenshot or a shared browser tab does not leak it. A one-time login link is this and nothing more:
+an invite with `max_uses = 1`.
+
+### One shared bucket for invite-code probing
+
+`createAuthorizationURL` resolves the supplied invite so it can pick the OAuth scopes and the guild
+to check ([04-identity §5](04-identity-and-revocation.md#5-one-join-endpoint)). That makes it a
+**second oracle for invite-code validity**, next to the one `previewInvite`'s hard rate limit exists
+to defend. Two buckets would simply hand an attacker twice the guessing budget, so:
+
+**Both public routes that accept an invite code are metered from a single shared bucket, keyed on
+the caller, not one bucket per route.** Exhaustion is the generic `429`. Adding a third route that
+takes a code means joining that bucket, not minting another.
+
+`createAuthorizationURL` must also **reveal no more about a code than `previewInvite` already
+does** — it is held to that endpoint's disclosure as a ceiling, rather than being separately
+reasoned about. It creates an `auth_flow` row only for a request that passes the limit, so a
+rejected probe costs the instance nothing to store.
+
+**Enforced by:** `TestInviteOracle_PreviewAndAuthorizationURL_ShareOneBucket`,
+`TestCreateAuthorizationURL_RevealsNoMoreThanPreviewInvite` and
+`TestAuthFlow_RateLimitedCaller_CreatesNoRows`.
+
+### No public route resolves a caller-supplied `circle_id`
+
+Metering the invite code is not enough on its own if the same route accepts a *second* input that
+identifies a circle. `createAuthorizationURL` therefore takes **no `circle_id` at all**: answering
+differently for a real circle than an unknown one — including through which scopes the returned URL
+requests — would confirm a circle's existence to anybody who guessed or obtained an id, which
+[canonical §7](00-canonical-conventions.md#cross-circle-access-returns-404-never-403) exists to
+prevent, and it would sit outside the bucket above.
+
+**A public route resolves a circle only from a secret the caller was given — an invite code — never
+from an identifier they could guess.** Where a circle does come from an identifier, it is resolved
+only after a credential has verified: `authenticateIdentity` takes `circle_id` *with* a credential
+and returns `404` when there is no membership, exactly as every other circle-scoped operation does.
+
+The re-auth flow gets its circles from the verified identity's own memberships inside the callback:
+[04-identity §5](04-identity-and-revocation.md#a-circle-comes-from-a-secret-not-an-identifier).
+
+**Enforced by:** `TestPublicRoutes_ResolveNoCircleFromCallerSuppliedId`, over the route registry.
+
+### The credential union
+
+`credential` is a discriminated union on `kind`, identical in `redeemInvite` and
+`authenticateIdentity` — see [ADR-0007](../adr/0007-one-join-endpoint.md) and
+[04-identity §5](04-identity-and-revocation.md#5-one-join-endpoint):
+
+| `kind` | Carries | Used by |
+|---|---|---|
+| `provider_ticket` | `ticket` — from `completeAuthorization`, single-use, 120-second TTL, delivered in the redirect **fragment** | Any browser flow: `discord` **and** `oidc` |
+| `bearer_token` | `token` — audience-checked against this instance's `client_id` before anything else | Non-browser `discord` clients |
+| `id_token` | `id_token` + `nonce` | Non-browser `oidc` clients |
+| `none` | nothing | `local` |
+
+`provider_ticket` exists because [ADR-0011](../adr/0011-operator-registered-discord-application.md)
+makes the instance a confidential OAuth client, so the token exchange must happen server-side. Both
+browser providers therefore land on one ticket and **the SPA has a single code path**; `id_token`
+and `bearer_token` remain for clients that have no browser to redirect.
 
 ## Circles
 
@@ -174,4 +241,14 @@ acknowledgement_required (422)   server_mismatch (422)         died_at_in_future
 died_at_too_old (422)            report_immutable (409)        already_retracted (409)
 retract_not_permitted (403)      unknown_target (422)          ambiguous_target (422)
 last_owner (409)                 field_immutable (422)         link_requires_verifiable_identity (422)
+guild_membership_required (403)  guild_role_required (403)     auth_ticket_invalid (401)
+auth_ticket_expired (401)        auth_flow_expired (409)       identity_blocked (403)
+credential_audience_mismatch (401)
+provider_scope_declined (403)
 ```
+
+A `provider_ticket` is a bearer credential, so it reaches the SPA in the redirect **fragment** and
+never in a query string — the same rule, and the same reason, as the invite link above.
+`credential_audience_mismatch` is the check that makes a per-instance Discord application actually
+close cross-instance replay; see
+[04-identity §7](04-identity-and-revocation.md#7-the-discord-trust-boundary-after-adr-0011).

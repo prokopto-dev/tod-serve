@@ -22,7 +22,9 @@ Recorded here so nobody has to discover them. Each links to the decision that ac
 | Weakness | Detail |
 |---|---|
 | **The host operator reads everything** | Whoever runs an instance can read every circle on it. No design at this weight class changes that. Run your own binary for a circle you would rather nobody else could read — see [ADR-0002](docs/adr/0002-circle-is-the-tenant.md) |
-| **Cross-instance Discord token replay** | One project-wide Discord application means a user's access token is valid at *every* tod-serve instance, so a hostile instance can replay it against another and impersonate them there. PKCE does not help — it is a bearer token and instance-agnostic. Mitigated, not closed, by a 60-second freshness requirement. `oidc` is structurally immune because its `aud` is the instance's own client id. See [ADR-0003](docs/adr/0003-pluggable-identity-providers.md) |
+| **A Discord `client_secret` at rest** | Each instance registers its own Discord application ([ADR-0011](docs/adr/0011-operator-registered-discord-application.md)), so it stores a client secret. A database read is therefore a Discord-application compromise, not merely an identity disclosure. Mitigated by `core.Secret`, and by `instance.security.manage` being step-up and PAT-forbidden |
+| **Cross-instance replay depends on one check** | It is closed, but by an *explicit* audience check rather than by the shape of the flow: verification calls `GET /oauth2/@me` and refuses any token whose `application.id` is not this instance's `client_id`. Per-instance registration alone would not close it — `GET /users/@me` honours any valid bearer token whichever application minted it. The exposure is the non-browser `bearer_token` credential, where the caller supplies the token; the browser flow never receives a foreign one. Asserted by `TestDiscord_ForeignApplicationToken_Refused`, and `oidc` is structurally immune via `aud` |
+| **A removed Discord role does not revoke an issued token** | The per-circle guild gate is evaluated at join and at re-auth only. Somebody who loses a role, or leaves the guild, keeps working access until their token expires or an officer acts. Continuous re-checking needs a bot polling guild membership and is a named, deferred follow-up in [ROADMAP.md](ROADMAP.md) — not a silent gap. `revokeMember` takes effect on the principal's very next request |
 | **`local` revocation is advisory** | A circle accepting the `local` provider cannot durably revoke anyone: a revoked person with any other invite returns as a new member. This is why `local` ships disabled and enabling it requires an explicit acknowledgement, and why `revocation_strength` is a machine-readable field a client must render rather than a paragraph in a guide |
 | **Operator-supplied OIDC URLs are an SSRF surface** | Discovery and JWKS endpoints are configured by the instance operator. Mitigated by an outbound allowlist, a dialer denying private, link-local, loopback and cloud-metadata addresses, and by `instance.security.manage` being step-up and PAT-forbidden so a leaked token cannot add a malicious issuer |
 | **A false quake wipes the board** | `tod.quake.report` is officer-only for this reason. It is recoverable — the report log is append-only and nothing is destroyed — but every window in the circle is wrong until it is retracted |
@@ -36,7 +38,9 @@ Recorded here so nobody has to discover them. Each links to the decision that ac
   that the caller found a valid id.
 - **Tokens never appear in a URL.** Query-string tokens are rejected with `401`, with no exception —
   there is no compat shim here.
-- **A Discord access token is never persisted.** It is verified inside the request and discarded.
+- **A Discord access token is never persisted.** It is read inside the OAuth callback and
+  discarded; only the derived subject, display name, guild ids and role ids survive, on a
+  single-use 120-second ticket.
 - **Invites are looked up by hash, never by prefix.** A prefix lookup is a brute-force oracle.
 - **Revocation is checked on every request**, not by a cascade at revocation time, so there is no
   sweep that can fail halfway.
