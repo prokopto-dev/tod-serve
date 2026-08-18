@@ -19,6 +19,13 @@ RETURNING *;
 -- name: GetMembership :one
 SELECT * FROM membership WHERE circle_id = sqlc.arg(circle_id) AND id = sqlc.arg(id);
 
+-- name: GetMembershipByID :one
+-- tenancy: keyed on the membership a verified credential is already bound to, and this lookup is
+-- what RESOLVES the caller's circle -- so it cannot also filter by one. A PAT carries a membership
+-- id and nothing else (ADR-0005); every circle-scoped query downstream of this one is filtered by
+-- the circle_id this row returns, which is the only reading of the tenancy rule that terminates.
+SELECT * FROM membership WHERE id = sqlc.arg(id);
+
 -- name: GetMembershipByIdentity :one
 SELECT * FROM membership
 WHERE circle_id = sqlc.arg(circle_id) AND identity_id = sqlc.arg(identity_id);
