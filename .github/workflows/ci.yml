@@ -51,6 +51,27 @@ jobs:
       - run: make build
       - run: make test
 
+  spec:
+    name: lint / openapi
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          # The whole history, because this job compares the checked-in document against the base
+          # branch's copy of it. A shallow clone has no base to compare with, and the gate would
+          # skip rather than fail — which is how a renamed operationId ships.
+          fetch-depth: 0
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+      - name: OpenAPI breaking-change gate
+        env:
+          BASE_REF: origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+        run: |
+          git fetch --no-tags origin "${BASE_REF#origin/}"
+          make spec-diff
+
   golangci:
     name: lint / go
     runs-on: ubuntu-24.04
@@ -68,7 +89,7 @@ jobs:
   ci-required:
     name: ci-required
     runs-on: ubuntu-24.04
-    needs: [repo, go, golangci]
+    needs: [repo, go, spec, golangci]
     if: always()
     steps:
       - name: Fail if any required job did not succeed

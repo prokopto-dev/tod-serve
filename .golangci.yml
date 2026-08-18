@@ -66,6 +66,12 @@ linters:
       # replacing it with an identifier would make the check harder to read and no stronger.
       - path: internal/dbschema/bindings\.go
         linters: [goconst]
+      # And again, for the same reason: internal/api/registry.go IS the API surface as data, and
+      # TestRouteRegistry_MatchesTheAPIDesign compares every one of those path literals against the
+      # table in docs/design/02-api-design.md. A reviewer checks the two side by side; replacing a
+      # repeated path prefix with an identifier would make that impossible and the gate no stronger.
+      - path: internal/api/registry\.go
+        linters: [goconst]
 
 formatters:
   enable:

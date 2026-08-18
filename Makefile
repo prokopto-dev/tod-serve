@@ -94,9 +94,26 @@ test-integration:
 	$(GO) test -race -count=1 ./internal/store/... ./db/...
 
 ## test-tenancy: cross-circle isolation over the route registry
+# Walks the registry rather than a hand-written list, so a circle-scoped route added without
+# coverage is a red test. It runs vacuously today and SAYS SO — the circle routes have no handlers
+# yet. `-v` is deliberate: the count it logs is the whole point of running it on its own.
 .PHONY: test-tenancy
 test-tenancy:
-	@$(call notyet,Phase 1,asserts a principal of circle A gets 404 on every circle-scoped operation of circle B)
+	$(GO) test -v -count=1 ./internal/api/ -run 'TestTenancy|TestPublicRoutes|TestInviteOracle'
+
+## gen-openapi: regenerate openapi/openapi.json from the handlers
+# Needs no external tool: the document is generated from the route registry and the handler types,
+# so `make gen` can do this half on a machine with neither Atlas nor sqlc installed.
+.PHONY: gen-openapi
+gen-openapi:
+	$(GO) test ./internal/api -run TestOpenAPISpec -update
+
+## spec-diff: the OpenAPI document breaks no client against the base branch
+# The change this exists for is a renamed `operationId`, which every other check here is blind to.
+# BASE_REF=<ref> compares against something other than origin/main.
+.PHONY: spec-diff
+spec-diff:
+	@bash scripts/spec-diff.sh
 
 ## gen: regenerate the enum locals, the migration and the sqlc bindings
 # Needs Atlas and sqlc; the script says so by name if either is missing. ADR-0006 accepts that
@@ -104,7 +121,7 @@ test-tenancy:
 #
 # NAME=<snake_case> names the migration when db/schema.hcl has changed.
 .PHONY: gen
-gen:
+gen: gen-openapi
 	@bash scripts/gen-schema.sh $(NAME)
 
 ## migrate: apply migrations to a local database

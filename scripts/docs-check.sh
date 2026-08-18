@@ -46,14 +46,32 @@ while read -r f; do
 done < <(adrs)
 [ $bad -eq 0 ] && pass ADR003 "every ADR records the options it considered"
 
-# --- DOC001 — every error code in the API design has a documentation page ---------------------
-# The `type` URL's last segment IS the code, so an undocumented code ships a broken link.
+# --- DOC001 — the error-code list and docs/errors/ agree, in both directions -------------------
+# The `type` URL's last segment IS the code, so an undocumented code ships a broken link — and a
+# page for a code nobody can emit is a page nobody will ever delete.
+#
+# The codes are read from the "## Error codes" section onward and NOT anchored to the start of a
+# line: the fenced blocks are three columns wide, and the `^` this gate used to carry meant it
+# checked the first code on each line and silently ignored the other two.
+#
+# TestErrorCodes_EveryCode_HasADocumentationPage is the authority — it compares the Go closed enum
+# against both this document and that directory. This is the copy that runs without a toolchain.
 if [ -d docs/errors ]; then
-  bad=0
-  for c in $(grep -oE '^[a-z_]+ \([0-9]{3}\)' docs/design/02-api-design.md | awk '{print $1}' | sort -u); do
+  bad=0; n=0
+  codes=$(sed -n '/^## Error codes/,$p' docs/design/02-api-design.md \
+          | grep -oE '\b[a-z_]+ \([0-9]{3}\)' | awk '{print $1}' | sort -u)
+  [ -z "$codes" ] && { report DOC001 "no error codes parsed out of docs/design/02-api-design.md"; bad=1; }
+  for c in $codes; do
+    n=$((n + 1))
     [ -f "docs/errors/$c.md" ] || { report DOC001 "error code $c has no docs/errors/$c.md"; bad=1; }
   done
-  [ $bad -eq 0 ] && pass DOC001 "every error code has a documentation page"
+  for f in docs/errors/*.md; do
+    b=$(basename "$f" .md)
+    [ "$b" = README ] && continue
+    echo "$codes" | grep -qx "$b" \
+      || { report DOC001 "docs/errors/$b.md documents a code the API design does not list"; bad=1; }
+  done
+  [ $bad -eq 0 ] && pass DOC001 "$n error codes, each with a documentation page and no page without a code"
 else
   printf '\033[33m%-10s\033[0m %s\n' DOC001 "error-code pages land in Phase 1 (docs/errors/ does not exist yet)"
 fi

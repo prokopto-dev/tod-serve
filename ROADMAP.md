@@ -28,7 +28,7 @@ The design, the roadmap, and the contract implementation follows. No working sof
 - [x] [Domain model](docs/design/01-domain-model.md), [API design](docs/design/02-api-design.md), [consensus](docs/design/03-consensus.md), [identity](docs/design/04-identity-and-revocation.md)
 - [x] ADRs 0001–0011
 - [x] [Invariants](docs/concepts/invariants.md) — every rule with the mechanism that enforces it
-- [ ] `openapi/openapi.json`, generated from the handlers once they exist
+- [x] `openapi/openapi.json`, generated from the handlers and checked in; `oasdiff` fails an `operationId` rename
 
 ## Phase 1 — Circles, identity, membership
 

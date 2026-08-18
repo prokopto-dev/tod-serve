@@ -2,6 +2,7 @@ package canondoc
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -203,3 +204,11 @@ func splitRow(line string) []string {
 	}
 	return out
 }
+
+// Tables returns every Markdown table in the document, in document order.
+//
+// [Doc.TablesUnder] is the right accessor when a test knows which section it means. This one
+// exists for the case where it must not: the route-registry gate finds operation tables by their
+// header shape rather than by a hand-maintained list of headings, so a new section of routes is
+// covered the moment it is written instead of the moment somebody remembers to add its heading.
+func (d *Doc) Tables() []Table { return slices.Clone(d.tables) }

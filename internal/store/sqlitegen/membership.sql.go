@@ -111,6 +111,37 @@ func (q *Queries) GetMembership(ctx context.Context, arg GetMembershipParams) (M
 	return i, err
 }
 
+const getMembershipByID = `-- name: GetMembershipByID :one
+SELECT id, circle_id, identity_id, kind, owner_membership_id, display_name, display_name_norm, role, admitted_by_invite_id, joined_at, revoked_at, revoked_by_membership_id, revoke_reason, created_at, updated_at FROM membership WHERE id = ?1
+`
+
+// tenancy: keyed on the membership a verified credential is already bound to, and this lookup is
+// what RESOLVES the caller's circle -- so it cannot also filter by one. A PAT carries a membership
+// id and nothing else (ADR-0005); every circle-scoped query downstream of this one is filtered by
+// the circle_id this row returns, which is the only reading of the tenancy rule that terminates.
+func (q *Queries) GetMembershipByID(ctx context.Context, id string) (Membership, error) {
+	row := q.db.QueryRowContext(ctx, getMembershipByID, id)
+	var i Membership
+	err := row.Scan(
+		&i.ID,
+		&i.CircleID,
+		&i.IdentityID,
+		&i.Kind,
+		&i.OwnerMembershipID,
+		&i.DisplayName,
+		&i.DisplayNameNorm,
+		&i.Role,
+		&i.AdmittedByInviteID,
+		&i.JoinedAt,
+		&i.RevokedAt,
+		&i.RevokedByMembershipID,
+		&i.RevokeReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getMembershipByIdentity = `-- name: GetMembershipByIdentity :one
 SELECT id, circle_id, identity_id, kind, owner_membership_id, display_name, display_name_norm, role, admitted_by_invite_id, joined_at, revoked_at, revoked_by_membership_id, revoke_reason, created_at, updated_at FROM membership
 WHERE circle_id = ?1 AND identity_id = ?2

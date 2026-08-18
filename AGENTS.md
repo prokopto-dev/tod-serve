@@ -27,7 +27,8 @@ than writing it down as though it were enforced.
 | `internal/store/` | The only holder of `*sql.DB`. `sqlitegen/` is generated and never hand-edited |
 | `internal/core/` | `Micros`, ULID, typed ids, the `Server` enum, `Secret` |
 | `internal/clock/` | The only `time.Now` |
-| `internal/repogate/` | The gates that need an AST rather than a grep: `CLOCK001`, `SLEEP001` |
+| `internal/apierr/` | The closed error-code enum and the RFC 9457 problem the edge renders |
+| `internal/repogate/` | The gates that need an AST rather than a grep: `CLOCK001`, `SLEEP001`, `ROUTE001` |
 | `internal/canondoc/` | Reads fenced blocks out of the normative documents, so a gate compares code against the document rather than against a copy of it |
 | `db/` | `schema.hcl` is the single schema truth; `enums.hcl` is generated; `queries/*.sql`; `migrations-sqlite/`, forward-only |
 | `test/repo/` | Tests about the repository itself, not the product: they assert the gates below actually fire |
@@ -36,7 +37,10 @@ than writing it down as though it were enforced.
 
 Each has a mechanism. The mechanism is authoritative; this list is a description of it.
 
-1. **HTTP routes are declared only in `internal/api`.** Route-registry architectural test.
+1. **HTTP routes are declared only in `internal/api`,** and within it only through the route
+   registry: `api.Register` takes an `OperationID`, not a method and a path. `ROUTE001` is an AST
+   analyser confining the framework's registration calls to `internal/api/register.go`, so a route
+   that carries no permission, no scopes and no tenancy flag cannot be attached at all.
 2. **`*sql.DB` is held only by `internal/store`.** Import-graph test; `SQL001`/`SQL002`.
 3. **`internal/consensus` is pure** — no store, no `time.Now`, no `math/rand`, **no floats**.
    `PURE001`, `PURE002`, `CLOCK001`, `NOFLOAT001`. The float ban is a reproducibility rule, not a
@@ -127,10 +131,13 @@ are not bundled, they load from a separate seed repository, and an instance with
 ## Working on it
 
 ```bash
-make help      # every target, documented
-make status    # what is still stubbed — derived from notyet call sites, never hand-maintained
-make check     # what CI runs
-make gen       # regenerate the enum catalogue, OpenAPI and sqlc bindings
+make help         # every target, documented
+make status       # what is still stubbed — derived from notyet call sites, never hand-maintained
+make check        # what CI runs
+make gen          # regenerate the enum catalogue, the migration, the sqlc bindings and the spec
+make gen-openapi  # just openapi/openapi.json, which needs neither Atlas nor sqlc
+make spec-diff    # the spec breaks no client against the base branch, renames included
+make test-tenancy # cross-circle isolation over the route registry
 ```
 
 Commits are signed off (`git commit -s`, DCO). Conventional Commits are enforced on the **PR title
