@@ -37,26 +37,30 @@ type (
 	RaidTargetAlias struct{}
 	// APIToken marks an api_token id. It is not the token secret; see [Secret].
 	APIToken struct{}
+	// IdempotencyRecord marks an idempotency_record id. The record is keyed on
+	// `(principal_membership_id, key)`; this is its own surrogate.
+	IdempotencyRecord struct{}
 	// AuditLog marks an audit_log id.
 	AuditLog struct{}
 	// EventOutbox marks an event_outbox id. Delivery ordering is `event_seq`, not this.
 	EventOutbox struct{}
 )
 
-func (Circle) entity() string           { return "circle" }
-func (Membership) entity() string       { return "membership" }
-func (Invite) entity() string           { return "invite" }
-func (InviteRedemption) entity() string { return "invite_redemption" }
-func (Identity) entity() string         { return "identity" }
-func (IdentityProvider) entity() string { return "identity_provider" }
-func (IdentityLink) entity() string     { return "identity_link" }
-func (TodReport) entity() string        { return "tod_report" }
-func (QuakeEvent) entity() string       { return "quake_event" }
-func (RaidTarget) entity() string       { return "raid_target" }
-func (RaidTargetAlias) entity() string  { return "raid_target_alias" }
-func (APIToken) entity() string         { return "api_token" }
-func (AuditLog) entity() string         { return "audit_log" }
-func (EventOutbox) entity() string      { return "event_outbox" }
+func (Circle) entity() string            { return "circle" }
+func (Membership) entity() string        { return "membership" }
+func (Invite) entity() string            { return "invite" }
+func (InviteRedemption) entity() string  { return "invite_redemption" }
+func (Identity) entity() string          { return "identity" }
+func (IdentityProvider) entity() string  { return "identity_provider" }
+func (IdentityLink) entity() string      { return "identity_link" }
+func (TodReport) entity() string         { return "tod_report" }
+func (QuakeEvent) entity() string        { return "quake_event" }
+func (RaidTarget) entity() string        { return "raid_target" }
+func (RaidTargetAlias) entity() string   { return "raid_target_alias" }
+func (APIToken) entity() string          { return "api_token" }
+func (IdempotencyRecord) entity() string { return "idempotency_record" }
+func (AuditLog) entity() string          { return "audit_log" }
+func (EventOutbox) entity() string       { return "event_outbox" }
 
 // ID is a ULID that knows which table it belongs to. See the package comment for why ids are
 // generic rather than a named string type per table.
@@ -69,20 +73,21 @@ type ID[E Entity] struct {
 
 // The id types. Downstream code names these, never `ID[Circle]`.
 type (
-	CircleID           = ID[Circle]
-	MembershipID       = ID[Membership]
-	InviteID           = ID[Invite]
-	InviteRedemptionID = ID[InviteRedemption]
-	IdentityID         = ID[Identity]
-	IdentityProviderID = ID[IdentityProvider]
-	IdentityLinkID     = ID[IdentityLink]
-	TodReportID        = ID[TodReport]
-	QuakeEventID       = ID[QuakeEvent]
-	RaidTargetID       = ID[RaidTarget]
-	RaidTargetAliasID  = ID[RaidTargetAlias]
-	APITokenID         = ID[APIToken]
-	AuditLogID         = ID[AuditLog]
-	EventOutboxID      = ID[EventOutbox]
+	CircleID            = ID[Circle]
+	MembershipID        = ID[Membership]
+	InviteID            = ID[Invite]
+	InviteRedemptionID  = ID[InviteRedemption]
+	IdentityID          = ID[Identity]
+	IdentityProviderID  = ID[IdentityProvider]
+	IdentityLinkID      = ID[IdentityLink]
+	TodReportID         = ID[TodReport]
+	QuakeEventID        = ID[QuakeEvent]
+	RaidTargetID        = ID[RaidTarget]
+	RaidTargetAliasID   = ID[RaidTargetAlias]
+	APITokenID          = ID[APIToken]
+	IdempotencyRecordID = ID[IdempotencyRecord]
+	AuditLogID          = ID[AuditLog]
+	EventOutboxID       = ID[EventOutbox]
 )
 
 // NewID mints an id for entity E, stamped with at — see [Generator.New] for what at must be.

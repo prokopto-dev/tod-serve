@@ -44,6 +44,14 @@ const MemoryPath = ":memory:"
 // ErrClosed is returned by operations on a store that has been closed.
 var ErrClosed = errors.New("store is closed")
 
+// ErrNoRows is what a `:one` query returns when it finds nothing.
+//
+// It is re-exported here because `database/sql` is imported by this package and no other — SQL001
+// and TestSQL001_DatabaseSQL_IsImportedOnlyByTheStore are the mechanism — and a caller that has to
+// distinguish "no such row" from a real failure would otherwise have to break that rule to spell
+// the sentinel. Compare with errors.Is, never ==.
+var ErrNoRows = sql.ErrNoRows
+
 // DB is an open database. It is safe for concurrent use.
 type DB struct {
 	sql     *sql.DB
