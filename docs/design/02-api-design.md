@@ -9,6 +9,17 @@ Base path `/api/v1`. Path ids are ULIDs. **Permission** is the `x-tod-permission
 Cross-circle access returns **`404`, never `403`** — see
 [canonical §7](00-canonical-conventions.md#cross-circle-access-returns-404-never-403).
 
+**`/healthz`, `/readyz` and `/metrics` sit at the root, outside `/api/v1`.** They are not API
+operations: a container `HEALTHCHECK`, a load balancer and a scrape config are configured once and
+must not need editing when the API version moves, and `/metrics` binds a
+[separate listener](00-canonical-conventions.md#13-metrics) that has no API base path to be under.
+Every other operation in this document is relative to `/api/v1`.
+
+**Every operation below is a row in the route registry in `internal/api`,** which is the substrate
+`TestTenancy_CrossCircle_EveryOperationDenies` walks. `TestRouteRegistry_MatchesTheAPIDesign` parses
+these tables and compares them to that registry in both directions, so an operation added to one and
+not the other is a red test rather than a review catch.
+
 ## Discovery and identity
 
 | Method | Path | OperationID | Permission | Scope | Does |
@@ -97,10 +108,10 @@ and `bearer_token` remain for clients that have no browser to redirect.
 | Method | Path | OperationID | Permission | Scope |
 |---|---|---|---|---|
 | GET | `/circles` | `listCircles` | self | `circle:read` |
-| POST | `/circles` | `createCircle` | `instance.circle.create` | — |
+| POST | `/circles` | `createCircle` | `instance.circle.create` | — step-up |
 | GET | `/circles/{circle_id}` | `getCircle` | `circle.read` | `circle:read` |
-| PATCH | `/circles/{circle_id}` | `updateCircle` | `circle.manage` | — |
-| PUT | `/circles/{circle_id}/providers` | `setCircleProviders` | `circle.security.manage` | — |
+| PATCH | `/circles/{circle_id}` | `updateCircle` | `circle.manage` | — step-up |
+| PUT | `/circles/{circle_id}/providers` | `setCircleProviders` | `circle.security.manage` | — step-up |
 | DELETE | `/circles/{circle_id}` | `deleteCircle` | `circle.delete` | — step-up |
 
 `listCircles` returns only circles the caller is a member of; a PAT is bound to one membership, so it
@@ -114,15 +125,15 @@ first run — `tod-serve circle create --name … --server blue` — which print
 
 | Method | Path | OperationID | Permission | Scope |
 |---|---|---|---|---|
-| GET | `/circles/{cid}/members` | `listMembers` | `member.read` | `member:read` |
-| GET | `/circles/{cid}/members/{mid}` | `getMember` | `member.read` | `member:read` |
-| PATCH | `/circles/{cid}/members/{mid}` | `updateMember` | `member.manage` | — step-up |
-| POST | `/circles/{cid}/members/{mid}/revoke` | `revokeMember` | `member.revoke` | — step-up |
-| POST | `/circles/{cid}/members/{mid}/reinstate` | `reinstateMember` | `member.revoke` | — step-up |
-| POST | `/circles/{cid}/service-members` | `createServiceMember` | `token.mint` | — step-up |
-| GET | `/circles/{cid}/invites` | `listInvites` | `invite.read` | `invite:read` |
-| POST | `/circles/{cid}/invites` | `createInvite` | `invite.create` | `invite:create` |
-| DELETE | `/circles/{cid}/invites/{iid}` | `revokeInvite` | `invite.revoke` | — |
+| GET | `/circles/{circle_id}/members` | `listMembers` | `member.read` | `member:read` |
+| GET | `/circles/{circle_id}/members/{member_id}` | `getMember` | `member.read` | `member:read` |
+| PATCH | `/circles/{circle_id}/members/{member_id}` | `updateMember` | `member.manage` | — step-up |
+| POST | `/circles/{circle_id}/members/{member_id}/revoke` | `revokeMember` | `member.revoke` | — step-up |
+| POST | `/circles/{circle_id}/members/{member_id}/reinstate` | `reinstateMember` | `member.revoke` | — step-up |
+| POST | `/circles/{circle_id}/service-members` | `createServiceMember` | `token.mint` | — step-up |
+| GET | `/circles/{circle_id}/invites` | `listInvites` | `invite.read` | `invite:read` |
+| POST | `/circles/{circle_id}/invites` | `createInvite` | `invite.create` | `invite:create` |
+| DELETE | `/circles/{circle_id}/invites/{invite_id}` | `revokeInvite` | `invite.revoke` | — step-up |
 
 Tokens are minted by `/join`, `/sessions` and `createServiceMember` only. There is no "mint me an
 arbitrary token" operation and no `admin:*` scope.
@@ -141,17 +152,17 @@ is invented; the representation already says it.
 
 | Method | Path | OperationID | Permission | Scope | Does |
 |---|---|---|---|---|---|
-| POST | `/circles/{cid}/tod-reports` | `createTodReport` | `tod.report` | `tod:report` | Append one immutable report. `Idempotency-Key` **required**. |
-| GET | `/circles/{cid}/tod-reports` | `listTodReports` | `tod.read` | `tod:read` | Cursor; filters `target_id`, `died_after`, `died_before`, `reporter_membership_id`, `include_retracted` |
-| GET | `/circles/{cid}/tod-reports/{rid}` | `getTodReport` | `tod.read` | `tod:read` | |
-| POST | `/circles/{cid}/tod-reports/{rid}/retract` | `retractTodReport` | `tod.retract` / `tod.retract.any` | `tod:retract` | Writes a **new** retraction row. Never mutates. |
-| GET | `/circles/{cid}/tods` | `listTargetStates` | `tod.read` | `tod:read` | **The board.** Filters `status`, `expansion`, `zone`, `contested`, `q`; sort `window_open_at`. `ETag` + `304`. |
-| GET | `/circles/{cid}/tods/{tid}` | `getTargetState` | `tod.read` | `tod:read` | One target: state, window, evidence, alternatives |
-| POST | `/circles/{cid}/quakes` | `reportQuake` | `tod.quake.report` | — | Officer-only. A false quake wipes the board. `Idempotency-Key`. |
-| GET | `/circles/{cid}/quakes` | `listQuakes` | `tod.read` | `tod:read` | |
-| GET | `/circles/{cid}/events` | `subscribeCircleEvents` | `tod.read` | `events:subscribe` | SSE: `tod.changed`, `report.created`, `quake.reported`, `member.revoked` |
-| GET | `/circles/{cid}/events/replay` | `replayCircleEvents` | `tod.read` | `events:subscribe` | `?since_seq=` — the only place it is legal |
-| GET | `/circles/{cid}/audit` | `listCircleAudit` | `audit.read` | — step-up | |
+| POST | `/circles/{circle_id}/tod-reports` | `createTodReport` | `tod.report` | `tod:report` | Append one immutable report. `Idempotency-Key` **required**. |
+| GET | `/circles/{circle_id}/tod-reports` | `listTodReports` | `tod.read` | `tod:read` | Cursor; filters `target_id`, `died_after`, `died_before`, `reporter_membership_id`, `include_retracted` |
+| GET | `/circles/{circle_id}/tod-reports/{report_id}` | `getTodReport` | `tod.read` | `tod:read` | |
+| POST | `/circles/{circle_id}/tod-reports/{report_id}/retract` | `retractTodReport` | `tod.retract` / `tod.retract.any` | `tod:retract` | Writes a **new** retraction row. Never mutates. |
+| GET | `/circles/{circle_id}/tods` | `listTargetStates` | `tod.read` | `tod:read` | **The board.** Filters `status`, `expansion`, `zone`, `contested`, `q`; sort `window_open_at`. `ETag` + `304`. |
+| GET | `/circles/{circle_id}/tods/{target_id}` | `getTargetState` | `tod.read` | `tod:read` | One target: state, window, evidence, alternatives |
+| POST | `/circles/{circle_id}/quakes` | `reportQuake` | `tod.quake.report` | — | Officer-only. A false quake wipes the board. `Idempotency-Key`. |
+| GET | `/circles/{circle_id}/quakes` | `listQuakes` | `tod.read` | `tod:read` | |
+| GET | `/circles/{circle_id}/events` | `subscribeCircleEvents` | `tod.read` | `events:subscribe` | SSE: `tod.changed`, `report.created`, `quake.reported`, `member.revoked` |
+| GET | `/circles/{circle_id}/events/replay` | `replayCircleEvents` | `tod.read` | `events:subscribe` | `?since_seq=` — the only place it is legal |
+| GET | `/circles/{circle_id}/audit` | `listCircleAudit` | `audit.read` | — step-up | |
 
 ### `createTodReport`
 
@@ -203,12 +214,14 @@ with `revoked: true` and **their reports still count** — the revocation rule, 
 | Method | Path | OperationID | Permission | Scope |
 |---|---|---|---|---|
 | GET | `/raid-targets` | `listRaidTargets` | `catalogue.read` | `catalogue:read` |
-| GET | `/raid-targets/{tid}` | `getRaidTarget` | `catalogue.read` | `catalogue:read` |
+| GET | `/raid-targets/{target_id}` | `getRaidTarget` | `catalogue.read` | `catalogue:read` |
 | POST | `/raid-targets/resolve` | `resolveRaidTarget` | `catalogue.read` | `catalogue:read` |
-| POST | `/raid-targets` | `createRaidTarget` | `catalogue.manage` | — |
-| PATCH | `/raid-targets/{tid}` | `updateRaidTarget` | `catalogue.manage` | — |
-| PUT | `/raid-targets/{tid}/timers/{server}` | `putRaidTargetTimer` | `catalogue.manage` | — |
-| GET · PUT · DELETE | `/circles/{cid}/timer-overrides[/{tid}]` | `listCircleTimerOverrides` · `putCircleTimerOverride` · `deleteCircleTimerOverride` | `circle.manage` | — |
+| POST | `/raid-targets` | `createRaidTarget` | `catalogue.manage` | — step-up |
+| PATCH | `/raid-targets/{target_id}` | `updateRaidTarget` | `catalogue.manage` | — step-up |
+| PUT | `/raid-targets/{target_id}/timers/{server}` | `putRaidTargetTimer` | `catalogue.manage` | — step-up |
+| GET | `/circles/{circle_id}/timer-overrides` | `listCircleTimerOverrides` | `circle.manage` | — step-up |
+| PUT | `/circles/{circle_id}/timer-overrides/{target_id}` | `putCircleTimerOverride` | `circle.manage` | — step-up |
+| DELETE | `/circles/{circle_id}/timer-overrides/{target_id}` | `deleteCircleTimerOverride` | `circle.manage` | — step-up |
 
 The catalogue is instance-wide, not circle-scoped: a mob's existence is a game fact.
 `listRaidTargets?server=blue` folds that server's timer into each row.
@@ -220,17 +233,52 @@ the same reason.
 
 ## Instance administration
 
-| Method | Path | OperationID | Permission |
-|---|---|---|---|
-| GET · POST · PATCH · DELETE | `/admin/identity-providers[/{pid}]` | `listAdminIdentityProviders` · `createIdentityProvider` · `updateIdentityProvider` · `deleteIdentityProvider` | `instance.security.manage` — step-up |
-| GET | `/admin/doctor` · `/admin/jobs` | `getDoctorReport` · `listJobs` | `ops.read` |
-| GET | `/healthz` · `/readyz` | `getLiveness` · `getReadiness` | public |
-| GET | `/metrics` | `getMetrics` | `TOD_METRICS_TOKEN` |
+| Method | Path | OperationID | Permission | Scope |
+|---|---|---|---|---|
+| GET | `/admin/identity-providers` | `listAdminIdentityProviders` | `instance.security.manage` | — step-up |
+| POST | `/admin/identity-providers` | `createIdentityProvider` | `instance.security.manage` | — step-up |
+| PATCH | `/admin/identity-providers/{provider_id}` | `updateIdentityProvider` | `instance.security.manage` | — step-up |
+| DELETE | `/admin/identity-providers/{provider_id}` | `deleteIdentityProvider` | `instance.security.manage` | — step-up |
+| GET | `/admin/doctor` | `getDoctorReport` | `ops.read` | — |
+| GET | `/admin/jobs` | `listJobs` | `ops.read` | — |
+| GET | `/healthz` | `getLiveness` | public | — |
+| GET | `/readyz` | `getReadiness` | public | — |
+| GET | `/metrics` | `getMetrics` | `TOD_METRICS_TOKEN` | — |
 
 ## Error codes
 
-Beyond the generic set. `type` is `https://docs.tod-serve.org/errors/<code>` — the last segment **is**
-the code, and a test asserts every code has a page.
+`type` is `https://docs.tod-serve.org/errors/<code>` — the last segment **is** the code, and
+`TestErrorCodes_EveryCode_HasADocumentationPage` asserts every code below has a page in
+`docs/errors/`, in **both** directions: a page for a code nobody can emit is as wrong as a code
+with no page.
+
+The generic set. These are the failures the edge itself produces — authentication, authorization,
+concurrency, idempotency and validation — before any domain code runs:
+
+```
+malformed_request (400)          unauthenticated (401)            token_invalid (401)
+token_expired (401)              forbidden (403)                  insufficient_scope (403)
+session_required (403)           step_up_required (403)           not_found (404)
+method_not_allowed (405)         not_acceptable (406)             request_timeout (408)
+conflict (409)                   precondition_failed (412)        payload_too_large (413)
+unsupported_media_type (415)     validation_failed (422)          precondition_required (428)
+idempotency_key_required (400)   idempotency_key_reused (422)     idempotency_conflict (409)
+rate_limited (429)               internal_error (500)             service_unavailable (503)
+```
+
+Three of those splits exist because the two halves have **different fixes**, and a client that
+cannot tell them apart retries the one that will never succeed:
+
+- **`forbidden` vs `insufficient_scope`.** The role does not hold the permission — ask an officer —
+  versus the token does not carry the scope — mint a token that does.
+- **`session_required` vs `step_up_required`.** A PAT reached a capability-floor operation, which no
+  token reaches at any scope — open a browser — versus a session that has not re-authenticated
+  recently enough — re-authenticate.
+- **`idempotency_key_reused` vs `idempotency_conflict`.** The same key arrived with a **different**
+  request, which is a client bug — versus a request with that key is still in flight, which is a
+  retry that should simply wait.
+
+And the domain set, beyond the generic one above:
 
 ```
 membership_revoked (403)         invite_invalid (404)          invite_expired (409)
