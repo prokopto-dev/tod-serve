@@ -150,10 +150,32 @@ func New(doer outbound.Doer, cfg Config) (*Client, error) {
 	if cfg.TokenEndpoint == "" {
 		cfg.TokenEndpoint = defaultTokenEndpoint
 	}
+	// `token_endpoint` is a column, so an operator can set one — and for `discord` there is only
+	// ever one right answer. A foreign host would be refused by the outbound allowlist anyway,
+	// but as a dial that failed rather than as a configuration mistake somebody can read, so it
+	// is caught here instead.
+	if err := requireDiscordHost(cfg.TokenEndpoint, "token endpoint"); err != nil {
+		return nil, err
+	}
+	if err := requireDiscordHost(cfg.APIBase, "api base"); err != nil {
+		return nil, err
+	}
 	if cfg.AuthorizeURL == "" {
 		cfg.AuthorizeURL = DefaultAuthorizeURL
 	}
 	return &Client{http: doer, cfg: cfg}, nil
+}
+
+// requireDiscordHost refuses an endpoint pointed somewhere other than Discord.
+func requireDiscordHost(raw, what string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("discord client: parse %s %q: %w", what, raw, err)
+	}
+	if u.Hostname() != Host {
+		return fmt.Errorf("discord client: %s is %q, which is not %s", what, u.Hostname(), Host)
+	}
+	return nil
 }
 
 // Exchange trades an authorization code for an access token.

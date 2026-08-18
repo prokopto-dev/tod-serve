@@ -183,9 +183,15 @@ func (s *Service) verifyTicket(ctx context.Context, req VerifyRequest) (Verified
 
 // verifyDiscordBearer is the non-browser Discord path.
 //
-// Its safety rests entirely on the audience check inside [discord.Client.Verify] rather than on
+// Its safety rests ENTIRELY on the audience check inside [discord.Client.Verify] rather than on
 // the shape of the flow — the browser path does not need that trust, because it runs its own
 // exchange with its own secret and never receives a token from a caller.
+//
+// The `credential_stale` freshness rule the design pairs with it is deliberately absent, and the
+// reason is in docs/design/04-identity-and-revocation.md §7: it needs the token's AGE, and
+// `GET /oauth2/@me` reports `expires` with no issue time, so age is derivable only by assuming
+// Discord's token lifetime. That assumption would stop being true silently. A freshness rule that
+// is wrong in an unknown direction is worse than none, because it is believed.
 func (s *Service) verifyDiscordBearer(ctx context.Context, req VerifyRequest) (Verified, error) {
 	client, err := s.clients.Discord(req.Provider)
 	if err != nil {

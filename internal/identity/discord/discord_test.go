@@ -262,6 +262,29 @@ func TestNew_ConfigurationWithoutAnApplication_IsRefused(t *testing.T) {
 	require.Error(t, err, "a client with no outbound client would have no guard")
 }
 
+// `token_endpoint` is a column an operator can set, and for `discord` there is one right answer.
+// A foreign host would be refused by the outbound allowlist anyway, but as a dial that failed
+// rather than as a configuration mistake somebody can read.
+func TestNew_EndpointPointedAwayFromDiscord_IsRefused(t *testing.T) {
+	t.Parallel()
+
+	base := discord.Config{ClientID: ourApp, ClientSecret: core.Secret("s"), RedirectURI: "https://x/y"}
+
+	elsewhere := base
+	elsewhere.TokenEndpoint = "https://evil.example/oauth2/token"
+	_, err := discord.New(&stubDoer{}, elsewhere)
+	require.ErrorContains(t, err, "evil.example")
+
+	elsewhere = base
+	elsewhere.APIBase = "https://evil.example/api/v10"
+	_, err = discord.New(&stubDoer{}, elsewhere)
+	require.ErrorContains(t, err, "evil.example")
+
+	// The defaults are Discord's, so the common case needs no configuration at all.
+	_, err = discord.New(&stubDoer{}, base)
+	require.NoError(t, err)
+}
+
 func TestVerify_UnreachableDiscord_IsReportedAsUnreachable(t *testing.T) {
 	t.Parallel()
 

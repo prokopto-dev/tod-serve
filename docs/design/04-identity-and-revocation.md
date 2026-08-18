@@ -422,9 +422,22 @@ structurally immune with no extra call.
 **Enforced by:** `TestDiscord_ForeignApplicationToken_Refused`, which presents a token whose
 `application.id` is not ours on **both** the callback and the `bearer_token` path and asserts `401`.
 
-`credential_stale` remains on the `bearer_token` path as defence in depth. It is no longer the
-*primary* mitigation — the audience check is — but it still bounds how long a stolen same-instance
+`credential_stale` was to remain on the `bearer_token` path as defence in depth: no longer the
+*primary* mitigation — the audience check is — but still bounding how long a stolen same-instance
 token is useful, which the audience check does not address.
+
+**It is not implemented, and this is the honest reason.** The 60-second rule needs the token's
+AGE, and `GET /oauth2/@me` reports `expires` but no issue time. Age is derivable only by assuming
+Discord's token lifetime and subtracting — an assumption that stops being true silently, the day
+Discord changes it, leaving a check that reports `credential_stale` for fresh tokens or accepts old
+ones depending on which direction the change went. A freshness rule that is wrong in an unknown
+direction is worse than no freshness rule, because it is *believed*. So the audience check carries
+the whole `bearer_token` path, which §7's last bullet already said it does, and this is recorded
+here rather than left as a code comment somebody has to go looking for.
+
+**What would close it:** a token-age signal from Discord, or minting our own short-lived credential
+for non-browser clients instead of accepting theirs — which is the browser flow, and is why
+`bearer_token` exists on sufferance.
 
 ### What is honestly still weak
 
