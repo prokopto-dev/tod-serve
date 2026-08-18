@@ -20,11 +20,14 @@ than writing it down as though it were enforced.
 | `internal/auth/` | PAT mint and verify, sessions, step-up |
 | `internal/identity/{,discord,oidc}/` | Provider registry, credential dispatch, identity and link resolution. **The only packages permitted to make outbound HTTP requests** |
 | `internal/circle/`, `membership/`, `catalogue/`, `tod/` | Domain services |
+| `internal/schemaenum/` | The enum catalogue — every enumerated column, and the ordering rule for the two that have one |
 | `internal/consensus/` | **Pure.** Clustering, cluster selection, estimate, confidence, window computation |
 | `internal/projection/` | `target_state_cache` maintenance, invalidation, rebuild, nightly verify |
 | `internal/store/` | The only holder of `*sql.DB`. `sqlitegen/` is generated and never hand-edited |
 | `internal/core/` | `Micros`, ULID, typed ids, the `Server` enum, `Secret` |
 | `internal/clock/` | The only `time.Now` |
+| `internal/repogate/` | The gates that need an AST rather than a grep: `CLOCK001`, `SLEEP001` |
+| `internal/canondoc/` | Reads fenced blocks out of the normative documents, so a gate compares code against the document rather than against a copy of it |
 | `db/` | `schema.hcl` is the single schema truth; `queries/*.sql`; `migrations-sqlite/` |
 | `test/repo/` | Tests about the repository itself, not the product: they assert the gates below actually fire |
 
