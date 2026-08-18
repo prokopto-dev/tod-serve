@@ -72,13 +72,19 @@ Membership binds to an `(provider, subject)` pair, so an instance can offer more
 
 | Provider | How you join | Revocation |
 |---|---|---|
-| `discord` | Loopback OAuth against a project-wide app, `identify` scope only | **Durable** — banned by Discord id, so a revoked member cannot re-redeem under a new name |
-| `oidc` | Any issuer the operator configures — Authentik, Keycloak, Google, GitHub | **Durable**, and the only provider immune to cross-instance token replay |
+| `discord` | Browser OAuth against **the operator's own** Discord application — see [ADR-0011](docs/adr/0011-operator-registered-discord-application.md) | **Durable** — banned by Discord id, so a revoked member cannot re-redeem under a new name |
+| `oidc` | Any issuer the operator configures — Authentik, Keycloak, Google, GitHub | **Durable**. Uses the same browser flow as `discord`, so the console has one code path |
 | `local` | An invite code and a name you pick yourself | **Advisory** — a revoked person with another invite returns as a new member |
 
 `local` ships disabled and enabling it requires saying so explicitly, because the damage from a weak
 revocation is not the re-entry — it is the officers' false belief that revocation worked. A circle
 publishes its `revocation_strength` and every client is expected to render it.
+
+A circle may additionally gate on **Discord guild membership and roles** — the instance owns the
+application, the circle owns the gate, so two circles on one instance can point at two different
+guilds. That gate is checked when someone joins and when they re-authenticate, and **not**
+continuously: removing a Discord role does not revoke a token already issued. `revokeMember` is the
+thing that takes effect on the very next request.
 
 ## Quickstart
 
