@@ -3,24 +3,9 @@
 -- `aud = client_id` IS the OIDC audience check, and the old predicate made an `oidc` row with a
 -- client id unrepresentable. See db/schema.hcl and docs/design/04-identity-and-revocation.md 1.
 --
--- HAND-EDITED, and this is the one thing that was added to what Atlas wrote.
+-- HAND-EDITED throughout. `make gen` re-runs the diff and proves this file still replays to
+-- exactly db/schema.hcl, which is what makes that safe to trust.
 --
--- A CHECK cannot be altered in SQLite, so this is a table rebuild -- and AGENTS.md names table
--- rebuilds as the thing that silently drops triggers. Here it is worse than silent: it FAILS.
--- `trg_identity_link_requires_verifiable_participants` lives on `identity_link` and its body reads
--- `identity_provider`, and `ALTER TABLE ... RENAME TO` reparses every trigger in the schema so it
--- can rewrite references to the renamed table. At that moment `identity_provider` has been dropped
--- and the reparse fails with `no such table: main.identity_provider`.
---
--- So the trigger is dropped before the rebuild and recreated after it, VERBATIM from
--- 000002_invariant_triggers.sql. Atlas Community cannot see triggers, so it could not have written
--- this and `make gen`'s re-diff cannot check it; TestIdentityLink_LocalProvider_Rejected and
--- TestAppendOnly_TriggersFire_AfterAllMigrations are what prove it came back.
-
--- +goose StatementBegin
-DROP TRIGGER IF EXISTS trg_identity_link_requires_verifiable_participants;
--- +goose StatementEnd
-
 -- This migration is NON-TRANSACTIONAL, which is unusual here and is not a preference. SQLite's own
 -- 12-step ALTER TABLE procedure requires `PRAGMA foreign_keys = OFF`, and that pragma is a NO-OP
 -- while a transaction is open -- so under goose's default transaction it silently does nothing,
@@ -59,6 +44,15 @@ BEGIN IMMEDIATE;
 -- its body READS `identity_provider`, and `ALTER TABLE ... RENAME TO` reparses every trigger in the
 -- schema so it can rewrite references to the renamed table -- at a moment when `identity_provider`
 -- has been dropped. Without this the migration fails with `no such table: main.identity_provider`.
+--
+-- It is dropped INSIDE the explicit transaction, and that placement is the whole point of having
+-- one. This migration is non-transactional, so a drop sitting above `BEGIN` would auto-commit on
+-- its own: the copy below can legitimately fail -- a version-2 `oidc` row has no client id and
+-- cannot satisfy the new CHECK -- and the rollback would then restore the table while leaving the
+-- trigger gone. A database sitting at version 2 with `identity_link` unguarded lets a `local`
+-- identity be linked to a verifiable one, which is the hole that table exists not to open, and it
+-- would be silent. Everything that can fail and everything that must be undone together lives
+-- between BEGIN and COMMIT.
 DROP TRIGGER IF EXISTS trg_identity_link_requires_verifiable_participants;
 
 CREATE TABLE new_identity_provider (id text NOT NULL, key text NOT NULL, kind text NOT NULL, display_name text NOT NULL, enabled integer NOT NULL DEFAULT 0, verifiable_subject integer NOT NULL, issuer text, authorization_endpoint text, jwks_uri text, subject_claim text, client_id text, client_secret text, redirect_uri text, token_endpoint text, created_at integer NOT NULL, updated_at integer NOT NULL, PRIMARY KEY (id), CONSTRAINT ck_identity_provider_kind CHECK (kind IN ('discord', 'oidc', 'local')), CONSTRAINT ck_identity_provider_enabled CHECK (enabled IN (0, 1)), CONSTRAINT ck_identity_provider_verifiable_subject CHECK (verifiable_subject IN (0, 1)), CONSTRAINT ck_identity_provider_local_is_unverifiable CHECK ((kind = 'local') = (verifiable_subject = 0)), CONSTRAINT ck_identity_provider_application_matches_kind CHECK ((kind = 'local') = (client_id IS NULL))) STRICT;

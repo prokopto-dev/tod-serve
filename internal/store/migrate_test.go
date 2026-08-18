@@ -257,4 +257,36 @@ func TestMigrate_VersionTwoRowThatCannotBeCarriedForward_FailsAtomically(t *test
 	require.NoError(t, db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM identity_provider`).Scan(&count))
 	require.Equal(t, 1, count, "and leaves the operator's row alone rather than dropping it")
 	require.NoError(t, db.IntegrityCheck(ctx))
+
+	// And the trigger the rebuild drops is still there, which is the assertion this test was
+	// missing when the drop sat above BEGIN and auto-committed on its own. A database left at
+	// version 2 with `identity_link` unguarded lets a `local` identity be linked to a verifiable
+	// one — the hole that table exists not to open — and nothing else would have noticed.
+	localProv, verifiableProv := id.next(t), id.next(t)
+	localIdent, verifiableIdent := id.next(t), id.next(t)
+	mustExec(t, ctx, db, `
+		INSERT INTO identity_provider (id, key, kind, display_name, enabled, verifiable_subject,
+			created_at, updated_at)
+		VALUES (?, 'local', 'local', 'Local account', 0, 0, ?, ?)`,
+		localProv, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO identity_provider (id, key, kind, display_name, enabled, verifiable_subject,
+			client_id, created_at, updated_at)
+		VALUES (?, 'discord', 'discord', 'Sign in with Discord', 1, 1, 'app-id', ?, ?)`,
+		verifiableProv, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO identity (id, provider_id, subject, display_name, created_at, updated_at)
+		VALUES (?, ?, 'tanky', 'Tanky', ?, ?)`,
+		localIdent, localProv, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO identity (id, provider_id, subject, display_name, created_at, updated_at)
+		VALUES (?, ?, '1234567890', 'Tankguy', ?, ?)`,
+		verifiableIdent, verifiableProv, int64(now), int64(now))
+
+	require.Error(t, exec(t, ctx, db, `
+		INSERT INTO identity_link (id, primary_identity_id, linked_identity_id, method,
+			linked_by_membership_id, linked_at)
+		VALUES (?, ?, ?, 'officer_asserted', ?, ?)`,
+		id.next(t), verifiableIdent, localIdent, id.next(t), int64(now)),
+		"a failed migration must not leave identity_link unguarded")
 }

@@ -48,6 +48,7 @@ func (d *DB) Migrate(ctx context.Context) error {
 
 	results, err := provider.Up(ctx)
 	if err != nil {
+		d.recoverConnection(ctx)
 		return fmt.Errorf("apply migrations to %s: %w", d.path, err)
 	}
 	for _, r := range results {
@@ -60,6 +61,25 @@ func (d *DB) Migrate(ctx context.Context) error {
 		d.log.InfoContext(ctx, "schema is current", slog.String("database", d.path))
 	}
 	return nil
+}
+
+// recoverConnection puts the migration connection back to a usable state after a failure.
+//
+// A migration that has to rebuild a referenced table cannot run inside goose's transaction — the
+// pragma it needs is a no-op in one — so it opens its OWN. SQLite does not roll a transaction back
+// when a statement inside it fails; the transaction simply stays open. Without this, the pooled
+// connection returns to the pool still inside that aborted transaction, and every later read on it
+// sees uncommitted schema: a dropped trigger that is not really dropped, a rebuilt table that was
+// never committed. That is a far nastier failure than the one that started it, because the
+// database LOOKS fine.
+//
+// Both errors are discarded deliberately, and this is the one place that says why: a migration
+// that succeeded leaves no transaction to roll back and no pragma to restore, so both statements
+// are expected to fail in the ordinary case. The failure that matters has already been captured
+// and is about to be returned.
+func (d *DB) recoverConnection(ctx context.Context) {
+	_, _ = d.sql.ExecContext(ctx, "ROLLBACK")
+	_, _ = d.sql.ExecContext(ctx, "PRAGMA foreign_keys = ON")
 }
 
 // SchemaVersion returns the highest migration version applied to this database.
