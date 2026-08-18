@@ -78,9 +78,12 @@ test:
 	$(GO) test -race $(PKG)
 
 ## test-golden: the consensus golden corpus
+# Also reached by `make test`, since ./... covers it. This target exists so the corpus can be
+# replayed on its own while working on internal/consensus, and so the thing docs/design/03-consensus.md
+# calls the authority has a name at the command line.
 .PHONY: test-golden
 test-golden:
-	@$(call notyet,Phase 2,replays test/golden/consensus/*.json through internal/consensus)
+	$(GO) test ./test/golden/...
 
 ## test-integration: real SQLite in a temp dir
 .PHONY: test-integration

@@ -20,6 +20,12 @@ byte-identically and property-testable without a database. The float ban is
 
 **Enforced by:** `PURE001`, `PURE002`, `CLOCK001`, `NOFLOAT001`.
 
+Several questions below this document leaves open — what makes a spread *wide*, what *corroborating*
+means, which `contest_reason` wins when two apply — are answered in the corpus rather than here, and
+[`test/golden/consensus/README.md`](../../test/golden/consensus/README.md) lists each one with the
+fixture that pins it. Each is resolved toward the reading that fails safe. That file also records
+the two fields the derivation returns that §7's example does not show, and why.
+
 ## 1. Retraction folding
 
 Drop any `kill` report R for which a `retraction` row exists with `retracts_report_id = R.id`.
