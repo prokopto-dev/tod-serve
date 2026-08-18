@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -207,6 +208,11 @@ func (b *Builder) replayOrRun(
 	next(ctx)
 }
 
+// recordOutcomeTimeout bounds the bookkeeping write that outlives its request. It is short: the
+// write is one indexed row, and a goroutine still waiting on it a minute after the client left is
+// a goroutine leaking behind every abandoned request.
+const recordOutcomeTimeout = 5 * time.Second
+
 // replay writes a stored response back, marked as a replay.
 func (b *Builder) replay(ctx huma.Context, rec sqlitegen.IdempotencyRecord) {
 	status := http.StatusOK
@@ -227,7 +233,22 @@ func (b *Builder) replay(ctx huma.Context, rec sqlitegen.IdempotencyRecord) {
 //
 // A 5xx is not stored. The request did not complete, so a record claiming it did would answer every
 // retry with `idempotency_conflict` forever — the opposite of what the key is for.
+//
+// **The write deliberately outlives the request that caused it.** By the time this runs the handler
+// has already committed its domain write, and the client may have gone away in the meantime — which
+// cancels the request's context. Recording on that context would fail, leaving the record
+// incomplete; an incomplete record answers every retry with `idempotency_conflict` until it
+// expires, and the retry after that runs the handler a SECOND time and appends a duplicate row to a
+// log that is never edited. A client hanging up is the single most likely reason a retry happens at
+// all, so it is precisely the case idempotency has to survive.
+//
+// The context is therefore detached from cancellation and given its own deadline: detaching without
+// one would trade a lost write for a goroutine held open behind every abandoned request.
+// TestIdempotency_AClientThatDisconnects_StillReplaysOnRetry is the mechanism.
 func (b *Builder) recordOutcome(ctx context.Context, id string, status int, body []byte) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordOutcomeTimeout)
+	defer cancel()
+
 	queries := b.cfg.Store.Queries()
 	if status >= http.StatusInternalServerError {
 		if _, err := queries.DeleteIdempotencyRecord(ctx, id); err != nil {
@@ -246,8 +267,9 @@ func (b *Builder) recordOutcome(ctx context.Context, id string, status int, body
 		ID:             id,
 	})
 	if err != nil {
-		// The client already has its answer. Logging is all that is left, and a retry will simply
-		// run again — which is worse than replaying and much better than failing the request.
+		// The client already has its answer, so there is no request left to fail. This is the last
+		// line of defence rather than the first: the detached context above is what stops the
+		// ordinary client disconnect from reaching here at all.
 		b.cfg.Log.ErrorContext(ctx, "record idempotent response",
 			"record_id", id, "error", err)
 	}

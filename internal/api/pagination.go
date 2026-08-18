@@ -26,11 +26,18 @@ type Page[T any] struct {
 	NextCursor string `json:"next_cursor"`
 	// HasMore says whether another page exists.
 	HasMore bool `json:"has_more"`
+	// AsOf is the instant this page was computed, from the injected clock.
+	//
+	// Canonical §1: every response carries one, and every timestamp in it is read against this
+	// rather than against the reader's own clock. A page of tokens carries `expires_at`, and a
+	// machine whose clock is four minutes fast would otherwise render "expired" for a token that
+	// is not — wrong on screen and right in the database, which is the worst available combination.
+	AsOf core.Micros `json:"as_of"`
 }
 
-// NewPage builds an envelope from a slice already trimmed to the page size, and the cursor of its
-// last row.
-func NewPage[T any](items []T, nextCursor string, hasMore bool) Page[T] {
+// NewPage builds an envelope from a slice already trimmed to the page size, the cursor of its last
+// row, and the instant it was computed.
+func NewPage[T any](items []T, nextCursor string, hasMore bool, asOf core.Micros) Page[T] {
 	if items == nil {
 		// An empty collection is `[]`, never `null`. A client that special-cases null is a client
 		// somebody had to debug.
@@ -39,7 +46,7 @@ func NewPage[T any](items []T, nextCursor string, hasMore bool) Page[T] {
 	if !hasMore {
 		nextCursor = ""
 	}
-	return Page[T]{Items: items, NextCursor: nextCursor, HasMore: hasMore}
+	return Page[T]{Items: items, NextCursor: nextCursor, HasMore: hasMore, AsOf: asOf}
 }
 
 // NormaliseLimit validates a caller's `limit`.

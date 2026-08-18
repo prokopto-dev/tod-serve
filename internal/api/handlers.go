@@ -172,11 +172,23 @@ type listMyTokensInput struct {
 
 type listMyTokensOutput struct{ Body Page[TokenView] }
 
+// TokenResponse is one device, and the instant it was read.
+//
+// The timestamp is on the RESPONSE rather than on [TokenView], because `as_of` is a property of the
+// answer and not of the row: repeating it on every item of a page would say the same thing many
+// times and invite a client to read two of them as different.
+type TokenResponse struct {
+	TokenView
+	// AsOf is the instant this answer was computed. `expires_at` and `last_used_at` above are read
+	// against it rather than against the caller's own clock.
+	AsOf core.Micros `json:"as_of"`
+}
+
 type revokeTokenInput struct {
 	TokenID string `path:"token_id" doc:"The token to revoke. Must be one of your own"`
 }
 
-type revokeTokenOutput struct{ Body TokenView }
+type revokeTokenOutput struct{ Body TokenResponse }
 
 // registerTokens attaches the two operations a person uses to see and cut off their own devices.
 func (s *Server) registerTokens() error {
@@ -223,7 +235,9 @@ func (s *Server) registerTokens() error {
 				if len(views) > 0 {
 					next = views[len(views)-1].ID.String()
 				}
-				return &listMyTokensOutput{Body: NewPage(views, next, hasMore)}, nil
+				return &listMyTokensOutput{
+					Body: NewPage(views, next, hasMore, s.cfg.Clock.Now()),
+				}, nil
 			})),
 
 		registerFailure(OpRevokeToken, Register(s.api, OpRevokeToken,
@@ -256,7 +270,9 @@ func (s *Server) registerTokens() error {
 				s.cfg.Log.InfoContext(ctx, "token revoked",
 					"token_prefix", view.TokenPrefix,
 					"membership_id", p.MembershipID.String())
-				return &revokeTokenOutput{Body: view}, nil
+				return &revokeTokenOutput{
+					Body: TokenResponse{TokenView: view, AsOf: now},
+				}, nil
 			})),
 	)
 }

@@ -52,6 +52,14 @@
       "PageTokenView": {
         "additionalProperties": false,
         "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
           "has_more": {
             "type": "boolean"
           },
@@ -71,7 +79,8 @@
         "required": [
           "items",
           "next_cursor",
-          "has_more"
+          "has_more",
+          "as_of"
         ],
         "type": "object"
       },
@@ -317,6 +326,88 @@
           "configured",
           "self_service_circle_creation",
           "as_of"
+        ],
+        "type": "object"
+      },
+      "TokenResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "description": "A ULID: 26 characters of Crockford base32, lexicographically time-ordered.",
+            "examples": [
+              "01K3TGT8N9M4X0Q7R2VB6C5D1E"
+            ],
+            "maxLength": 26,
+            "minLength": 26,
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "type": "string"
+          },
+          "last_used_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "revoked_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "token_prefix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "as_of",
+          "id",
+          "name",
+          "token_prefix",
+          "scopes",
+          "created_at",
+          "last_used_at",
+          "expires_at",
+          "revoked_at"
         ],
         "type": "object"
       },
@@ -703,7 +794,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenView"
+                  "$ref": "#/components/schemas/TokenResponse"
                 }
               }
             },

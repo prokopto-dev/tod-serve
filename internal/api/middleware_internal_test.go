@@ -48,6 +48,9 @@ type stubRig struct {
 	minter   *auth.Minter
 	provider string
 	calls    int
+	// beforeReturn runs inside the stub handler, after it has "committed", and is how a test
+	// arranges for the client to disconnect at the one moment that matters.
+	beforeReturn func()
 }
 
 func newStubRig(t *testing.T, ops ...OperationID) *stubRig {
@@ -83,6 +86,9 @@ func newStubRig(t *testing.T, ops ...OperationID) *stubRig {
 		require.NoError(t, Register(server.api, op,
 			func(ctx context.Context, _ *stubInput) (*stubOutput, error) {
 				rig.calls++
+				if rig.beforeReturn != nil {
+					rig.beforeReturn()
+				}
 				return &stubOutput{Body: stubBody{OK: true, Call: rig.calls}}, nil
 			}))
 	}
@@ -172,7 +178,16 @@ func (r *stubRig) token(membership core.MembershipID, scopes ...authz.Scope) cor
 
 func (r *stubRig) post(path string, token core.Secret, key, body string) *httptest.ResponseRecorder {
 	r.t.Helper()
-	req := httptest.NewRequestWithContext(r.t.Context(), http.MethodPost, path, stringBody(body))
+	return r.postWithContext(r.t.Context(), path, token, key, body)
+}
+
+// postWithContext issues the same request against a caller-supplied context, so a test can cancel
+// it the way a client hanging up cancels one.
+func (r *stubRig) postWithContext(
+	ctx context.Context, path string, token core.Secret, key, body string,
+) *httptest.ResponseRecorder {
+	r.t.Helper()
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, path, stringBody(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", auth.BearerScheme+token.Reveal())
 	if key != "" {
@@ -536,4 +551,78 @@ func TestInviteOracle_TheMeteredSet_IsEveryPublicRouteThatTakesACode(t *testing.
 			"%s is metered as an invite oracle and is not public", r.ID)
 	}
 	require.ElementsMatch(t, []OperationID{OpPreviewInvite, OpCreateAuthorizationURL}, ids)
+}
+
+// A client that hangs up after the handler has committed must still get a replay when it retries.
+//
+// This is the case idempotency exists for, and it is the one where the naive implementation fails:
+// the domain write has landed, the request's context is cancelled, and recording the outcome on
+// that context would fail. The record would stay incomplete, every retry would answer
+// `idempotency_conflict` until it expired, and the retry after that would run the handler a SECOND
+// time — appending a duplicate row to a log that is never edited.
+func TestIdempotency_AClientThatDisconnects_StillReplaysOnRetry(t *testing.T) {
+	t.Parallel()
+	rig := newStubRig(t, OpCreateTodReport)
+	circle, member := rig.seedCircleAndMember(authz.RoleOfficer)
+	token := rig.token(member, authz.ScopeTodReport)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	// The handler "commits" and the client goes away before the response is recorded, which is
+	// exactly the ordering net/http produces when a browser tab closes mid-request.
+	rig.beforeReturn = cancel
+	first := rig.postWithContext(ctx, reportPath(circle), token, "hung-up", `{}`)
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	require.Equal(t, 1, rig.calls)
+	rig.beforeReturn = nil
+
+	// The record must be complete despite the cancellation, or the retry below cannot replay.
+	record, err := rig.db.Queries().GetIdempotencyRecord(t.Context(),
+		sqlitegen.GetIdempotencyRecordParams{
+			PrincipalMembershipID: member.String(), Key: "hung-up",
+		})
+	require.NoError(t, err)
+	require.NotNil(t, record.CompletedAt,
+		"the outcome was not recorded, so a retry cannot replay and will run the handler again")
+
+	retry := rig.post(reportPath(circle), token, "hung-up", `{}`)
+	require.Equal(t, "true", retry.Header().Get(IdempotencyReplayedHeader))
+	require.JSONEq(t, first.Body.String(), retry.Body.String())
+	require.Equal(t, 1, rig.calls, "the retry ran the handler a second time")
+}
+
+// The same disconnect on a request that FAILED must clear the record rather than complete it: the
+// request did not happen, so the retry has to run rather than replay a failure.
+func TestIdempotency_ADisconnectOnAFailedRequest_ClearsTheRecord(t *testing.T) {
+	t.Parallel()
+	rig := newStubRig(t)
+	_, member := rig.seedCircleAndMember(authz.RoleOfficer)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	rig.recordOutcomeDirect(ctx, member, "failed-key", http.StatusInternalServerError)
+
+	_, err := rig.db.Queries().GetIdempotencyRecord(t.Context(),
+		sqlitegen.GetIdempotencyRecordParams{
+			PrincipalMembershipID: member.String(), Key: "failed-key",
+		})
+	require.ErrorIs(t, err, store.ErrNoRows,
+		"a 5xx left a record behind, which answers every retry with a conflict until it expires")
+}
+
+// recordOutcomeDirect writes a record and then reports an outcome against an already-cancelled
+// context, which is the narrowest possible statement of "the bookkeeping outlives the request".
+func (r *stubRig) recordOutcomeDirect(
+	ctx context.Context, member core.MembershipID, key string, status int,
+) {
+	r.t.Helper()
+	id, err := core.NewID[core.IdempotencyRecord](r.ids, stubNow)
+	require.NoError(r.t, err)
+	created, err := r.db.Queries().CreateIdempotencyRecord(r.t.Context(),
+		sqlitegen.CreateIdempotencyRecordParams{
+			ID: id.String(), PrincipalMembershipID: member.String(), Key: key,
+			RequestHash: []byte("hash"), ExpiresAt: int64(stubNow.Add(idempotencyTTL)),
+			CreatedAt: int64(stubNow), UpdatedAt: int64(stubNow),
+		})
+	require.NoError(r.t, err)
+	r.server.api.recordOutcome(ctx, created.ID, status, []byte(`{"ok":true}`))
 }

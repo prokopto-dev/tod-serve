@@ -221,9 +221,10 @@ func TestRevokeToken_ASession_RevokesTheCallersOwnDevice(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, got.Status, got.Body)
 
-	var view api.TokenView
+	var view api.TokenResponse
 	require.NoError(t, json.Unmarshal([]byte(got.Body), &view))
 	require.NotNil(t, view.RevokedAt)
+	require.Equal(t, fixtureNow, view.AsOf, "the response carries no as_of from the injected clock")
 	require.NotContains(t, got.Body, token.Reveal(), "a token representation carries no secret")
 
 	// The revoked token stops working immediately, and says so as `token_invalid` rather than
@@ -268,6 +269,8 @@ func TestListMyTokens_ReturnsOnlyTheCallersOwnDevices(t *testing.T) {
 	require.Len(t, page.Items, 2, "officers see nobody's devices but their own")
 	require.False(t, page.HasMore)
 	require.Empty(t, page.NextCursor)
+	require.Equal(t, fixtureNow, page.AsOf,
+		"the page carries no as_of from the injected clock; expires_at below is read against it")
 	for _, item := range page.Items {
 		require.Len(t, item.TokenPrefix, auth.PrefixLen)
 		require.NotContains(t, got.Body, token.Reveal())
@@ -549,4 +552,51 @@ func (h *harness) tokenIDOf(membership core.MembershipID) string {
 	require.NoError(h.t, err)
 	require.NotEmpty(h.t, rows)
 	return rows[0].ID
+}
+
+// Canonical §1, at the edge rather than only in the document: every response this binary serves
+// carries an `as_of` read from the injected clock, so a test that moves the clock sees it move.
+func TestResponses_EveryBody_CarriesAsOfFromTheInjectedClock(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedInstance(false)
+	circle := h.seedCircle("Riot")
+	member := h.seedMember(circle, authz.RoleOfficer)
+	token := h.seedToken(member, authz.ScopeTodRead)
+	tokenID := h.tokenIDOf(member)
+
+	h.advance(90 * time.Second)
+	want := fixtureNow.Add(90 * time.Second)
+
+	cases := []struct {
+		name string
+		req  request
+	}{
+		{"getServerMeta", request{Method: http.MethodGet, Path: api.BasePath + "/meta"}},
+		{"getCurrentPrincipal", request{Method: http.MethodGet, Path: mePath, Token: token}},
+		{"listMyTokens", request{Method: http.MethodGet, Path: api.BasePath + "/tokens", Token: token}},
+		{"getLiveness", request{Method: http.MethodGet, Path: "/healthz"}},
+		{"getReadiness", request{Method: http.MethodGet, Path: "/readyz"}},
+		{
+			"revokeToken",
+			request{
+				Method: http.MethodDelete, Path: api.BasePath + "/tokens/" + tokenID,
+				Session: h.session(member, false),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := h.do(tc.req)
+			require.Equal(t, http.StatusOK, got.Status, got.Body)
+
+			var body struct {
+				AsOf *core.Micros `json:"as_of"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(got.Body), &body))
+			require.NotNil(t, body.AsOf, "%s answered with no as_of: %s", tc.name, got.Body)
+			require.Equal(t, want, *body.AsOf,
+				"%s did not read the injected clock", tc.name)
+		})
+	}
 }

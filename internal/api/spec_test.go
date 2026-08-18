@@ -37,11 +37,36 @@ type specOperation struct {
 
 // specDocument is enough of the document for the lints below.
 type specDocument struct {
-	Paths      map[string]map[string]json.RawMessage `json:"paths"`
+	Paths      map[string]map[string]specPathOperation `json:"paths"`
 	Components struct {
 		Schemas         map[string]json.RawMessage `json:"schemas"`
 		SecuritySchemes map[string]json.RawMessage `json:"securitySchemes"`
 	} `json:"components"`
+}
+
+// specPathOperation keeps the raw operation alongside its responses, so one pass over the document
+// serves both the extension lints and the response-shape one.
+type specPathOperation struct {
+	Raw       json.RawMessage
+	Responses map[string]struct {
+		Content map[string]struct {
+			Schema struct {
+				Ref string `json:"$ref"`
+			} `json:"schema"`
+		} `json:"content"`
+	} `json:"responses"`
+}
+
+// UnmarshalJSON keeps the whole operation as well as the decoded half.
+func (o *specPathOperation) UnmarshalJSON(b []byte) error {
+	o.Raw = append([]byte(nil), b...)
+	type plain specPathOperation
+	var decoded plain
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		return err
+	}
+	o.Responses = decoded.Responses
+	return nil
 }
 
 func loadSpec(t *testing.T) (specDocument, []specOperation) {
@@ -57,7 +82,7 @@ func loadSpec(t *testing.T) (specDocument, []specOperation) {
 	for path, item := range doc.Paths {
 		for method, body := range item {
 			var op specOperation
-			require.NoError(t, json.Unmarshal(body, &op))
+			require.NoError(t, json.Unmarshal(body.Raw, &op))
 			op.Method, op.Path = strings.ToUpper(method), path
 			ops = append(ops, op)
 		}
@@ -231,4 +256,46 @@ func TestSpec_EveryDeclaredScope_IsInTheCatalogue(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Canonical §1: every response carries a top-level `as_of`, and every timestamp in it is read
+// against that rather than against the reader's own clock.
+//
+// This is a gate rather than a habit because the rule is invisible at the call site — a handler
+// that returns a perfectly good representation without one looks finished. It was in fact missed on
+// `listMyTokens` and `revokeToken`, both of which carry `expires_at`, which is exactly the field an
+// overlay on a machine with a fast clock renders wrong on screen and right in the database.
+func TestSpec_EverySuccessResponse_CarriesAsOf(t *testing.T) {
+	t.Parallel()
+	doc, _ := loadSpec(t)
+
+	checked := 0
+	for path, item := range doc.Paths {
+		for method, op := range item {
+			for status, response := range op.Responses {
+				if status < "200" || status >= "300" {
+					continue
+				}
+				content, ok := response.Content[api.MediaTypeJSON]
+				if !ok || content.Schema.Ref == "" {
+					continue
+				}
+				name := strings.TrimPrefix(content.Schema.Ref, "#/components/schemas/")
+				raw, found := doc.Components.Schemas[name]
+				require.True(t, found, "%s %s: schema %s is not in the document", method, path, name)
+
+				var schema struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+				}
+				require.NoError(t, json.Unmarshal(raw, &schema))
+				require.Contains(t, schema.Properties, "as_of",
+					"%s %s answers %s with %s, which carries no top-level as_of; "+
+						"canonical §1 says every response does, and every timestamp in it is read "+
+						"against that rather than against the caller's own clock",
+					strings.ToUpper(method), path, status, name)
+				checked++
+			}
+		}
+	}
+	require.Positive(t, checked, "no success responses were checked; the walk is wrong")
 }
