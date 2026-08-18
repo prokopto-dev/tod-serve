@@ -23,5 +23,11 @@ SET response_status = sqlc.arg(response_status),
 WHERE id = sqlc.arg(id) AND completed_at IS NULL
 RETURNING *;
 
+-- name: DeleteIdempotencyRecord :execrows
+-- A request that failed with a 5xx did not complete, so its record must not stand: leaving it
+-- would answer every retry with `idempotency_conflict` forever, which is the opposite of what the
+-- key is for. The same query clears a record that outlived its expiry and collided with a new one.
+DELETE FROM idempotency_record WHERE id = sqlc.arg(id);
+
 -- name: DeleteExpiredIdempotencyRecords :execrows
 DELETE FROM idempotency_record WHERE expires_at < sqlc.arg(before);

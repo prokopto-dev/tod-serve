@@ -72,6 +72,35 @@ func SleepRule() Rule {
 	}
 }
 
+// RouteRule is ROUTE001: an HTTP route is declared only in internal/api/register.go.
+//
+// AGENTS.md law 1 says routes live only in internal/api. This is stricter, and deliberately so:
+// within that package there is exactly ONE file that may call the framework's registration
+// functions, and it takes an operation id rather than a method and a path. A route registered any
+// other way would not carry the permission, the scopes, the tenancy flag or the idempotency
+// requirement the registry holds — and every architectural test that walks the registry would
+// report success while missing it, which is the failure mode this repository exists to prevent.
+//
+// The allowance is a FILE rather than a directory. [Rule.allows] matches an exact path as well as a
+// prefix, which is what makes that expressible.
+//
+// A grep cannot express this: `huma.Register` can be reached through an aliased import, and the
+// convenience wrappers (`huma.Get`, `huma.Post`, …) register a route without the word `Register`
+// appearing anywhere.
+func RouteRule() Rule {
+	return Rule{
+		ID:     "ROUTE001",
+		Import: "github.com/danielgtaylor/huma/v2",
+		Names: []string{
+			"Register", "AutoRegister",
+			"Get", "Post", "Put", "Patch", "Delete", "Head", "Options",
+		},
+		AllowDirs: []string{"internal/api/register.go"},
+		Reason: "a route is declared only through api.Register, which reads the route registry; " +
+			"see AGENTS.md law 1",
+	}
+}
+
 // Finding is one violation, with enough detail to click.
 type Finding struct {
 	// Rule is the gate ID.
@@ -130,7 +159,7 @@ func Check(root string, dirs []string, rules []Rule) (Result, error) {
 				return fmt.Errorf("read %s: %w", rel, readErr)
 			}
 			for _, rule := range rules {
-				if rule.allows(rel) || (rule.TestFilesOnly && !strings.HasSuffix(rel, "_test.go")) {
+				if rule.Allows(rel) || (rule.TestFilesOnly && !strings.HasSuffix(rel, "_test.go")) {
 					continue
 				}
 				found, checkErr := CheckSource(rule, rel, string(src))
@@ -219,7 +248,7 @@ func (r Rule) localNames(file *ast.File) ([]string, bool) {
 		}
 		switch {
 		case spec.Name == nil:
-			names = append(names, path.Base(r.Import))
+			names = append(names, r.defaultLocalName())
 		case spec.Name.Name == "_":
 		case spec.Name.Name == ".":
 			dot = true
@@ -230,8 +259,41 @@ func (r Rule) localNames(file *ast.File) ([]string, bool) {
 	return names, dot
 }
 
-// allows reports whether a slash-separated path is inside one of the rule's permitted directories.
-func (r Rule) allows(rel string) bool {
+// defaultLocalName returns the identifier an unaliased import of the rule's package binds.
+//
+// It is NOT always the last path segment. A module with a major-version suffix imports as
+// `github.com/danielgtaylor/huma/v2` and binds `huma`, so reading the base would have made the
+// analyser look for references to a package named `v2` and find none — a gate that reports success
+// over nothing, which is the exact failure this package exists to prevent.
+// TestRule_VersionedModulePath_BindsThePackageName pins it.
+func (r Rule) defaultLocalName() string {
+	base := path.Base(r.Import)
+	if isMajorVersionSuffix(base) {
+		return path.Base(path.Dir(r.Import))
+	}
+	return base
+}
+
+// isMajorVersionSuffix reports whether a path segment is `v2`, `v3` and so on — the Go module
+// major-version convention.
+func isMajorVersionSuffix(segment string) bool {
+	if len(segment) < 2 || segment[0] != 'v' {
+		return false
+	}
+	for _, c := range segment[1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// Allows reports whether a slash-separated path is inside one of the rule's permitted directories.
+//
+// An entry that names a FILE rather than a directory matches that file exactly, which is how
+// ROUTE001 confines route registration to a single source file rather than to a package. It is
+// exported so a test can assert the allowance without having to lay out a repository to walk.
+func (r Rule) Allows(rel string) bool {
 	for _, dir := range r.AllowDirs {
 		if rel == dir || strings.HasPrefix(rel, dir+"/") {
 			return true

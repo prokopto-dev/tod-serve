@@ -112,6 +112,21 @@ func (q *Queries) DeleteExpiredIdempotencyRecords(ctx context.Context, before in
 	return result.RowsAffected()
 }
 
+const deleteIdempotencyRecord = `-- name: DeleteIdempotencyRecord :execrows
+DELETE FROM idempotency_record WHERE id = ?1
+`
+
+// A request that failed with a 5xx did not complete, so its record must not stand: leaving it
+// would answer every retry with `idempotency_conflict` forever, which is the opposite of what the
+// key is for. The same query clears a record that outlived its expiry and collided with a new one.
+func (q *Queries) DeleteIdempotencyRecord(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteIdempotencyRecord, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getIdempotencyRecord = `-- name: GetIdempotencyRecord :one
 SELECT id, principal_membership_id, "key", request_hash, response_status, response_body, completed_at, expires_at, created_at, updated_at FROM idempotency_record
 WHERE principal_membership_id = ?1 AND key = ?2
