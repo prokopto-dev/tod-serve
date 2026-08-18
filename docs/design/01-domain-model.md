@@ -233,7 +233,9 @@ CHECK ((kind = 'discord') = (client_id IS NOT NULL))
 
 `auth_flow` — `id`, `state` (unique), `pkce_verifier`, `provider_id`, `invite_code_hash` (nullable),
 `circle_id` (nullable, **advisory** — it selects the OAuth scopes and the guild to check, and is
-re-derived at redemption), `expires_at`, `consumed_at`.
+re-derived at redemption). It is populated **only by resolving `invite_code`**, never from caller
+input: `createAuthorizationURL` accepts no `circle_id`, because a public route that resolved one
+would confirm a circle's existence to anybody who guessed an id. `expires_at`, `consumed_at`.
 
 A row is written **only for a request that passes the shared invite rate limit**
 ([02-api-design](02-api-design.md#one-shared-bucket-for-invite-code-probing)),
@@ -245,7 +247,9 @@ browser would buy nothing and leak it into `sessionStorage`. `invite_code_hash`,
 the same reasoning as `invite.code_hash`.
 
 `credential_ticket` — `id`, `ticket_hash` (unique), `provider_id`, `subject`, `display_name`,
-`guild_ids_json`, `role_ids_json`, `expires_at`, `consumed_at`. Minted by `completeAuthorization`,
+`guild_ids_json` (every guild the subject is in — membership, from `users/@me/guilds`),
+`guild_roles_json` (guild id → role ids, only for guilds a member object was fetched for),
+`expires_at`, `consumed_at`. Minted by `completeAuthorization`,
 **single-use**, 120-second TTL, and it carries the provider's *facts* precisely so that the Discord
 access token can be discarded inside the request that read them.
 

@@ -270,9 +270,11 @@ The two newest entries are on it because **no circle owns them** — not because
 identified before redemption:
 
 - `auth_flow` holds the OAuth `state` and the server-side PKCE verifier. It may record a
-  **nullable** `circle_id`, because the authorization request has to be parameterised before the
-  browser leaves — which scopes to ask for, which guild the gate names. That is a hint for building
-  a provider request, not a tenancy key.
+  **nullable** `circle_id` so the authorization request can be parameterised before the browser
+  leaves — which scopes to ask for, which guild the gate names. That is a hint for building a
+  provider request, not a tenancy key, and it is derived **only from an invite code**: the public
+  route accepts no circle identifier, because resolving one would confirm a circle's existence to
+  anybody who guessed an id (§7).
 - `credential_ticket` carries a verified subject for 120 seconds and is redeemable at **either**
   `/join` or `/sessions`. Which circle it lands in is settled at redemption, by the invite or by the
   request.

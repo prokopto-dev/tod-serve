@@ -15,7 +15,7 @@ Cross-circle access returns **`404`, never `403`** — see
 |---|---|---|---|---|---|
 | GET | `/meta` | `getServerMeta` | public | — | Version, api versions, feature flags, whether self-service circle creation is on |
 | GET | `/identity-providers` | `listIdentityProviders` | public | — | Enabled providers: key, kind, display name, `verifiable_subject`, and for OIDC the issuer, client id and authorization endpoint. Never a secret. Needed *before* auth. |
-| POST | `/auth/authorization-url` | `createAuthorizationURL` | public | — | Start a browser OAuth flow. `{provider, invite_code?, circle_id?}` → `{authorization_url, expires_at}`. Stores `auth_flow(state, pkce_verifier, …)`; the **verifier never leaves the server**. Shares `previewInvite`'s hard rate limit — see below. |
+| POST | `/auth/authorization-url` | `createAuthorizationURL` | public | — | Start a browser OAuth flow. `{provider, invite_code?}` → `{authorization_url, expires_at}`. **Takes no `circle_id`** — see below. Stores `auth_flow(state, pkce_verifier, …)`; the **verifier never leaves the server**. Shares `previewInvite`'s hard rate limit. |
 | GET | `/auth/callback/{provider_key}` | `completeAuthorization` | public | — | The OAuth redirect target. `Hidden: true`. Exchanges the code, checks the token's audience (`GET /oauth2/@me`), reads the provider's facts, **discards the provider access token**, mints a single-use `credential_ticket`, and `302`s to `<spa>/join#ticket=…` — **fragment, never query**. |
 | GET | `/me` | `getCurrentPrincipal` | self | any | Membership, circle, role, effective permissions, token prefix, scopes, expiry |
 | POST | `/invites/preview` | `previewInvite` | public | — | Code **in the body, never the path**. Returns circle name, server, granted role, accepted providers, `revocation_strength`. Hard rate limit. |
@@ -54,6 +54,25 @@ rejected probe costs the instance nothing to store.
 **Enforced by:** `TestInviteOracle_PreviewAndAuthorizationURL_ShareOneBucket`,
 `TestCreateAuthorizationURL_RevealsNoMoreThanPreviewInvite` and
 `TestAuthFlow_RateLimitedCaller_CreatesNoRows`.
+
+### No public route resolves a caller-supplied `circle_id`
+
+Metering the invite code is not enough on its own if the same route accepts a *second* input that
+identifies a circle. `createAuthorizationURL` therefore takes **no `circle_id` at all**: answering
+differently for a real circle than an unknown one — including through which scopes the returned URL
+requests — would confirm a circle's existence to anybody who guessed or obtained an id, which
+[canonical §7](00-canonical-conventions.md#cross-circle-access-returns-404-never-403) exists to
+prevent, and it would sit outside the bucket above.
+
+**A public route resolves a circle only from a secret the caller was given — an invite code — never
+from an identifier they could guess.** Where a circle does come from an identifier, it is resolved
+only after a credential has verified: `authenticateIdentity` takes `circle_id` *with* a credential
+and returns `404` when there is no membership, exactly as every other circle-scoped operation does.
+
+The re-auth flow gets its circles from the verified identity's own memberships inside the callback:
+[04-identity §5](04-identity-and-revocation.md#a-circle-comes-from-a-secret-not-an-identifier).
+
+**Enforced by:** `TestPublicRoutes_ResolveNoCircleFromCallerSuppliedId`, over the route registry.
 
 ### The credential union
 

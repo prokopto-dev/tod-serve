@@ -142,32 +142,75 @@ server-side and the browser never touches a provider token:
 
 ```
 POST /api/v1/auth/authorization-url          createAuthorizationURL   public
-  { provider, invite_code?, circle_id? } -> { authorization_url, expires_at }
-  Writes auth_flow(state, pkce_verifier, provider_id, invite_code_hash?, circle_id?, expires_at).
+  { provider, invite_code? }  ->  { authorization_url, expires_at }
+  NOTE: no circle_id. This route never takes a circle identifier. [see below]
+  Writes auth_flow(state, pkce_verifier, provider_id, invite_code_hash?, circle_id?, expires_at)
+  -- circle_id populated ONLY by resolving invite_code, never from caller input.
   The PKCE verifier stays SERVER-side. Expired or unknown state -> 409 auth_flow_expired.
-  Scopes: identify, plus guilds.members.read when the resolved circle gates on a guild.
+  Scopes: identify; plus guilds.members.read when the invite's circle gates on a guild, or --
+  with no invite -- when ANY enabled circle on this instance does. That is an instance-level
+  fact and names no particular circle.
 
 GET  /api/v1/auth/callback/{provider_key}    completeAuthorization    Hidden: true
   1. Exchange the code (client_id + client_secret + pkce_verifier).
   2. GET /oauth2/@me  -> REJECT unless application.id == our client_id.   [see section 7]
-  3. GET /users/@me   -> subject, display_name.
-  4. GET /users/@me/guilds/{guild.id}/member  for the gated guild -> roles.
-  5. Re-read the invite. If it is no longer live, mint NOTHING and stop at step 6 with an error.
-  6. DISCARD the access token. Write a single-use credential_ticket (TTL 120s) carrying
-     subject, display_name, guild_id and role_ids.
-  7. 302 to  <spa>/join#ticket=<ticket>  on success,  <spa>/join#error=<code>  on failure.
+  3. GET /users/@me   -> subject, display_name.  THE IDENTITY IS NOW KNOWN.
+  4. Determine which guilds need facts:
+       with an invite  -> that invite's circle, if it gates on a guild;
+       without one     -> the circles THIS IDENTITY already has a membership in, if they gate.
+     Either way the set comes from a secret or from the verified identity -- never from a
+     caller-supplied id, so there is nothing here to enumerate.
+  5. GET /users/@me/guilds                     -> guild ids (membership only, no roles).
+     GET /users/@me/guilds/{guild.id}/member   -> roles, once per guild from step 4.
+  6. Re-read the invite, if there was one. If it is no longer live, mint NOTHING.
+  7. DISCARD the access token. Write a single-use credential_ticket (TTL 120s) carrying
+     subject, display_name, guild_ids_json and guild_roles_json (guild id -> role ids).
+  8. 302 to  <spa>/join#ticket=<ticket>  on success,  <spa>/join#error=<code>  on failure.
      Always the FRAGMENT, never the query. [see below]
 
 POST /api/v1/join       credential: { "kind": "provider_ticket", "ticket": "..." }
-POST /api/v1/sessions   same
+POST /api/v1/sessions   { circle_id, credential: {...} }  -- circle resolved AFTER the
+                        credential verifies; no membership is still 404, per canonical section 7.
 ```
 
-**Which guild, and why the flow can know it.** `createAuthorizationURL` resolves the circle behind
-the supplied `invite_code` (or takes `circle_id` directly) and reads
-`circle_provider.discord_guild_id` from it. It has to: the scope set is decided *before* the browser
-leaves — `guilds.members.read` is requested only when the circle actually gates on a guild — and the
-callback needs to know which guild to fetch a member object for. `auth_flow` records the resolved
-`circle_id` for that purpose.
+### A circle comes from a secret, not an identifier
+
+`createAuthorizationURL` deliberately **takes no `circle_id`.** An earlier draft accepted one so the
+re-auth flow could pick scopes up front, and that was a circle-existence oracle: a public,
+pre-authentication route that answers differently for a real circle than an unknown one lets anybody
+with a guessed or leaked id confirm that a rival guild runs a circle here — including through the
+scope set, since `guilds.members.read` would appear only for a gated circle. That contradicts
+[canonical §7](00-canonical-conventions.md#cross-circle-access-returns-404-never-403), which hides a
+circle's *existence* precisely because it is competitive intelligence, and it sat outside the invite
+rate limit besides.
+
+The rule that replaces it:
+
+> A public route resolves a circle only from a **secret the caller was given** — an invite code —
+> never from an **identifier the caller could guess**. Where the circle comes from an identifier, it
+> is resolved only *after* a credential has verified.
+
+An invite code is a capability: holding it is evidence somebody handed it to you, it is looked up by
+hash, and it is metered. A `circle_id` is neither secret nor scarce — it appears in URLs and
+screenshots, and a former member remembers theirs.
+
+So the re-auth path does not name a circle until it can prove who is asking. The callback learns
+the identity at step 3 and then looks up **that identity's own** memberships — a lookup keyed on
+something the caller proved, not something they supplied. `/sessions` still takes `circle_id`,
+but it takes it *with* a credential and answers `404` when there is no membership — the existing
+tenancy behaviour, unchanged.
+
+**Enforced by:** `TestPublicRoutes_ResolveNoCircleFromCallerSuppliedId`, an architectural test over
+the route registry — so a future public route that adds a circle parameter is a red test rather than
+a review catch.
+
+**Which guild, and why the flow can know it.** With an invite, `createAuthorizationURL` resolves
+the circle behind the `invite_code` and reads `circle_provider.discord_guild_id` from it, recording
+the result on `auth_flow`. It has to: the scope set is decided *before* the browser leaves, and
+`guilds.members.read` is requested only where a guild gate actually exists. Without an invite there
+is no circle to resolve yet — per the rule above — so the scope decision falls back to the
+instance-level "does any enabled circle gate on a guild", and the **callback** picks the guilds once
+step 3 has established who is asking.
 
 `GET /users/@me/guilds` returns **partial** guild objects and carries **no roles**, which is why the
 per-guild member endpoint is named explicitly above: a design that fetched only the guild list would
@@ -223,8 +266,9 @@ Everything the callback hands back rides in the **fragment** — `#ticket=…` o
 `#error=<code>` on failure — so there is one rule for the redirect rather than one per outcome.
 
 **A missing fact is a rejection, never a skip.** If the ticket carries no member object for a guild
-the circle gates on — the scope was not granted, the call failed, or the flow named no circle — the
-gate returns `403 guild_role_required`. It does **not** treat absent roles as "no roles required".
+the circle gates on — the scope was not granted, the call failed, or the identity held no
+membership the callback could have derived the guild from — the gate returns
+`403 guild_role_required`. It does **not** treat absent roles as "no roles required".
 The tempting shortcut here silently disables the gate for everyone, which is the confident-mistake
 failure this project is built against.
 
@@ -385,7 +429,9 @@ point at two different guilds, which is why this is not an instance setting. It 
 Failure is `403 guild_membership_required` or `403 guild_role_required`.
 
 Those role ids come from `GET /users/@me/guilds/{guild.id}/member` under the `guilds.members.read`
-scope, fetched for **this circle's** gated guild during the callback. `GET /users/@me/guilds` alone
+scope, fetched during the callback for the gated guild of the invite's circle or — on the re-auth
+path — of the circles the verified identity already belongs to, and carried on the ticket as
+`guild_roles_json`. `GET /users/@me/guilds` alone
 returns partial guild objects with no roles, so it can answer `guild_membership_required` and
 nothing else — see §5.
 
