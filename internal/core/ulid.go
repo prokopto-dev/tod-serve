@@ -37,6 +37,9 @@ const (
 // microsPerMillisecond converts between the storage resolution and the resolution a ULID encodes.
 const microsPerMillisecond = int64(time.Millisecond / time.Microsecond)
 
+// maxULIDMillis is the largest timestamp the 48-bit prefix holds — around the year 10889.
+const maxULIDMillis = uint64(1)<<ulidTimeBits - 1
+
 var (
 	// ErrInvalidULID is returned by [ParseULID] for anything that is not the canonical encoding.
 	ErrInvalidULID = errors.New("invalid ulid")
@@ -45,6 +48,13 @@ var (
 	// It is unreachable in practice and is an error rather than a wraparound because wrapping
 	// would silently break the sort order that the cursor depends on.
 	ErrEntropyExhausted = errors.New("ulid entropy exhausted within one millisecond")
+
+	// ErrTimestampOutOfRange is returned by [Generator.New] for an instant the 48-bit timestamp
+	// cannot hold. Micros is an int64 and the prefix is 48 bits of milliseconds, so a value
+	// outside that range would shift its high bits off the end and mint an id whose encoded time
+	// bears no relation to the clock — a cursor that sorts into the wrong place with nothing to
+	// show for it.
+	ErrTimestampOutOfRange = errors.New("timestamp outside the range a ulid encodes")
 )
 
 // String renders the canonical 26-character encoding.
@@ -177,14 +187,19 @@ func NewGenerator(r io.Reader) *Generator { return &Generator{entropy: r} }
 // plus one. If at goes backwards — an NTP step, a clock correction — the previous millisecond is
 // reused for the same reason. The id is then briefly ahead of the wall clock, which costs nothing:
 // the real instant is in `created_at`, and the id's job is to sort.
+//
+// An instant before the epoch or beyond the year 10889 is [ErrTimestampOutOfRange]. Truncating one
+// into range would mint a well-formed id that sorts nowhere near where its caller believes, and a
+// broken cursor is worse than a refused write.
 func (g *Generator) New(at Micros) (ULID, error) {
+	if at < 0 || uint64(at)/uint64(microsPerMillisecond) > maxULIDMillis {
+		return ULID{}, fmt.Errorf("mint ulid at %d microseconds: %w", int64(at), ErrTimestampOutOfRange)
+	}
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	var ms uint64
-	if at > 0 {
-		ms = uint64(at) / uint64(microsPerMillisecond)
-	}
+	ms := uint64(at) / uint64(microsPerMillisecond)
 	if g.minted && ms <= g.last.milliseconds() {
 		next, err := increment(g.last)
 		if err != nil {

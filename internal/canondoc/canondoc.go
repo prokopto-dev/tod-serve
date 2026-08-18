@@ -138,13 +138,15 @@ func (d *Doc) BlocksUnder(heading string) ([]Block, error) {
 	return out, nil
 }
 
-// BlockUnder returns the nth (0-indexed) fenced block under the matching heading.
+// BlockUnder returns the nth (0-indexed) fenced block under the matching heading. An index outside
+// the blocks that exist — in either direction — is [ErrNotFound] rather than a panic: this runs
+// inside the gates, and a gate that crashes reads as a broken build rather than as a finding.
 func (d *Doc) BlockUnder(heading string, n int) (Block, error) {
 	blocks, err := d.BlocksUnder(heading)
 	if err != nil {
 		return Block{}, err
 	}
-	if n >= len(blocks) {
+	if n < 0 || n >= len(blocks) {
 		return Block{}, fmt.Errorf("block %d under %q in %s: %w", n, heading, d.Path, ErrNotFound)
 	}
 	return blocks[n], nil

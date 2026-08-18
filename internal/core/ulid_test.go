@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"math"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -185,6 +187,51 @@ func TestGenerator_Concurrent_MintsUniqueIds(t *testing.T) {
 		seen[u] = true
 	}
 	require.Len(t, seen, mints)
+}
+
+// The prefix is 48 bits of milliseconds and Micros is an int64, so most of the int64 range is not
+// representable. Truncating into range would mint a well-formed id that sorts nowhere near where
+// its caller believes it does — a broken cursor, with nothing on the surface to show for it.
+func TestGenerator_TimestampOutOfRange_IsRefused(t *testing.T) {
+	t.Parallel()
+	// The last millisecond the 48-bit prefix holds, and the first one it does not.
+	const lastRepresentable = core.Micros(281_474_976_710_655 * 1000)
+
+	for _, tc := range []struct {
+		name string
+		at   core.Micros
+		ok   bool
+	}{
+		{"the epoch", 0, true},
+		{"now", 1_755_483_247_000_000, true},
+		{"the last representable millisecond", lastRepresentable, true},
+		{"the last representable microsecond", lastRepresentable + 999, true},
+		{"one millisecond past the end", lastRepresentable + 1000, false},
+		{"the largest Micros there is", math.MaxInt64, false},
+		{"one microsecond before the epoch", -1, false},
+		{"well before the epoch", -1_000_000_000_000, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := core.NewGenerator(countingEntropy(0x11)).New(tc.at)
+			if !tc.ok {
+				require.ErrorIs(t, err, core.ErrTimestampOutOfRange)
+				require.True(t, got.IsZero(), "a refused mint must not return a usable id")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.at.Time().Truncate(time.Millisecond), got.Time().Time(),
+				"the encoded instant must be the one the caller supplied")
+		})
+	}
+}
+
+// The same refusal reaches the typed ids, which is where callers actually mint.
+func TestNewID_TimestampOutOfRange_IsRefused(t *testing.T) {
+	t.Parallel()
+	_, err := core.NewID[core.TodReport](core.NewGenerator(countingEntropy(0x11)), math.MaxInt64)
+	require.ErrorIs(t, err, core.ErrTimestampOutOfRange)
+	require.Contains(t, err.Error(), "tod_report")
 }
 
 func TestULID_Zero_IsNotSomethingAGeneratorProduces(t *testing.T) {

@@ -78,7 +78,13 @@ func TestBlocksUnder_NoUniqueHeading_IsAnError(t *testing.T) {
 	_, err = doc.BlocksUnder("section")
 	require.ErrorIs(t, err, canondoc.ErrNotFound)
 
+	// An index outside the blocks that exist, in either direction. A negative one reached the
+	// slice and panicked; a gate that crashes reads as a broken build rather than as a finding.
 	_, err = doc.BlockUnder("A subsection", 7)
+	require.ErrorIs(t, err, canondoc.ErrNotFound)
+	_, err = doc.BlockUnder("A subsection", -1)
+	require.ErrorIs(t, err, canondoc.ErrNotFound)
+	_, err = doc.BlockUnder("First section", -3)
 	require.ErrorIs(t, err, canondoc.ErrNotFound)
 }
 
