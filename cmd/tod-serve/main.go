@@ -1,10 +1,13 @@
 // Command tod-serve is the time-of-death tracking server for Project 1999 raid targets.
 //
-// There is no HTTP server in this repository yet. What this binary can do is migrate a database:
-// ADR-0006 makes goose a library it embeds rather than a tool the deployment has to provide,
-// because an officer double-clicking tod-serve.exe has no migration CLI on their PATH, and a
-// migration path that only works on a developer's machine is one nobody finds out about until an
-// upgrade.
+// It serves the API and migrates the database, and the two are separate verbs on purpose: a server
+// that migrates on boot upgrades a database whenever a container restarts, which is how a
+// half-tested schema change reaches production without anybody deciding to run it.
+//
+// ADR-0006 makes goose a library this binary embeds rather than a tool the deployment has to
+// provide, because an officer double-clicking tod-serve.exe has no migration CLI on their PATH,
+// and a migration path that only works on a developer's machine is one nobody finds out about
+// until an upgrade.
 //
 // See ROADMAP.md for what lands in which phase.
 package main
@@ -27,6 +30,7 @@ var version = "0.0.0-dev"
 const (
 	cmdVersion = "version"
 	cmdMigrate = "migrate"
+	cmdServe   = "serve"
 )
 
 // flagDB names the database on the command line.
@@ -68,19 +72,22 @@ func run(args []string, out io.Writer) error {
 		return migrate(context.Background(), args[1:], out)
 	}
 
-	if _, err := fmt.Fprintf(out, `tod-serve %s — pre-1.0, design phase.
+	if len(args) > 0 && args[0] == cmdServe {
+		return serve(context.Background(), args[1:], out)
+	}
 
-There is no HTTP server in this repository yet. What exists is the design, the roadmap,
-the contract that implementation follows, and the database underneath it.
+	if _, err := fmt.Fprintf(out, `tod-serve %s — pre-1.0.
 
+  tod-serve serve                 serve the API ($TOD_ADDR, default :8080)
   tod-serve migrate [--db PATH]   apply the embedded migrations ($%s, default %s)
   tod-serve version               print the version and nothing else
+
+`+"`serve`"+` needs $TOD_TOKEN_PEPPER and $TOD_SESSION_KEY, and refuses to start without them.
+It does NOT migrate: run `+"`tod-serve migrate`"+` first, deliberately.
 
   make status    what is still stubbed, derived from the Makefile itself
   ROADMAP.md     what lands in which phase
   docs/adr/      why things are the way they are, including the downsides
-
-Two release blockers are open and neither is code; see ROADMAP.md.
 `, version, dbPathEnv, defaultDBPath); err != nil {
 		return fmt.Errorf("write banner: %w", err)
 	}

@@ -21,15 +21,18 @@ func TestRun_VersionFlag_PrintsOnlyTheVersion(t *testing.T) {
 	}
 }
 
-// The banner's job is to stop someone concluding the repository is broken when it is merely
-// unimplemented, and to name the verbs that DO work. If it stops doing either, that has failed.
+// The banner's job is to name the verbs that work and the environment they need. An operator who
+// runs the binary with no arguments must not have to read the source to find out that `serve`
+// refuses to start without a pepper.
 func TestRun_NoArgs_SaysWhatWorksAndWhatDoesNot(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	if err := run(nil, &buf); err != nil {
 		t.Fatalf("run(nil): %v", err)
 	}
-	for _, want := range []string{"design phase", "no HTTP server", cmdMigrate, "make status", "ROADMAP.md"} {
+	for _, want := range []string{
+		cmdServe, cmdMigrate, envTokenPepper, envSessionKey, "make status", "ROADMAP.md",
+	} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("banner does not mention %q; got:\n%s", want, buf.String())
 		}
