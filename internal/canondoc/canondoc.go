@@ -51,6 +51,7 @@ type Doc struct {
 	Path   string
 	raw    string
 	blocks []Block
+	tables []Table
 }
 
 // Raw returns the whole document. Some rules are stated in prose rather than in a fenced block —
@@ -74,8 +75,14 @@ func Load(path string) (*Doc, error) {
 		open    *Block
 		body    strings.Builder
 	)
-	for i, line := range strings.Split(string(raw), "\n") {
+	// Lines inside a fence are blanked in this copy, so a fenced block containing pipes cannot be
+	// read as a Markdown table by parseTables below. headings[i] is the section line i sits in.
+	source := strings.Split(string(raw), "\n")
+	outside := make([]string, len(source))
+	headings := make([]string, len(source))
+	for i, line := range source {
 		lineNo := i + 1
+		headings[i] = heading
 		switch {
 		case open != nil && strings.HasPrefix(line, "```"):
 			open.Body = body.String()
@@ -92,11 +99,20 @@ func Load(path string) (*Doc, error) {
 			}
 		case strings.HasPrefix(line, "#"):
 			heading = strings.TrimSpace(strings.TrimLeft(line, "#"))
+			headings[i] = heading
+		default:
+			outside[i] = line
 		}
 	}
 	if open != nil {
 		return nil, fmt.Errorf("read %s: unterminated fence opened at line %d", path, open.Line)
 	}
+
+	tables, err := parseTables(path, outside, headings)
+	if err != nil {
+		return nil, err
+	}
+	doc.tables = tables
 	return doc, nil
 }
 

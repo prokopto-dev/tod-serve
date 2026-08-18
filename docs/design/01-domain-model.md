@@ -47,8 +47,8 @@ it is a reviewed decision.
 | `raid_target_alias` | mutable | `VA`, `Naggy`, `Vox`, `Trak` → target. |
 | `raid_target_timer` | mutable | **Per-server** respawn window. PK `(target_id, server)`. |
 | `api_token` | mutable | Opaque PATs, bound to a membership. |
-| `idempotency_record` | mutable | `(principal_id, key)` → request hash, response, state. |
-| `event_outbox` | append-only | Global `event_seq`, SSE delivery. |
+| `idempotency_record` | mutable | `(principal_membership_id, key)` → request hash, response, `completed_at`. |
+| `event_outbox` | append-only | Global `event_seq` (`INTEGER PRIMARY KEY AUTOINCREMENT`), SSE delivery. `circle_id` is nullable: an instance-level event belongs to no circle. |
 
 ## Circle-scoped tables
 
@@ -65,7 +65,7 @@ Every row carries `circle_id NOT NULL REFERENCES circle(id)`.
 | `quake_event` | **append-only** | Server-wide repop. |
 | `circle_timer_override` | mutable | This circle disagrees with the catalogue about a target's window. |
 | `target_state_cache` | droppable cache | Materialised consensus. **Never authority.** |
-| `audit_log` | append-only | Hash-chained. Circle rows carry `circle_id`; instance rows do not. |
+| `audit_log` | append-only | Hash-chained. `circle_id NOT NULL` — see the note below. |
 
 ## The tables that carry a decision
 
@@ -146,9 +146,19 @@ the same split merchant-mode draws between an item's id and its price.
 
 ```sql
 CHECK ((window_kind = 'unknown') = (window_open_offset_seconds IS NULL))
-CHECK ((window_kind = 'fixed')   = (window_open_offset_seconds = window_close_offset_seconds))
-CHECK (window_close_offset_seconds >= window_open_offset_seconds)
+CHECK ((window_open_offset_seconds IS NULL) = (window_close_offset_seconds IS NULL))
+CHECK ((window_kind = 'fixed') = (window_open_offset_seconds IS NOT NULL
+                                  AND window_close_offset_seconds IS NOT NULL
+                                  AND window_open_offset_seconds = window_close_offset_seconds))
+CHECK (window_open_offset_seconds IS NULL OR window_close_offset_seconds IS NULL
+       OR window_close_offset_seconds >= window_open_offset_seconds)
 ```
+
+**Four, not three, and none of them may evaluate to NULL.** SQLite treats a `CHECK` whose expression
+is NULL as *satisfied*, so the three-rule version above accepts a `fixed` timer with a NULL close
+offset, a `variance` band with only one edge, and an `unknown` window that kept a close offset —
+each reaching the derivation as a window it cannot read. The pairing rule is the branch the other
+three were leaning on and never stated.
 
 *Rejected: storing `(base_respawn, variance)`.* It cannot express an asymmetric window without
 inventing a sign convention, and P99 community data is quoted both ways — "7 days ±12h" and "16 to 24
@@ -187,6 +197,13 @@ CREATE UNIQUE INDEX ux_tod_report_natural
   ON tod_report(circle_id, target_id, reporter_membership_id, died_at) WHERE kind = 'kill';
 ```
 
+**Every reference from a circle-scoped table to a circle-scoped table carries `circle_id`** — the
+foreign key is `(circle_id, reporter_membership_id) REFERENCES membership (circle_id, id)`, not
+`(reporter_membership_id) REFERENCES membership (id)`. A single-column key proves the reporter
+exists; it does not prove they are in *this* circle, and a report filed in circle B naming a
+reporter from circle A would satisfy both keys individually while corrupting B's consensus. The same
+applies to `retracts_report_id`, to every `*_membership_id`, and to `admitted_by_invite_id`.
+
 That natural key is a second line of defence behind `Idempotency-Key`: the same reporter cannot lodge
 the same kill twice even if the header is botched. A *correction* by the same reporter has a
 different `died_at`, so it is unaffected. A duplicate returns `200` with the existing report — a
@@ -194,7 +211,12 @@ replay, not an error.
 
 ### `quake_event` — append-only
 
-`id`, `circle_id`, `occurred_at`, `reported_by_membership_id`, `source`, `note`.
+`id`, `circle_id`, `occurred_at`, `reported_at`, `reported_by_membership_id`, `source`, `note`.
+
+`occurred_at` is **game truth** and may be backdated; `reported_at` is **system truth** and never
+is — the same split `tod_report` carries, and it carries the same
+`CHECK (occurred_at <= reported_at + 120000000)`. A quake in the future is impossible independent of
+any derivation.
 
 An earthquake repops every raid target on the server at once. Modelling that as N kill reports would
 be a lie — nobody observed N kills — and it would corrupt every confidence figure on the board.
@@ -245,6 +267,12 @@ after `expires_at`. **The PKCE verifier stays on the server**: a
 confidential client has a `client_secret` to bind the exchange, and handing the verifier to the
 browser would buy nothing and leak it into `sessionStorage`. `invite_code_hash`, not the code —
 the same reasoning as `invite.code_hash`.
+
+`credential_ticket`'s 120-second TTL is a `CHECK (expires_at = created_at + 120000000)`, and its
+single use is a `BEFORE UPDATE` trigger that aborts once `consumed_at` is set, so neither a
+long-lived ticket nor a replay is representable rather than merely rejected. A second trigger
+freezes the provider's facts after minting: the guild roles on the row *are* the gate's input, and a
+gate evaluated against an edited copy is not a gate.
 
 `credential_ticket` — `id`, `ticket_hash` (unique), `provider_id`, `subject`, `display_name`,
 `guild_roles_json` (gated guild id → role ids, from `users/@me/guilds/{guild.id}/member`; a guild
@@ -312,3 +340,16 @@ scheduling, conflict resolution and cross-circle negotiation. It is named here s
 a project rather than as a small addition to `target_state`.
 
 **Per-reporter clock-skew correction.** See [consensus §8](03-consensus.md#8-known-weaknesses).
+
+**Instance-realm `audit_log` rows.** This document said "circle rows carry `circle_id`; instance
+rows do not", and [canonical §9](00-canonical-conventions.md#9-tenancy--this-project-diverges-from-dkp)
+says every table not on the allowlist carries `circle_id NOT NULL`. Both cannot hold, and canonical
+conventions is the tie-breaker, so `audit_log.circle_id` is `NOT NULL` and there is nowhere yet for
+an instance-realm audit row. Giving it one is a reviewed decision — a separate `instance_audit_log`
+table, or `audit_log` on the allowlist — and it is deliberately not made here.
+
+**The `permission` and `role_permission` seed tables.** [Canonical §6](00-canonical-conventions.md#6-permissions-and-scopes--one-catalogue-generated)
+makes `role_permission` FK-constrained to `permission(key)`, which is what turns a divergent
+hand-written list into a boot failure. Those two tables appear in neither scope list above, so
+creating them needs an allowlist decision as well; they land with the authorization seed rather than
+being added to the schema quietly.

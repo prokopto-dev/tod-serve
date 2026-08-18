@@ -59,6 +59,13 @@ linters:
       # Extracting one into a constant to satisfy a linter makes the table worse, not better.
       - path: _test\.go
         linters: [goconst]
+      # The same argument, for the same reason: internal/dbschema's binding table is a table of
+      # (table, column, enum) triples, and a reader checks it against db/schema.hcl by eye. Every
+      # name in it is asserted against the domain model by
+      # TestEnumBindings_EveryBinding_NamesATableInTheDomainModel, so the literal is checked;
+      # replacing it with an identifier would make the check harder to read and no stronger.
+      - path: internal/dbschema/bindings\.go
+        linters: [goconst]
 
 formatters:
   enable:

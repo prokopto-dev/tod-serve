@@ -16,6 +16,7 @@ GO        ?= go
 PKG       := ./...
 BIN       := tod-serve
 BUILD_DIR := ./bin
+DB_PATH   ?= ./tod.db
 
 # notyet <phase> <what> — a target that is declared but not yet implemented.
 # No leading '@': call sites add it, so this also works inside shell if/else blocks.
@@ -67,7 +68,7 @@ lint-go:
 	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint config verify && golangci-lint run; \
 	 else printf '\033[33m  skipped\033[0m  golangci-lint is not on PATH; CI runs it (see .golangci.yml)\n'; fi
 
-## lint-repo: repository gates (PIN001, TEN001, NET001, CLOCK001, NOFLOAT001, PURE001/2)
+## lint-repo: repository gates (PIN001, TEN001, LOG001, MIG001, SQLC001, NET001, CLOCK001, ...)
 .PHONY: lint-repo
 lint-repo:
 	@bash scripts/repo-gates.sh
@@ -83,24 +84,32 @@ test-golden:
 	@$(call notyet,Phase 2,replays test/golden/consensus/*.json through internal/consensus)
 
 ## test-integration: real SQLite in a temp dir
+# Also run by `make test`, deliberately. A suite that only runs under its own target is a suite
+# that stops running the first time somebody is in a hurry; this target is the focused re-run.
 .PHONY: test-integration
 test-integration:
-	@$(call notyet,Phase 1,boots a real SQLite database and exercises the store and API)
+	$(GO) test -race -count=1 ./internal/store/... ./db/...
 
 ## test-tenancy: cross-circle isolation over the route registry
 .PHONY: test-tenancy
 test-tenancy:
 	@$(call notyet,Phase 1,asserts a principal of circle A gets 404 on every circle-scoped operation of circle B)
 
-## gen: regenerate enums, OpenAPI and sqlc bindings
+## gen: regenerate the enum locals, the migration and the sqlc bindings
+# Needs Atlas and sqlc; the script says so by name if either is missing. ADR-0006 accepts that
+# cost. The OpenAPI half lands with the API in Phase 1.
+#
+# NAME=<snake_case> names the migration when db/schema.hcl has changed.
 .PHONY: gen
 gen:
-	@$(call notyet,Phase 1,writes the enum catalogue into the DDL CHECK and the OpenAPI schema, and runs sqlc)
+	@bash scripts/gen-schema.sh $(NAME)
 
 ## migrate: apply migrations to a local database
+# Through the shipped binary rather than a migration CLI, because that is the path an operator
+# takes and it is the only one worth having tested. TOD_DB_PATH overrides the target.
 .PHONY: migrate
 migrate:
-	@$(call notyet,Phase 1,goose over db/migrations-sqlite via db/embed.go)
+	$(GO) run ./cmd/$(BIN) migrate --db $(DB_PATH)
 
 ## seed: load the raid-target catalogue
 .PHONY: seed

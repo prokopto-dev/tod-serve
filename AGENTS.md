@@ -21,6 +21,7 @@ than writing it down as though it were enforced.
 | `internal/identity/{,discord,oidc}/` | Provider registry, credential dispatch, identity and link resolution. **The only packages permitted to make outbound HTTP requests** |
 | `internal/circle/`, `membership/`, `catalogue/`, `tod/` | Domain services |
 | `internal/schemaenum/` | The enum catalogue — every enumerated column, and the ordering rule for the two that have one |
+| `internal/dbschema/` | Binds each catalogue enum to the column that holds it, and generates `db/enums.hcl`. Enum `CHECK` lists are never hand-written |
 | `internal/consensus/` | **Pure.** Clustering, cluster selection, estimate, confidence, window computation |
 | `internal/projection/` | `target_state_cache` maintenance, invalidation, rebuild, nightly verify |
 | `internal/store/` | The only holder of `*sql.DB`. `sqlitegen/` is generated and never hand-edited |
@@ -28,7 +29,7 @@ than writing it down as though it were enforced.
 | `internal/clock/` | The only `time.Now` |
 | `internal/repogate/` | The gates that need an AST rather than a grep: `CLOCK001`, `SLEEP001` |
 | `internal/canondoc/` | Reads fenced blocks out of the normative documents, so a gate compares code against the document rather than against a copy of it |
-| `db/` | `schema.hcl` is the single schema truth; `queries/*.sql`; `migrations-sqlite/` |
+| `db/` | `schema.hcl` is the single schema truth; `enums.hcl` is generated; `queries/*.sql`; `migrations-sqlite/`, forward-only |
 | `test/repo/` | Tests about the repository itself, not the product: they assert the gates below actually fire |
 
 ## The laws
@@ -52,6 +53,12 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    allowlisted hosts. `NET001`, plus a dialer denying private, link-local, loopback and
    cloud-metadata addresses.
 7. **`web/src` contains no `fetch` outside `web/src/api`.** ESLint rule plus a CI grep.
+8. **Migrations are forward-only and the report log is never rewritten.** `MIG001` fails a `Down`
+   block containing DDL or a file out of sequence; `LOG001` fails an `UPDATE` or `DELETE` against an
+   append-only table anywhere in `db/queries` or `db/migrations-sqlite`, which is every route Go has
+   to the database. The triggers are the enforcement; these catch the statement before it ships.
+9. **`db/queries/*.sql` is ASCII.** `SQLC001`. Not style: sqlc rewrites `sqlc.arg()` by byte offset
+   while reporting positions in runes, so one em dash silently mangles every query after it.
 
 ## Non-negotiable invariants
 
@@ -67,6 +74,11 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
   access, never history.
 - **`identity_provider.verifiable_subject` is a CHECK against `kind`,** not a toggle. Everything about
   revocation strength hangs off it.
+- **The schema is `db/schema.hcl` and nothing else.** Atlas authors the migration from it and
+  `make gen` re-runs the diff to prove the file it wrote says the same thing. The one hand-written
+  migration is the trigger one, because Atlas Community cannot see triggers — which is also why a
+  table rebuild drops them silently, and why `TestAppendOnly_TriggersFire_AfterAllMigrations` asserts
+  an abort rather than a row in `sqlite_master`.
 
 ## Go idioms
 

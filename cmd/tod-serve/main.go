@@ -1,25 +1,43 @@
 // Command tod-serve is the time-of-death tracking server for Project 1999 raid targets.
 //
-// There is no working software in this repository yet. This binary exists so that `go build ./...`
-// and `make lint` are real checks from the first commit rather than ones that start working later —
-// a build target that does not exist cannot regress, and a toolchain nobody exercised is a
-// toolchain nobody notices is broken.
+// There is no HTTP server in this repository yet. What this binary can do is migrate a database:
+// ADR-0006 makes goose a library it embeds rather than a tool the deployment has to provide,
+// because an officer double-clicking tod-serve.exe has no migration CLI on their PATH, and a
+// migration path that only works on a developer's machine is one nobody finds out about until an
+// upgrade.
 //
 // See ROADMAP.md for what lands in which phase.
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+
+	"github.com/prokopto-dev/tod-serve/internal/store"
 )
 
 // version is set at build time via -ldflags.
 var version = "0.0.0-dev"
 
-// cmdVersion is the one verb this binary understands. Named rather than repeated so the test
-// exercises the real string instead of a copy that can drift away from it.
-const cmdVersion = "version"
+// The verbs this binary understands. Named rather than repeated so the tests exercise the real
+// strings instead of copies that can drift away from them.
+const (
+	cmdVersion = "version"
+	cmdMigrate = "migrate"
+)
+
+// flagDB names the database on the command line.
+const flagDB = "--db"
+
+// dbPathEnv names the database, so a container can set it once instead of every invocation
+// repeating a flag.
+const dbPathEnv = "TOD_DB_PATH"
+
+// defaultDBPath is where the database lands when nothing says otherwise.
+const defaultDBPath = "tod.db"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -44,18 +62,93 @@ func run(args []string, out io.Writer) error {
 		return nil
 	}
 
+	if len(args) > 0 && args[0] == cmdMigrate {
+		// context.Background() is permitted here: this is main wiring, and there is no caller
+		// above it to inherit a context from.
+		return migrate(context.Background(), args[1:], out)
+	}
+
 	if _, err := fmt.Fprintf(out, `tod-serve %s — pre-1.0, design phase.
 
-There is no working software in this repository yet. What exists is the design, the
-roadmap, and the contract that implementation follows.
+There is no HTTP server in this repository yet. What exists is the design, the roadmap,
+the contract that implementation follows, and the database underneath it.
+
+  tod-serve migrate [--db PATH]   apply the embedded migrations ($%s, default %s)
+  tod-serve version               print the version and nothing else
 
   make status    what is still stubbed, derived from the Makefile itself
   ROADMAP.md     what lands in which phase
   docs/adr/      why things are the way they are, including the downsides
 
 Two release blockers are open and neither is code; see ROADMAP.md.
-`, version); err != nil {
+`, version, dbPathEnv, defaultDBPath); err != nil {
 		return fmt.Errorf("write banner: %w", err)
 	}
 	return nil
+}
+
+// migrate applies every embedded migration to the database at --db, or at $TOD_DB_PATH, or at
+// ./tod.db.
+//
+// It reports the version it reached rather than only succeeding silently, because "did the upgrade
+// run" is the question an operator has after a deploy, and an empty success looks identical to a
+// binary that did nothing.
+func migrate(ctx context.Context, args []string, out io.Writer) error {
+	path, err := databasePath(args, os.Getenv(dbPathEnv))
+	if err != nil {
+		return err
+	}
+
+	// Migration output goes to the same writer as everything else this command prints: it IS the
+	// command's output, not a side channel, and a migration whose log went somewhere the operator
+	// was not looking is how a half-applied upgrade goes unnoticed.
+	log := slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	db, err := store.Open(ctx, path, log)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := db.Close(); cerr != nil {
+			log.ErrorContext(ctx, "close database", slog.Any("error", cerr))
+		}
+	}()
+
+	if err := db.Migrate(ctx); err != nil {
+		return err
+	}
+	version, err := db.SchemaVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "%s is at schema version %d\n", path, version); err != nil {
+		return fmt.Errorf("write migration result: %w", err)
+	}
+	return nil
+}
+
+// databasePath resolves --db, then the environment value, then the default.
+//
+// The environment is passed in rather than read here so the function is pure and its test can run
+// in parallel: t.Setenv and t.Parallel are mutually exclusive, and a rule that says every test is
+// parallel is worth one parameter.
+func databasePath(args []string, env string) (string, error) {
+	switch {
+	case len(args) == 0:
+		if env != "" {
+			return env, nil
+		}
+		return defaultDBPath, nil
+	case args[0] != flagDB:
+		// Refused rather than ignored: `--database /srv/tod.db` would otherwise migrate ./tod.db
+		// and report success, which is the worst available outcome for an upgrade command.
+		return "", fmt.Errorf("unknown argument %q: %s takes only %s <path>",
+			args[0], cmdMigrate, flagDB)
+	case len(args) == 1:
+		return "", fmt.Errorf("%s needs a path", flagDB)
+	case len(args) > 2:
+		return "", fmt.Errorf("unexpected argument %q after %s", args[2], flagDB)
+	default:
+		return args[1], nil
+	}
 }
