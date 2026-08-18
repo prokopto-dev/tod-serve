@@ -1,0 +1,29 @@
+-- circle_provider - which instance providers this circle accepts, and the Discord guild gate.
+-- An empty discord_required_role_ids_json means "anyone in the guild"; a NULL discord_guild_id
+-- means the circle does not gate on a guild at all.
+
+-- name: PutCircleProvider :one
+INSERT INTO circle_provider (
+  circle_id, provider_id, discord_guild_id, discord_required_role_ids_json, created_at, updated_at
+) VALUES (
+  sqlc.arg(circle_id), sqlc.arg(provider_id), sqlc.narg(discord_guild_id),
+  sqlc.arg(discord_required_role_ids_json), sqlc.arg(created_at), sqlc.arg(updated_at)
+)
+ON CONFLICT (circle_id, provider_id) DO UPDATE SET
+  discord_guild_id = excluded.discord_guild_id,
+  discord_required_role_ids_json = excluded.discord_required_role_ids_json,
+  updated_at = excluded.updated_at
+RETURNING *;
+
+-- name: GetCircleProvider :one
+SELECT * FROM circle_provider
+WHERE circle_id = sqlc.arg(circle_id) AND provider_id = sqlc.arg(provider_id);
+
+-- name: ListCircleProviders :many
+SELECT * FROM circle_provider WHERE circle_id = sqlc.arg(circle_id) ORDER BY provider_id;
+
+-- name: DeleteCircleProvider :execrows
+-- Stops NEW joins via that provider. It does not revoke existing memberships: mass-revoke on
+-- removal is a footgun that eventually deletes a guild's whole roster with one click.
+DELETE FROM circle_provider
+WHERE circle_id = sqlc.arg(circle_id) AND provider_id = sqlc.arg(provider_id);

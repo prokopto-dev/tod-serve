@@ -1,0 +1,25 @@
+# sqlc generates internal/store/sqlitegen from db/queries. ADR-0006; run it with `make gen`.
+#
+# The schema input is the migration directory rather than db/schema.hcl, deliberately: sqlc then
+# types the queries against the DDL that will actually be applied to an officer's database, so a
+# migration that says something other than schema.hcl produces wrong Go rather than passing
+# unnoticed. `make gen` proves the two agree before it gets here.
+version: "2"
+
+sql:
+  - engine: "sqlite"
+    schema: "db/migrations-sqlite"
+    queries: "db/queries"
+    gen:
+      go:
+        package: "sqlitegen"
+        out: "internal/store/sqlitegen"
+        # A nullable column is *string, not interface{}. `any` in a signature is banned by
+        # AGENTS.md, and a scan into one hands the caller whatever the driver felt like returning.
+        emit_pointers_for_null_types: true
+        # A :many query with no rows returns an empty slice, so a caller ranging over the result
+        # does not have to know whether nil and empty mean different things here. They do not.
+        emit_empty_slices: true
+        rename:
+          # sqlc's inflector reads the trailing "a" of tod_meta as a plural.
+          tod_metum: "TodMeta"

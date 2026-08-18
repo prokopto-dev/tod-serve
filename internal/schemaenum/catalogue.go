@@ -14,6 +14,7 @@ const (
 	NameCircleState              = "circle.state"
 	NameMembershipRole           = "membership.role"
 	NameMembershipKind           = "membership.kind"
+	NameInviteMintedByKind       = "invite.minted_by_kind"
 	NameIdentityProviderKind     = "identity_provider.kind"
 	NameTodReportKind            = "tod_report.kind"
 	NameTodReportSource          = "tod_report.source"
@@ -48,6 +49,9 @@ const (
 
 	MembershipKindHuman   = "human"
 	MembershipKindService = "service"
+
+	InviteMintedByKindSession = "session"
+	InviteMintedByKindPAT     = "pat"
 
 	IdentityProviderKindDiscord = "discord"
 	IdentityProviderKindOIDC    = "oidc"
@@ -135,6 +139,10 @@ func All() []Enum {
 			Order: Descending,
 		},
 		{Name: NameMembershipKind, Values: []string{MembershipKindHuman, MembershipKindService}},
+		{
+			Name:   NameInviteMintedByKind,
+			Values: []string{InviteMintedByKindSession, InviteMintedByKindPAT},
+		},
 		{
 			Name: NameIdentityProviderKind,
 			Values: []string{
@@ -299,15 +307,23 @@ func (e Enum) Rank(value string) (int, bool) {
 	return 0, false
 }
 
-// CheckSQL renders the CHECK constraint for a column holding this enum. Values are known-safe —
-// a test asserts every value is lowercase snake_case — so the quoting here is not a sanitiser and
-// must not be mistaken for one.
-func (e Enum) CheckSQL(column string) string {
+// InSQL renders the `column IN ('a', 'b')` predicate for a column holding this enum. Values are
+// known-safe — a test asserts every value is lowercase snake_case — so the quoting here is not a
+// sanitiser and must not be mistaken for one.
+//
+// It is separate from [Enum.CheckSQL] because Atlas HCL takes the bare expression while a migration
+// takes the whole constraint, and rendering the value list twice is how the two would drift.
+func (e Enum) InSQL(column string) string {
 	quoted := make([]string, 0, len(e.Values))
 	for _, v := range e.Values {
 		quoted = append(quoted, "'"+v+"'")
 	}
-	return fmt.Sprintf("CHECK (%s IN (%s))", column, strings.Join(quoted, ", "))
+	return fmt.Sprintf("%s IN (%s)", column, strings.Join(quoted, ", "))
+}
+
+// CheckSQL renders the CHECK constraint for a column holding this enum.
+func (e Enum) CheckSQL(column string) string {
+	return fmt.Sprintf("CHECK (%s)", e.InSQL(column))
 }
 
 // OrderBySQL renders the `CASE … END` that sorts a column by this enum's ranking, ascending.

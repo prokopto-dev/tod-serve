@@ -80,6 +80,7 @@ server:                        blue green red
 circle.state:                  active archived
 membership.role:               owner officer member observer
 membership.kind:               human service
+invite.minted_by_kind:         session pat
 identity_provider.kind:        discord oidc local
 tod_report.kind:               kill retraction
 tod_report.source:             log_line manual api import
