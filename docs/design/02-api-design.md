@@ -244,6 +244,7 @@ last_owner (409)                 field_immutable (422)         link_requires_ver
 guild_membership_required (403)  guild_role_required (403)     auth_ticket_invalid (401)
 auth_ticket_expired (401)        auth_flow_expired (409)       identity_blocked (403)
 credential_audience_mismatch (401)
+provider_scope_declined (403)
 ```
 
 A `provider_ticket` is a bearer credential, so it reaches the SPA in the redirect **fragment** and

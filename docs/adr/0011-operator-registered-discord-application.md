@@ -52,9 +52,10 @@ calls **`GET /oauth2/@me` first and rejects unless `application.id` is ours**
 (`401 credential_audience_mismatch`) — on the `bearer_token` path, where it is load-bearing, and in
 the callback, where it is redundant. That is the audience binding OIDC gets free from `aud`.
 
-Roles come from `GET /users/@me/guilds/{guild.id}/member` under `guilds.members.read`, for the
-circle's gated guild. `/users/@me/guilds` returns no roles. Absent facts **reject**; they are never
-read as "nothing required".
+Membership and roles both come from `GET /users/@me/guilds/{guild.id}/member` under
+`guilds.members.read`, for the gated guild only — one call, one scope, and the subject's other
+guilds are never learned. Absent facts **reject**; a *declined* scope says so
+(`provider_scope_declined`) rather than posing as a role failure.
 
 Mechanisms: `TestDiscord_ForeignApplicationToken_Refused`,
 `TestDiscord_AccessToken_NeverPersisted`, `TestCredentialTicket_SecondRedemption_Refused`,

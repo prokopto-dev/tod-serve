@@ -37,7 +37,7 @@ At most one `discord` row and at most one `local` row, by partial unique index. 
 
 | Kind | How the server verifies | Credential persisted? |
 |---|---|---|
-| `discord` | **`GET /oauth2/@me` first**, rejecting unless `application.id` equals this instance's `client_id` — see §7. Then `GET /users/@me` for the subject (the snowflake `id`) and display name (`global_name ?? username`), and `GET /users/@me/guilds/{guild.id}/member` for the gated guild's `roles`. | **Never.** The access token is read and discarded inside the request; only the derived facts reach `credential_ticket`. |
+| `discord` | **`GET /oauth2/@me` first**, rejecting unless `application.id` equals this instance's `client_id` (§7) and reading the granted scopes. Then `GET /users/@me` for the subject (the snowflake `id`) and display name (`global_name ?? username`), and `GET /users/@me/guilds/{guild.id}/member` — under `guilds.members.read`, for the gated guild only — whose `404`/`200` answers membership and whose `roles` answers the role gate. | **Never.** The access token is read and discarded inside the request; only the derived facts reach `credential_ticket`. |
 | `oidc` | Verify the **ID token** offline: signature against cached JWKS, `iss`, `aud = client_id`, `exp`, `nonce`. Subject = `subject_claim`, default `sub`. | No. |
 | `local` | Nothing to verify. Subject is a server-minted ULID; display name is self-asserted. | n/a |
 
@@ -149,22 +149,26 @@ POST /api/v1/auth/authorization-url          createAuthorizationURL   public
   The PKCE verifier stays SERVER-side. Expired or unknown state -> 409 auth_flow_expired.
   Scopes: identify; plus guilds.members.read when the invite's circle gates on a guild, or --
   with no invite -- when ANY enabled circle on this instance does. That is an instance-level
-  fact and names no particular circle.
+  fact and names no particular circle. NOT the `guilds` scope: see below.
 
 GET  /api/v1/auth/callback/{provider_key}    completeAuthorization    Hidden: true
   1. Exchange the code (client_id + client_secret + pkce_verifier).
   2. GET /oauth2/@me  -> REJECT unless application.id == our client_id.   [see section 7]
+                      -> ALSO read the GRANTED scopes. A required scope the user declined is
+                         403 provider_scope_declined, NOT a role failure. [see below]
   3. GET /users/@me   -> subject, display_name.  THE IDENTITY IS NOW KNOWN.
   4. Determine which guilds need facts:
        with an invite  -> that invite's circle, if it gates on a guild;
        without one     -> the circles THIS IDENTITY already has a membership in, if they gate.
      Either way the set comes from a secret or from the verified identity -- never from a
      caller-supplied id, so there is nothing here to enumerate.
-  5. GET /users/@me/guilds                     -> guild ids (membership only, no roles).
-     GET /users/@me/guilds/{guild.id}/member   -> roles, once per guild from step 4.
+  5. GET /users/@me/guilds/{guild.id}/member, once per guild from step 4.
+       200 -> the subject is in that guild; the member object carries `roles`.
+       404 -> the subject is NOT in that guild.
+     No call to /users/@me/guilds. One endpoint answers membership AND roles. [see below]
   6. Re-read the invite, if there was one. If it is no longer live, mint NOTHING.
   7. DISCARD the access token. Write a single-use credential_ticket (TTL 120s) carrying
-     subject, display_name, guild_ids_json and guild_roles_json (guild id -> role ids).
+     subject, display_name and guild_roles_json (gated guild id -> role ids, absent when 404).
   8. 302 to  <spa>/join#ticket=<ticket>  on success,  <spa>/join#error=<code>  on failure.
      Always the FRAGMENT, never the query. [see below]
 
@@ -212,9 +216,40 @@ is no circle to resolve yet — per the rule above — so the scope decision fal
 instance-level "does any enabled circle gate on a guild", and the **callback** picks the guilds once
 step 3 has established who is asking.
 
-`GET /users/@me/guilds` returns **partial** guild objects and carries **no roles**, which is why the
-per-guild member endpoint is named explicitly above: a design that fetched only the guild list would
-have nothing to evaluate a non-empty `discord_required_role_ids_json` against.
+### One endpoint, one scope
+
+Discord splits these across two scopes, and they are not interchangeable:
+
+| Call | Scope it needs | Returns |
+|---|---|---|
+| `GET /users/@me/guilds` | **`guilds`** | Partial guild objects — membership only, **no roles** |
+| `GET /users/@me/guilds/{guild.id}/member` | **`guilds.members.read`** | The member object for one guild, **including `roles`**; `404` if the subject is not in it |
+
+**This flow calls only the second, and therefore requests only `guilds.members.read`.** An earlier
+draft called the guild list as well while advertising neither `guilds` nor a reason — so the call
+would have failed on scope and the gate would have fallen closed against members who were genuinely
+in the guild.
+
+The guild list turned out to be unnecessary anyway. The member endpoint answers **both** questions
+for the guild that actually matters: `404` is "not a member" (`guild_membership_required`), `200`
+carries `roles` for the role check. That is one round trip fewer, one scope fewer on the consent
+screen, and — the part worth keeping — **it learns only about the gated guild instead of harvesting
+the subject's entire Discord guild list**, which is nothing this product needs to know.
+
+Requesting `guilds` would be asking for more data to answer a narrower question.
+
+### A declined scope is not a role failure
+
+`GET /oauth2/@me` returns the **granted** scopes alongside `application.id`, so the callback already
+holds the truth in the call it makes for the audience check. If a scope this flow needs is missing —
+the user unticked it at the consent screen — the answer is `403 provider_scope_declined`.
+
+It is emphatically **not** `guild_role_required`. Telling somebody they lack a role when the truth
+is that we were never permitted to look is a confident mistake, and the two point at completely
+different fixes: grant the permission, versus go ask an officer for a role you may already have.
+
+**Enforced by:** `TestAuthorizationURL_GuildGatedCircle_RequestsGuildsMembersRead` and
+`TestGuildGate_DeclinedScope_ReportsScopeDeclinedNotRoleFailure`.
 
 **This reads an invite's circle before redemption, and that is deliberate.**
 [Canonical §9](00-canonical-conventions.md#9-tenancy--this-project-diverges-from-dkp) permits
@@ -255,7 +290,7 @@ exhausted between `createAuthorizationURL` and the callback, or between the call
 |---|---|
 | Between authorization and callback | The callback re-reads the invite. If it is no longer live it mints **no ticket** and redirects to `<spa>/join#error=invite_revoked` (or `invite_expired`, `invite_exhausted`) |
 | Between callback and redemption | The ticket is valid but `/join` rejects with the same codes. The ticket is single-use and simply expires unredeemed |
-| The circle *adds* a guild gate mid-flow | The authorization did not request `guilds.members.read`, so the ticket carries no member object — and an absent fact is a rejection, so the join fails closed with `403 guild_role_required` rather than sliding past an ungated check |
+| The circle *adds* a guild gate mid-flow | The authorization never requested `guilds.members.read`, so the ticket carries no member object — and an absent fact is a rejection, so the join fails closed rather than sliding past an ungated check. Restarting the flow requests the scope and succeeds |
 
 **The callback's invite check is an early-out, not the gate.** It exists so the server does not mint
 a credential for an invite that is already dead; `/join` re-checks at redemption and is what
@@ -266,9 +301,10 @@ Everything the callback hands back rides in the **fragment** — `#ticket=…` o
 `#error=<code>` on failure — so there is one rule for the redirect rather than one per outcome.
 
 **A missing fact is a rejection, never a skip.** If the ticket carries no member object for a guild
-the circle gates on — the scope was not granted, the call failed, or the identity held no
-membership the callback could have derived the guild from — the gate returns
-`403 guild_role_required`. It does **not** treat absent roles as "no roles required".
+the circle gates on — the call failed, or the identity held no membership the callback could have
+derived the guild from — the gate returns `403 guild_role_required`. (When the *reason* is a scope
+the user declined, the callback says so instead with `403 provider_scope_declined`, because that
+failure has a different fix.) It does **not** treat absent roles as "no roles required".
 The tempting shortcut here silently disables the gate for everyone, which is the confident-mistake
 failure this project is built against.
 
@@ -428,12 +464,12 @@ point at two different guilds, which is why this is not an instance setting. It 
 `credential_ticket` — never against a cached copy, and never against a client-supplied claim.
 Failure is `403 guild_membership_required` or `403 guild_role_required`.
 
-Those role ids come from `GET /users/@me/guilds/{guild.id}/member` under the `guilds.members.read`
-scope, fetched during the callback for the gated guild of the invite's circle or — on the re-auth
-path — of the circles the verified identity already belongs to, and carried on the ticket as
-`guild_roles_json`. `GET /users/@me/guilds` alone
-returns partial guild objects with no roles, so it can answer `guild_membership_required` and
-nothing else — see §5.
+Those facts come from `GET /users/@me/guilds/{guild.id}/member` under `guilds.members.read`,
+fetched during the callback for the gated guild of the invite's circle or — on the re-auth path — of
+the circles the verified identity already belongs to, and carried on the ticket as
+`guild_roles_json`. **One call answers both halves:** `404` is `guild_membership_required`, and the
+`roles` on a `200` decide `guild_role_required`. The flow never requests the broader `guilds` scope
+or the guild list it returns — see §5.
 
 **If the required facts are absent, the gate rejects.** No member object means no evaluation, and no
 evaluation means no entry: `403 guild_role_required`. An implementation that read an absent role

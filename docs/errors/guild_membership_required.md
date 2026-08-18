@@ -21,7 +21,11 @@ Join the guild, then re-run the authorization so a fresh ticket carries the new 
 derived from guild membership plus roles, so that is what the server can actually verify. Modelling
 a channel-level rule we cannot check would be a guess dressed as a rule.
 
-Membership itself is answered by `GET /users/@me/guilds`. That call returns **partial** guild
-objects and no roles, which is why a role requirement needs a second call —
-`GET /users/@me/guilds/{guild.id}/member` — and reports
-[`guild_role_required`](guild_role_required.md) rather than this code.
+Membership and roles are both answered by one call, `GET /users/@me/guilds/{guild.id}/member`,
+under the narrow `guilds.members.read` scope: a `404` means you are not in the guild and produces
+this code, while a `200` carries your `roles` and can instead produce
+[`guild_role_required`](guild_role_required.md).
+
+The server deliberately does **not** request the broader `guilds` scope or fetch your guild list. It
+only ever asks about the single guild that gates the circle you are joining, and never learns what
+other Discord servers you are in.

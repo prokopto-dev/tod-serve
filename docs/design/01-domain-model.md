@@ -247,9 +247,11 @@ browser would buy nothing and leak it into `sessionStorage`. `invite_code_hash`,
 the same reasoning as `invite.code_hash`.
 
 `credential_ticket` — `id`, `ticket_hash` (unique), `provider_id`, `subject`, `display_name`,
-`guild_ids_json` (every guild the subject is in — membership, from `users/@me/guilds`),
-`guild_roles_json` (guild id → role ids, only for guilds a member object was fetched for),
-`expires_at`, `consumed_at`. Minted by `completeAuthorization`,
+`guild_roles_json` (gated guild id → role ids, from `users/@me/guilds/{guild.id}/member`; a guild
+the subject is not in is simply absent, since that call `404`s), `expires_at`, `consumed_at`. There
+is deliberately **no** full guild list: one endpoint answers membership and roles for the guild that
+gates this circle, so the broader `guilds` scope is never requested and the subject's other guilds
+are never learned. Minted by `completeAuthorization`,
 **single-use**, 120-second TTL, and it carries the provider's *facts* precisely so that the Discord
 access token can be discarded inside the request that read them.
 
