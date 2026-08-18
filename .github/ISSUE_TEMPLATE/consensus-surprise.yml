@@ -1,0 +1,33 @@
+name: Consensus surprise — the board said something unexpected
+description: The derived ToD, window, confidence or contested flag was not what the reports imply.
+labels: ["consensus"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The derivation is deliberately non-monotonic — a backfilled corroboration can move the
+        answer with no new kill. That is expected. What is *not* expected is an answer the reports
+        do not support, or a change with no `change_reason` explaining it.
+
+        Known weaknesses are listed in
+        [docs/design/03-consensus.md §9](../../docs/design/03-consensus.md#9-known-weaknesses).
+        Please check whether yours is already there.
+  - type: textarea
+    id: reports
+    attributes:
+      label: The reports involved
+      description: For each — died_at, reported_at, source, and whether the reporter is revoked.
+      render: text
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected the board to say
+    validations: { required: true }
+  - type: textarea
+    id: actual
+    attributes:
+      label: What it said
+      description: Paste the `getTargetState` response if you have it — `evidence` especially.
+      render: json
+    validations: { required: true }

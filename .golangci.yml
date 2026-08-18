@@ -1,0 +1,83 @@
+# golangci-lint v2 configuration.
+#
+# `default: none` — every linter here was turned on deliberately. A linter set inherited from a
+# default is a set nobody can explain, and the first time one fires spuriously somebody disables
+# the whole file rather than the rule.
+#
+# Linters deliberately left OFF are recorded at the bottom, with the reason. That list is as
+# load-bearing as the enabled one: without it, "why isn't wrapcheck on" gets re-litigated yearly.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck        # an error return that is never assigned at all
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - depguard
+    - forbidigo
+    - bodyclose       # a leaked response body on the identity path is a fd leak on a home server
+    - noctx           # every outbound request must carry the caller's ctx
+    - goconst
+    - misspell
+
+  settings:
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: github.com/stretchr/testify/assert
+              desc: >-
+                assert continues after a failed assertion, so one broken invariant produces a page
+                of cascading noise and the real first failure scrolls away. Use require.
+            - pkg: math/rand
+              desc: >-
+                The consensus derivation must be replayable byte-identically. Where randomness is
+                genuinely needed, inject a seeded generator and persist the seed.
+
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print.*$
+          msg: CLI output goes to cmd.OutOrStdout(); everything else logs with slog.
+        - pattern: ^log\.(Print|Fatal|Panic).*$
+          msg: Use slog. The stdlib log package has no structure and no level.
+
+    errcheck:
+      # check-blank is deliberately off: `_ = f()` is a WAIVER, caught in review, and it has to stay
+      # rare enough to notice. A linter that accepts it silently would make it the default.
+      check-blank: false
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/prokopto-dev/tod-serve
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+# ---------------------------------------------------------------------------------------------
+# Deliberately NOT enabled
+#
+#   wrapcheck        — almost entirely false positives on stdlib returns at the current call count.
+#                      The `%w`-plus-context rule in AGENTS.md is a review rule today.
+#   gochecknoglobals — the ban on package-level MUTABLE state is what matters, and this linter
+#                      cannot tell a mutable registry from a const-like var. Review rule.
+#   lll              — prose wraps at 100 by convention; tables and struct tags legitimately run
+#                      over, and a hard cap produces worse line breaks than a human would pick.
+#
+# Two rules that look like linter jobs and are NOT, because a linter cannot see them:
+#   - float32/float64 in internal/consensus  -> NOFLOAT001 in scripts/repo-gates.sh
+#   - time.Now outside internal/clock        -> CLOCK001, an AST analyser, so an aliased import
+#                                               does not defeat it
+# ---------------------------------------------------------------------------------------------

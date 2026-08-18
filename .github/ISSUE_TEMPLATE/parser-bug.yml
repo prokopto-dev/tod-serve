@@ -1,0 +1,39 @@
+name: Parser bug — a log line we read wrong
+description: A P99 log format that tod-serve misreads, or does not read at all.
+labels: ["parser", "domain"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A guessed log format produces **silently wrong ToDs**, which is worse than an error. This
+        is the highest-value bug class in the tracker.
+  - type: textarea
+    id: line
+    attributes:
+      label: The exact log line
+      description: Verbatim, including the timestamp and any backticks in the mob name.
+      render: text
+      placeholder: "[Mon Aug 18 02:14:07 2026] Vulak`Aerr has been slain by Tankguy!"
+    validations: { required: true }
+  - type: dropdown
+    id: server
+    attributes:
+      label: Server
+      options: [Blue, Green, Red]
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened
+    validations: { required: true }
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+    validations: { required: true }
+  - type: checkboxes
+    id: verified
+    attributes:
+      label: Provenance
+      options:
+        - label: I have seen this exact line in my own log file (not reconstructed from memory)

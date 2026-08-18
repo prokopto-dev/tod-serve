@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# The gates, before they cost a CI round trip.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+make lint-repo docs-check verify-commands

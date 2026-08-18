@@ -1,0 +1,41 @@
+# Build output. `make build` writes here; nothing under it is ever committed.
+/bin/
+/dist/
+/tod-serve
+/tod-serve.exe
+coverage.out
+coverage.html
+*.test
+*.prof
+
+# Local databases. An officer's debugging tool is `sqlite3 tod.db`, so these appear in working
+# trees constantly and must never reach a commit — a committed database is a committed credential.
+*.db
+*.db-wal
+*.db-shm
+/data/
+
+# Web build output — produced in CI and embedded in the binary.
+/web/dist/
+/web/node_modules/
+/web/.vite/
+node_modules/
+.pnpm-store/
+
+# The go:embed target for internal/ui. `make build` copies web/dist here; that hashed output is
+# build output. The committed placeholder is the exception that keeps internal/ui buildable with
+# no JS toolchain present.
+/internal/ui/dist/*
+!/internal/ui/dist/.gitkeep
+
+# Seed data. Timers load from the separate tod-serve-p99-seed repository and are deliberately not
+# bundled (canonical conventions §15). A seed file in the tree is how that firewall gets breached
+# by accident.
+/seed/
+*.seed.json
+
+# Editor and OS noise.
+.DS_Store
+*.swp
+.idea/
+.vscode/

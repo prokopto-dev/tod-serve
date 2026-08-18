@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Fast checks only. Anything slower than a couple of seconds belongs in pre-push or CI —
+# a slow pre-commit hook is a hook people disable.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+# gofmt the staged Go files. Formatting is not a thing to argue about in review.
+staged=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
+if [ -n "$staged" ]; then
+  bad=$(gofmt -l $staged)
+  if [ -n "$bad" ]; then
+    echo "gofmt would change these staged files:"; echo "$bad"
+    echo "run: gofmt -w $bad"; exit 1
+  fi
+fi
+
+# A database file in a commit is a credential in a commit.
+if git diff --cached --name-only | grep -qE '\.db($|-wal|-shm)'; then
+  echo "refusing to commit a SQLite database"; exit 1
+fi

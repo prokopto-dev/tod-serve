@@ -1,0 +1,15 @@
+# Default owner.
+*                               @prokopto-dev
+
+# The consensus golden corpus is the authority when the prose and the tests disagree, so a change
+# to it is a change to the specification. Never rewritten to go green.
+/test/golden/                   @prokopto-dev
+
+# The tie-breaker document and the decision records. Editing an accepted ADR's decision is not a
+# thing that happens — a new ADR supersedes it.
+/docs/design/00-canonical-conventions.md  @prokopto-dev
+/docs/adr/                      @prokopto-dev
+
+# The gates. A change here can silently stop a rule being enforced.
+/scripts/                       @prokopto-dev
+/.github/workflows/             @prokopto-dev

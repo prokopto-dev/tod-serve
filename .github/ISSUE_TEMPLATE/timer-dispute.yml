@@ -1,0 +1,37 @@
+name: Timer dispute — a respawn window we have wrong
+description: A raid target whose respawn or variance window does not match observed reality.
+labels: ["timer", "domain"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Timer data is community-derived and genuinely disputed. We do not bundle it, and we would
+        rather say `no_timer` than state a number we cannot support. **Evidence beats a wiki link.**
+  - type: input
+    id: target
+    attributes:
+      label: Raid target
+      placeholder: "Venril Sathir"
+    validations: { required: true }
+  - type: dropdown
+    id: server
+    attributes:
+      label: Server
+      options: [Blue, Green, Red]
+    validations: { required: true }
+  - type: input
+    id: current
+    attributes:
+      label: The window we currently use
+  - type: input
+    id: proposed
+    attributes:
+      label: The window you believe is correct
+      placeholder: "open 5d12h, close 7d00h from ToD"
+    validations: { required: true }
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Observed ToD/spawn pairs are the strongest form. How many, over what period?
+    validations: { required: true }
