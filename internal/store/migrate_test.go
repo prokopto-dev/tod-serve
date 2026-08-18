@@ -1,6 +1,8 @@
 package store
 
 import (
+	"crypto/rand"
+	"database/sql"
 	"errors"
 	"testing"
 
@@ -100,4 +102,159 @@ func TestIntegrityCheck_MigratedDatabase_Passes(t *testing.T) {
 
 	require.NoError(t, db.IntegrityCheck(ctx))
 	require.NoError(t, db.ForeignKeyCheck(ctx))
+}
+
+// The upgrade path that the empty-database tests cannot see.
+//
+// Migration 000003 rebuilds `identity_provider`, and a rebuild drops the table that `identity`,
+// `auth_flow` and `credential_ticket` all point at. goose runs migrations in a transaction and
+// SQLite makes `PRAGMA foreign_keys` a no-op inside one, so the pragma Atlas wrote would have left
+// enforcement ON and `DROP TABLE` would have failed on every database with a single provider-owned
+// row in it. Every test here migrates an empty database, which is exactly why none of them noticed.
+//
+// This one seeds schema version 2 the way a real instance looks and then upgrades.
+func TestMigrate_PopulatedDatabaseAtVersionTwo_UpgradesWithItsReferencingRows(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	db := openEmpty(t)
+
+	provider, err := db.provider()
+	require.NoError(t, err)
+	_, err = provider.UpTo(ctx, 2)
+	require.NoError(t, err)
+
+	version, err := db.SchemaVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), version)
+
+	id := newIDs(rand.Reader)
+	discordProv, localProv := id.next(t), id.next(t)
+	identityID, flowID, ticketID := id.next(t), id.next(t), id.next(t)
+
+	mustExec(t, ctx, db, `
+		INSERT INTO identity_provider (id, key, kind, display_name, enabled, verifiable_subject,
+			client_id, created_at, updated_at)
+		VALUES (?, 'discord', 'discord', 'Sign in with Discord', 1, 1, 'app-id', ?, ?)`,
+		discordProv, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO identity_provider (id, key, kind, display_name, enabled, verifiable_subject,
+			created_at, updated_at)
+		VALUES (?, 'local', 'local', 'Local account', 0, 0, ?, ?)`,
+		localProv, int64(now), int64(now))
+
+	// One row in each table that references a provider. These are what the old pragma would have
+	// tripped over.
+	mustExec(t, ctx, db, `
+		INSERT INTO identity (id, provider_id, subject, display_name, created_at, updated_at)
+		VALUES (?, ?, '1234567890', 'Tankguy', ?, ?)`,
+		identityID, discordProv, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO auth_flow (id, state, pkce_verifier, provider_id, expires_at, created_at, updated_at)
+		VALUES (?, 'state-1', 'verifier-1', ?, ?, ?, ?)`,
+		flowID, discordProv, int64(now)+600_000_000, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO credential_ticket (id, ticket_hash, provider_id, subject, display_name,
+			guild_roles_json, expires_at, created_at, updated_at)
+		VALUES (?, X'0011', ?, '1234567890', 'Tankguy', '{}', ?, ?, ?)`,
+		ticketID, discordProv, int64(now)+120_000_000, int64(now), int64(now))
+
+	require.NoError(t, db.Migrate(ctx))
+
+	version, err = db.SchemaVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), version)
+
+	// Every row survived, still pointing at the provider it pointed at.
+	for _, q := range []struct {
+		what  string
+		query string
+		arg   string
+	}{
+		{"providers", `SELECT COUNT(*) FROM identity_provider`, ""},
+		{"the identity", `SELECT COUNT(*) FROM identity WHERE provider_id = ?`, discordProv},
+		{"the auth flow", `SELECT COUNT(*) FROM auth_flow WHERE provider_id = ?`, discordProv},
+		{"the ticket", `SELECT COUNT(*) FROM credential_ticket WHERE provider_id = ?`, discordProv},
+	} {
+		var count int
+		var row *sql.Row
+		if q.arg == "" {
+			row = db.sql.QueryRowContext(ctx, q.query)
+		} else {
+			row = db.sql.QueryRowContext(ctx, q.query, q.arg)
+		}
+		require.NoError(t, row.Scan(&count))
+		if q.what == "providers" {
+			require.Equal(t, 2, count, "both providers survived the rebuild")
+			continue
+		}
+		require.Equal(t, 1, count, "%s survived the rebuild still referencing its provider", q.what)
+	}
+
+	// The deferred checks ran at COMMIT rather than being skipped, so nothing is dangling.
+	require.NoError(t, db.ForeignKeyCheck(ctx))
+	require.NoError(t, db.IntegrityCheck(ctx))
+
+	// The corrected CHECK is in force on the rebuilt table.
+	require.Error(t, exec(t, ctx, db, `
+		INSERT INTO identity_provider (id, key, kind, display_name, enabled, verifiable_subject,
+			created_at, updated_at)
+		VALUES (?, 'keycloak', 'oidc', 'Keycloak', 1, 1, ?, ?)`,
+		id.next(t), int64(now), int64(now)),
+		"an oidc row with no client id has no audience to check and is refused")
+
+	// And the trigger the rebuild had to drop is back. A rebuild that silently lost it would leave
+	// `local` identities linkable, which is the hole identity_link exists not to open.
+	linkedID := id.next(t)
+	mustExec(t, ctx, db, `
+		INSERT INTO identity (id, provider_id, subject, display_name, created_at, updated_at)
+		VALUES (?, ?, 'tanky', 'Tanky', ?, ?)`,
+		linkedID, localProv, int64(now), int64(now))
+	require.Error(t, exec(t, ctx, db, `
+		INSERT INTO identity_link (id, primary_identity_id, linked_identity_id, method,
+			linked_by_membership_id, linked_at)
+		VALUES (?, ?, ?, 'officer_asserted', ?, ?)`,
+		id.next(t), identityID, linkedID, id.next(t), int64(now)),
+		"trg_identity_link_requires_verifiable_participants must have survived the table rebuild")
+}
+
+// The one shape that cannot be carried forward, failing the way it should.
+//
+// Under version 2 an `oidc` row was FORCED to have a NULL client_id — that CHECK is the bug 000003
+// corrects — and such a row can never verify anything, because `aud = client_id` is the audience
+// check and there is nothing to compare against. The migration will not invent a client id, and it
+// will not drop the operator's row. It fails, and because it is still transactional it fails
+// CLEANLY: the database stays at version 2 with every row intact, which is what `-- +goose NO
+// TRANSACTION` would have given up.
+func TestMigrate_VersionTwoRowThatCannotBeCarriedForward_FailsAtomically(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	db := openEmpty(t)
+
+	provider, err := db.provider()
+	require.NoError(t, err)
+	_, err = provider.UpTo(ctx, 2)
+	require.NoError(t, err)
+
+	id := newIDs(rand.Reader)
+	mustExec(t, ctx, db, `
+		INSERT INTO identity_provider (id, key, kind, display_name, enabled, verifiable_subject,
+			issuer, jwks_uri, created_at, updated_at)
+		VALUES (?, 'authentik', 'oidc', 'Authentik', 1, 1,
+			'https://id.example.com', 'https://id.example.com/jwks', ?, ?)`,
+		id.next(t), int64(now), int64(now))
+
+	err = db.Migrate(ctx)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ck_identity_provider_application_matches_kind",
+		"the failure names the constraint, so the operator knows which column to fill in")
+
+	version, err := db.SchemaVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), version, "a failed migration leaves the schema where it was")
+
+	var count int
+	require.NoError(t, db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM identity_provider`).Scan(&count))
+	require.Equal(t, 1, count, "and leaves the operator's row alone rather than dropping it")
+	require.NoError(t, db.IntegrityCheck(ctx))
 }

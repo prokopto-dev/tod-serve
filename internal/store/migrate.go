@@ -31,6 +31,21 @@ func (d *DB) Migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Every migration runs on ONE connection, for the duration.
+	//
+	// database/sql hands out whichever pooled connection it likes per statement, and a migration
+	// that has to turn foreign keys off — a table rebuild; SQLite's own 12-step ALTER requires it,
+	// and `PRAGMA foreign_keys` is per-connection and a no-op inside a transaction — would
+	// otherwise set the pragma on one connection and run the rebuild on another. That failure is
+	// silent and data-dependent: it only bites a database that has rows referencing the table
+	// being rebuilt, which is every real one and no fresh test one.
+	//
+	// Migrations are a startup-time, single-goroutine operation, so serialising them costs
+	// nothing. The limit is lifted afterwards, restoring the unbounded pool the WAL settings in
+	// dsn() are chosen for.
+	d.sql.SetMaxOpenConns(1)
+	defer d.sql.SetMaxOpenConns(0)
+
 	results, err := provider.Up(ctx)
 	if err != nil {
 		return fmt.Errorf("apply migrations to %s: %w", d.path, err)
