@@ -92,10 +92,7 @@ func TestVerify_TicketForAnotherProvider_IsRefused(t *testing.T) {
 	h.withLiveInvite(identity.GuildGate{})
 	ticket := h.mintTicket(t)
 
-	other := discordProvider()
-	other.ID, other.Key = "01J0000000000000OTHERID", "authentik"
-	other.Kind, other.ClientID = identity.KindOIDC, ""
-	other.Issuer, other.JWKSURI = "https://idp.example.com", "https://idp.example.com/jwks"
+	other := oidcProvider()
 
 	_, err := h.service.Verify(t.Context(), identity.VerifyRequest{
 		Provider:   other,
@@ -263,7 +260,7 @@ func TestNew_IncompleteConfiguration_IsRefused(t *testing.T) {
 	full := func() identity.Config {
 		h := newHarness(t)
 		return identity.Config{
-			Store: h.store, Clients: stubClients{}, Clock: h.clock,
+			Store: h.store, Clients: &stubClients{}, Clock: h.clock,
 			IDs: core.NewGenerator(&countingEntropy{}), Entropy: &countingEntropy{},
 			SPAJoinURL: spaJoinURL, Logger: slog.New(slog.DiscardHandler),
 		}

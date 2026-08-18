@@ -62,18 +62,32 @@ func jsonResponse(t *testing.T, status int, v map[string]any) *outbound.Response
 
 // stubClients hands out a real discord.Client wired to a stub transport, so everything under test
 // is the real dispatch, the real audience check and the real fact handling.
+//
+// It counts the calls, because "the flow never got as far as building a redirect" is the
+// assertion a validation test actually wants: an error returned after the URL was constructed
+// would pass a check on the error alone.
 type stubClients struct {
-	discord *discord.Client
-	oidc    *oidc.Verifier
+	discord    *discord.Client
+	oidc       *oidc.Verifier
+	oidcCalls  int
+	discordHit int
 }
 
-func (s stubClients) Discord(identity.Provider) (*discord.Client, error) { return s.discord, nil }
-func (s stubClients) OIDC(identity.Provider) (*oidc.Verifier, error)     { return s.oidc, nil }
+func (s *stubClients) Discord(identity.Provider) (*discord.Client, error) {
+	s.discordHit++
+	return s.discord, nil
+}
+
+func (s *stubClients) OIDC(identity.Provider) (*oidc.Verifier, error) {
+	s.oidcCalls++
+	return s.oidc, nil
+}
 
 type harness struct {
 	service *identity.Service
 	store   *fakeStore
 	doer    *discordDoer
+	clients *stubClients
 	clock   *clock.Test
 }
 
@@ -115,10 +129,11 @@ func newHarness(t *testing.T) *harness {
 	store := newFakeStore()
 	store.addProvider(discordProvider())
 
+	clients := &stubClients{discord: client}
 	testClock := clock.NewTest(at)
 	service, err := identity.New(identity.Config{
 		Store:      store,
-		Clients:    stubClients{discord: client},
+		Clients:    clients,
 		Clock:      testClock,
 		IDs:        core.NewGenerator(&countingEntropy{}),
 		Entropy:    &countingEntropy{},
@@ -127,7 +142,46 @@ func newHarness(t *testing.T) *harness {
 	})
 	require.NoError(t, err)
 
-	return &harness{service: service, store: store, doer: doer, clock: testClock}
+	return &harness{service: service, store: store, doer: doer, clients: clients, clock: testClock}
+}
+
+// oidcProvider is a well-formed `oidc` row. Tests that need a broken one start here and break one
+// field, so the difference between the passing and failing case is visible in the test.
+func oidcProvider() identity.Provider {
+	return identity.Provider{
+		ID:                    "01J000000000000000OIDCP",
+		Key:                   "authentik",
+		Kind:                  identity.KindOIDC,
+		DisplayName:           "Sign in with Authentik",
+		Enabled:               true,
+		VerifiableSubject:     true,
+		Issuer:                "https://idp.example.com",
+		JWKSURI:               "https://idp.example.com/jwks",
+		AuthorizationEndpoint: "https://idp.example.com/authorize",
+		TokenEndpoint:         "https://idp.example.com/token",
+		ClientID:              "tod-serve-instance",
+		ClientSecret:          core.Secret("oidc-client-secret"),
+		RedirectURI:           "https://tod.example.com/api/v1/auth/callback/authentik",
+	}
+}
+
+// withOIDC adds an OIDC provider and a verifier for it, and returns the provider so a test can
+// mutate the row before the call under test reads it.
+func (h *harness) withOIDC(t *testing.T, p identity.Provider) {
+	t.Helper()
+	h.store.addProvider(p)
+
+	// A row too broken to build a verifier from still gets stored: the tests that use one are
+	// asserting the flow refuses it BEFORE reaching the client factory, so refusing to set the
+	// fixture up would hide the thing under test.
+	verifier, err := oidc.NewVerifier(h.doer, h.clock, oidc.Config{
+		Issuer: p.Issuer, ClientID: p.ClientID, ClientSecret: p.ClientSecret,
+		JWKSURI: p.JWKSURI, AuthorizationEndpoint: p.AuthorizationEndpoint,
+		TokenEndpoint: p.TokenEndpoint, RedirectURI: p.RedirectURI,
+	})
+	if err == nil {
+		h.clients.oidc = verifier
+	}
 }
 
 // withLiveInvite adds an invite whose circle gates on a guild, and returns its code.
@@ -478,4 +532,134 @@ func mustFragment(t *testing.T, rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	require.NoError(t, err)
 	return parsed.Fragment
+}
+
+// The browser flow validates the provider row before it uses it, and this is the case that makes
+// it load-bearing rather than tidy.
+//
+// `authorization_endpoint` is the ONE operator-supplied OIDC URL that never goes through
+// internal/identity/outbound: the browser goes there, this instance does not. So the guarded
+// client's https check, its allowlist and its deny list never see it, and Provider.Validate is the
+// only thing standing between a mistyped `http://` issuer and a redirect carrying the OAuth
+// `state` over plaintext. Every other URL on the row fails closed without this — which is exactly
+// why the gap was survivable everywhere except the one place it was not.
+func TestCreateAuthorizationURL_InvalidProviderRow_IsRefusedBeforeARedirectExists(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		broken func(identity.Provider) identity.Provider
+	}{
+		{
+			// The one the guarded client cannot catch.
+			name: "a plaintext authorization endpoint, which nothing else would refuse",
+			broken: func(p identity.Provider) identity.Provider {
+				p.AuthorizationEndpoint = "http://idp.example.com/authorize"
+				return p
+			},
+		},
+		{
+			name: "a plaintext issuer",
+			broken: func(p identity.Provider) identity.Provider {
+				p.Issuer = "http://idp.example.com"
+				return p
+			},
+		},
+		{
+			name: "a plaintext jwks uri",
+			broken: func(p identity.Provider) identity.Provider {
+				p.JWKSURI = "http://idp.example.com/jwks"
+				return p
+			},
+		},
+		{
+			// verifiable_subject is a CHECK against kind in the schema. A row that says otherwise
+			// reached Go without going through the database, and it would report a weak circle as
+			// durable.
+			name: "an oidc row claiming an unverifiable subject",
+			broken: func(p identity.Provider) identity.Provider {
+				p.VerifiableSubject = false
+				return p
+			},
+		},
+		{
+			name: "an oidc row carrying no jwks uri at all",
+			broken: func(p identity.Provider) identity.Provider {
+				p.JWKSURI = ""
+				return p
+			},
+		},
+		{
+			// With no client id there is no audience to compare `aud` against, so an ID token
+			// minted for a different relying party at the same issuer would verify.
+			name: "an oidc row carrying no client id, so it has no audience to check",
+			broken: func(p identity.Provider) identity.Provider {
+				p.ClientID = ""
+				return p
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newHarness(t)
+			h.withOIDC(t, tt.broken(oidcProvider()))
+
+			got, err := h.service.CreateAuthorizationURL(t.Context(),
+				identity.AuthorizationRequest{ProviderKey: "authentik"})
+
+			require.ErrorIs(t, err, identity.ErrProviderInconsistent)
+			require.Empty(t, got.URL, "no redirect is built from a row that does not validate")
+			require.Empty(t, h.store.flows, "and no auth_flow row is written for one")
+			require.Zero(t, h.clients.oidcCalls,
+				"the row is checked before it reaches anything that would construct a URL from it")
+		})
+	}
+}
+
+// The positive control. Without it the test above would pass just as well if the harness could
+// not build an OIDC authorization URL at all, which would make it assert nothing.
+func TestCreateAuthorizationURL_WellFormedOIDCRow_BuildsAnHTTPSRedirect(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.withOIDC(t, oidcProvider())
+
+	got, err := h.service.CreateAuthorizationURL(t.Context(),
+		identity.AuthorizationRequest{ProviderKey: "authentik"})
+
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(got.URL, "https://idp.example.com/authorize?"))
+	require.Contains(t, got.URL, "code_challenge_method=S256")
+	require.Len(t, h.store.flows, 1)
+}
+
+// The same check on the way back. The callback only FETCHES this row's endpoints, so the guarded
+// client would refuse a non-https one anyway — but as a request that failed rather than as a row
+// somebody can see is wrong.
+func TestCompleteAuthorization_InvalidProviderRow_IsRefusedBeforeAnyExchange(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.withOIDC(t, oidcProvider())
+	authorization, err := h.service.CreateAuthorizationURL(t.Context(),
+		identity.AuthorizationRequest{ProviderKey: "authentik"})
+	require.NoError(t, err)
+
+	// The operator edits the row while the browser is on the consent screen.
+	broken := oidcProvider()
+	broken.TokenEndpoint = "http://idp.example.com/token"
+	h.store.addProvider(broken)
+
+	callback, err := h.service.CompleteAuthorization(t.Context(), identity.CallbackRequest{
+		ProviderKey: "authentik", State: authorization.State, Code: "code-1",
+	})
+
+	require.ErrorIs(t, err, identity.ErrProviderInconsistent)
+	require.Empty(t, h.doer.seen, "no exchange is attempted against a row that does not validate")
+	require.Empty(t, h.store.tickets)
+	require.Equal(t, "error=credential_invalid", mustFragment(t, callback.Location),
+		"an uncoded failure still redirects, so the browser is not left on a blank callback page")
 }

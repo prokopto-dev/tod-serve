@@ -52,6 +52,23 @@ func (s *Service) CreateAuthorizationURL(ctx context.Context, req AuthorizationR
 	if err != nil {
 		return Authorization{}, fmt.Errorf("read provider %q: %w", req.ProviderKey, err)
 	}
+	// Validated BEFORE the row is used for anything, exactly as [Service.Verify] does.
+	//
+	// This is load-bearing here in a way it is not elsewhere, and the reason is worth stating:
+	// `authorization_endpoint` is the ONE operator-supplied OIDC URL that never goes through
+	// internal/identity/outbound. The browser goes there; this instance does not. So the guarded
+	// client's https check, its allowlist and its deny list never see it, and
+	// [Provider.Validate]'s scheme check is the only thing standing between a mistyped `http://`
+	// issuer and a redirect that carries the OAuth `state` over plaintext.
+	//
+	// Every other URL on the row fails closed without this — the guarded client refuses a
+	// non-https fetch — which is precisely why skipping the check here was survivable everywhere
+	// except the one place it was not.
+	if err := provider.Validate(); err != nil {
+		// Not a coded error: an inconsistent provider row is this instance's misconfiguration,
+		// and presenting it as the caller's fault sends somebody looking in the wrong place.
+		return Authorization{}, fmt.Errorf("start authorization for %q: %w", req.ProviderKey, err)
+	}
 	if !provider.Enabled {
 		return Authorization{}, NewError(CodeProviderDisabled,
 			fmt.Sprintf("this instance has disabled the %q provider", provider.Key), nil)
@@ -233,6 +250,13 @@ func (s *Service) completeAuthorization(ctx context.Context, req CallbackRequest
 	}
 	if err != nil {
 		return "", fmt.Errorf("read provider: %w", err)
+	}
+	// The same check on the way back. The callback only FETCHES this row's endpoints, so the
+	// guarded client would refuse a non-https one anyway — but as a request that failed rather
+	// than as a row somebody can see is wrong, and a rule with a carve-out is a rule somebody
+	// implements on the wrong side.
+	if err := provider.Validate(); err != nil {
+		return "", fmt.Errorf("complete authorization for %q: %w", req.ProviderKey, err)
 	}
 	if provider.Key != req.ProviderKey {
 		// The callback path names a provider and the flow records one. A mismatch is a crafted

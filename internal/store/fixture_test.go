@@ -108,8 +108,8 @@ func seed(t *testing.T, ctx context.Context, db *DB) fixture {
 		TargetID:     id.next(t),
 	}
 
-	// A discord provider: verifiable, and CHECK ((kind='discord') = (client_id IS NOT NULL)) means
-	// it cannot exist without an operator application.
+	// A discord provider: verifiable, and CHECK ((kind='local') = (client_id IS NULL)) means it
+	// cannot exist without an operator application.
 	mustExec(t, ctx, db, `
 		INSERT INTO identity_provider (id, key, kind, display_name, enabled, verifiable_subject,
 			client_id, created_at, updated_at)
@@ -125,11 +125,15 @@ func seed(t *testing.T, ctx context.Context, db *DB) fixture {
 
 	// A second verifiable provider, so identity_link has two legal participants to link. Any
 	// number of oidc rows is permitted; discord and local are capped at one each.
+	//
+	// It carries a client_id because `aud = client_id` IS the OIDC audience check, and the same
+	// CHECK that makes a discord row need one makes this row need one. This fixture had none
+	// until migration 000003 corrected that predicate.
 	mustExec(t, ctx, db, `
 		INSERT INTO identity_provider (id, key, kind, display_name, enabled, verifiable_subject,
-			issuer, subject_claim, created_at, updated_at)
+			issuer, jwks_uri, subject_claim, client_id, created_at, updated_at)
 		VALUES (?, 'authentik', ?, 'Sign in with Authentik', 1, 1,
-			'https://id.example.com', 'sub', ?, ?)`,
+			'https://id.example.com', 'https://id.example.com/jwks', 'sub', 'tod-serve', ?, ?)`,
 		f.OIDCProvID, schemaenum.IdentityProviderKindOIDC, int64(now), int64(now))
 
 	mustExec(t, ctx, db, `

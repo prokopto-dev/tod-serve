@@ -137,8 +137,22 @@ func TestProviderValidate_RowsInconsistentWithTheirKind_AreRefused(t *testing.T)
 		{"a local provider claiming a verifiable subject", identity.Provider{
 			Key: "local", Kind: identity.KindLocal, VerifiableSubject: true,
 		}, false},
+		{
+			"a well-formed oidc row, which needs a client id because `aud = client_id` is the audience check",
+			identity.Provider{
+				Key: "authentik", Kind: identity.KindOIDC, VerifiableSubject: true,
+				Issuer: "https://idp.example.com", JWKSURI: "https://idp.example.com/jwks",
+				ClientID: "tod-serve-instance",
+			},
+			true,
+		},
 		{"an oidc provider claiming an unverifiable subject", identity.Provider{
 			Key: "authentik", Kind: identity.KindOIDC, VerifiableSubject: false,
+			Issuer: "https://idp.example.com", JWKSURI: "https://idp.example.com/jwks",
+			ClientID: "tod-serve-instance",
+		}, false},
+		{"an oidc provider with no client id, so it has no audience to check", identity.Provider{
+			Key: "authentik", Kind: identity.KindOIDC, VerifiableSubject: true,
 			Issuer: "https://idp.example.com", JWKSURI: "https://idp.example.com/jwks",
 		}, false},
 		{"a discord provider with no application", identity.Provider{
@@ -150,6 +164,7 @@ func TestProviderValidate_RowsInconsistentWithTheirKind_AreRefused(t *testing.T)
 		{"an oidc provider with an http issuer", identity.Provider{
 			Key: "authentik", Kind: identity.KindOIDC, VerifiableSubject: true,
 			Issuer: "http://idp.example.com", JWKSURI: "https://idp.example.com/jwks",
+			ClientID: "tod-serve-instance",
 		}, false},
 		{"an unknown kind", identity.Provider{Key: "ldap", Kind: "ldap"}, false},
 	}

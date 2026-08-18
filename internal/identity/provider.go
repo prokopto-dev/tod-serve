@@ -41,7 +41,10 @@ type Provider struct {
 	JWKSURI               string
 	SubjectClaim          string
 
-	// The operator's own OAuth application. `CHECK ((kind = 'discord') = (client_id IS NOT NULL))`.
+	// The operator's own OAuth application. `CHECK ((kind = 'local') = (client_id IS NULL))`:
+	// every provider that talks to a third party is an OAuth client of it, and `local` talks to
+	// nobody. For `discord` the client id is what `application.id` is compared against; for
+	// `oidc` it is what `aud` is compared against, which is the audience check itself.
 	ClientID      string
 	ClientSecret  core.Secret
 	RedirectURI   string
@@ -66,7 +69,11 @@ func (p Provider) Validate() error {
 	if (p.Kind == KindLocal) != !p.VerifiableSubject {
 		return fmt.Errorf("kind %q with verifiable_subject %t: %w", p.Kind, p.VerifiableSubject, ErrProviderInconsistent)
 	}
-	if (p.Kind == KindDiscord) != (p.ClientID != "") {
+	// Mirrors ck_identity_provider_application_matches_kind. `oidc` needs a client id as much as
+	// `discord` does: with no audience to check, an ID token minted for a different relying party
+	// at the same issuer verifies here, and §7's claim that `oidc` is structurally immune to the
+	// replay hole stops being true.
+	if (p.Kind == KindLocal) != (p.ClientID == "") {
 		return fmt.Errorf("kind %q with client_id %q: %w", p.Kind, p.ClientID, ErrProviderInconsistent)
 	}
 	if p.Kind == KindOIDC {

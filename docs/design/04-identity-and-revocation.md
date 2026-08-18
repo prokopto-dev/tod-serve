@@ -20,7 +20,7 @@ step-up).
 | `enabled` | 0/1 |
 | `verifiable_subject` | 0/1 — `CHECK ((kind = 'local') = (verifiable_subject = 0))` |
 | `issuer`, `authorization_endpoint`, `jwks_uri`, `subject_claim` | OIDC only; `NULL` otherwise |
-| `client_id`, `client_secret`, `redirect_uri`, `token_endpoint` | The operator's **own** OAuth application — see [ADR-0011](../adr/0011-operator-registered-discord-application.md). `CHECK ((kind = 'discord') = (client_id IS NOT NULL))` |
+| `client_id`, `client_secret`, `redirect_uri`, `token_endpoint` | The operator's **own** OAuth application — see [ADR-0011](../adr/0011-operator-registered-discord-application.md). `CHECK ((kind = 'local') = (client_id IS NULL))` |
 
 **`verifiable_subject` cannot be lied about.** It is a CHECK against `kind`, not an operator toggle.
 Everything downstream about revocation strength hangs off it, so it must not be settable.
@@ -32,6 +32,14 @@ rest that the shared-app design did not have, and it is named as a cost in
 
 **Enforced by:** the `No secret is ever logged` invariant — a test marshals the whole config and
 asserts no known secret value appears.
+
+**Every provider that talks to a third party carries a `client_id`; `local` talks to nobody and
+carries none.** This CHECK read `((kind = 'discord') = (client_id IS NOT NULL))` until it was found
+to contradict the `oidc` row of the table below: `aud = client_id` **is** the OIDC audience check,
+and the old predicate made an `oidc` row with a client id *unrepresentable*, so `oidc` could not be
+configured at all. With no audience to compare against, an ID token minted for a different relying
+party at the same issuer would verify — and §7's claim that `oidc` is structurally immune to the
+replay hole would quietly stop being true. Corrected in migration `000003`.
 
 At most one `discord` row and at most one `local` row, by partial unique index. Any number of `oidc`.
 
