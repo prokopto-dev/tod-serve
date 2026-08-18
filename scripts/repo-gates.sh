@@ -76,15 +76,29 @@ fi
 # --- NOFLOAT001 / PURE001 / PURE002 — internal/consensus is pure ------------------------------
 # The float ban is a REPRODUCIBILITY rule, not a money rule: the nightly projection-verify job
 # diffs exact values, and a cross-platform float discrepancy would make it cry wolf.
+#
+# PURE001 names the three things §0 of the consensus design forbids by name. PURE002 is the
+# broader rule underneath it: the derivation must be a function of its arguments, so it may not
+# import anything that reads a clock, touches a disk or opens a socket. `time` is on the deny list
+# too — `now` is a parameter, and a package that has no way to spell a clock cannot grow one.
+DENIED_IN_CONSENSUS='database/sql|net|net/http|net/url|os|os/exec|io|io/ioutil|bufio|time|math/rand|crypto/rand|github.com/prokopto-dev/tod-serve/internal/store|github.com/prokopto-dev/tod-serve/internal/clock'
 if [ -n "$(find ./internal/consensus -name '*.go' 2>/dev/null)" ]; then
   c=$(find ./internal/consensus -name '*.go' -not -name '*_test.go')
   b=$(echo "$c" | xargs grep -ln 'float32\|float64' 2>/dev/null || true)
-  [ -n "$b" ] && { report NOFLOAT001 "float in internal/consensus:"; echo "$b"; } || pass NOFLOAT001 "no floats in internal/consensus"
+  [ -n "$b" ] && { report NOFLOAT001 "float in internal/consensus:"; echo "$b"; } || pass NOFLOAT001 "no floats in internal/consensus ($(count "$c") files)"
   b=$(echo "$c" | xargs grep -ln 'tod-serve/internal/store\|time\.Now(\|math/rand' 2>/dev/null || true)
-  [ -n "$b" ] && { report PURE001 "internal/consensus is not pure:"; echo "$b"; } || pass PURE001 "internal/consensus imports no store, clock or rand"
+  [ -n "$b" ] && { report PURE001 "internal/consensus is not pure:"; echo "$b"; } || pass PURE001 "internal/consensus imports no store, clock or rand ($(count "$c") files)"
+  # Only whole-line quoted paths are read, so a struct tag — which ends in a backtick — is not
+  # mistaken for an import.
+  imports=$(echo "$c" | xargs grep -hE '^[[:space:]]*(import[[:space:]]+)?([A-Za-z0-9_.]+[[:space:]]+)?"[^"]+"[[:space:]]*$' 2>/dev/null \
+            | grep -oE '"[^"]+"' | tr -d '"' | sort -u)
+  b=$(echo "$imports" | grep -xE "$DENIED_IN_CONSENSUS" || true)
+  if [ -n "$b" ]; then report PURE002 "internal/consensus imports something that can do I/O or read a clock:"; echo "$b"; \
+  else pass PURE002 "internal/consensus imports nothing that reads a clock or does I/O ($(count "$imports") distinct imports)"; fi
 else
   vacant NOFLOAT001 "no floats in internal/consensus"
   vacant PURE001 "internal/consensus is pure"
+  vacant PURE002 "internal/consensus imports nothing that reads a clock or does I/O"
 fi
 
 # --- SQL001 — *sql.DB held only by internal/store ---------------------------------------------

@@ -1,0 +1,71 @@
+{
+  "name": "confidence_two_distant_log_lines_is_medium",
+  "description": "Two log lines ten minutes apart. They estimate to the earlier of the two, which leaves the later one a second log-line *reporter* who agrees with nothing — the disagreement wide_spread reports, not corroboration. §7's `high` needs a log line ON the estimate and a different reporter there with it, so this is `medium`. Reading \"≥1 log_line reporter\" as a bare count over the cluster would call the widest possible cluster `high`.",
+  "now": "2026-08-25T02:14:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "variance",
+    "window_open_offset_seconds": 561600,
+    "window_close_offset_seconds": 648000,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R02",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:24:07.000000Z",
+      "reported_at": "2026-08-18T02:25:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M02",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    }
+  ],
+  "want": {
+    "status": "in_window",
+    "died_at": "2026-08-18T02:14:07.000000Z",
+    "up_since": null,
+    "window": {
+      "kind": "variance",
+      "open_at": "2026-08-24T14:14:07.000000Z",
+      "close_at": "2026-08-25T14:14:07.000000Z",
+      "spawn_at": null,
+      "progress_bp": 5000,
+      "seconds_until_open": -43200,
+      "seconds_until_close": 43200
+    },
+    "confidence": "medium",
+    "contested": true,
+    "contest_reason": "wide_spread",
+    "alternatives": [],
+    "alternatives_total": 0,
+    "evidence": {
+      "report_count": 2,
+      "distinct_reporter_count": 2,
+      "log_line_count": 2,
+      "spread_seconds": 600,
+      "revoked_reporter_count": 0,
+      "report_ids": [
+        "01K3R000000000000000000R01",
+        "01K3R000000000000000000R02"
+      ]
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-25T02:14:07.000000Z"
+  }
+}

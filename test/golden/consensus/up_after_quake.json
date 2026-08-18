@@ -1,0 +1,73 @@
+{
+  "name": "up_after_quake",
+  "description": "A quake with no post-quake kill is `up` with `up_since = Q`. The pre-quake reports move to history: they are not the current cluster and they are not alternatives either. §2.",
+  "now": "2026-08-19T05:14:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "variance",
+    "window_open_offset_seconds": 561600,
+    "window_close_offset_seconds": 648000,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [
+    {
+      "id": "01K3Q000000000000000000Q01",
+      "occurred_at": "2026-08-19T02:14:07.000000Z"
+    }
+  ],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R02",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:15:07.000000Z",
+      "reported_at": "2026-08-18T02:16:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M02",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    }
+  ],
+  "want": {
+    "status": "up",
+    "died_at": null,
+    "up_since": "2026-08-19T02:14:07.000000Z",
+    "window": {
+      "kind": "variance",
+      "open_at": null,
+      "close_at": null,
+      "spawn_at": null,
+      "progress_bp": null,
+      "seconds_until_open": null,
+      "seconds_until_close": null
+    },
+    "confidence": "unknown",
+    "contested": false,
+    "contest_reason": null,
+    "alternatives": [],
+    "alternatives_total": 0,
+    "evidence": {
+      "report_count": 0,
+      "distinct_reporter_count": 0,
+      "log_line_count": 0,
+      "spread_seconds": 0,
+      "revoked_reporter_count": 0,
+      "report_ids": []
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-19T05:14:07.000000Z"
+  }
+}

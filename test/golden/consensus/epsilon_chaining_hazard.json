@@ -1,0 +1,126 @@
+{
+  "name": "epsilon_chaining_hazard",
+  "description": "The named fixture from §3. Five reports 29 minutes apart, epsilon 30 minutes: single linkage alone would chain all five into one two-hour kill. The 2-epsilon total-span cap splits them after the third, so the current cluster spans 29 minutes and not 116. Two clusters 58 minutes apart cannot both be real kills of a seven-day respawn, which is `implausible_ordering` — surfaced, not resolved.",
+  "now": "2026-08-25T02:14:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "variance",
+    "window_open_offset_seconds": 561600,
+    "window_close_offset_seconds": 648000,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R02",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:43:07.000000Z",
+      "reported_at": "2026-08-18T02:44:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M02",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R03",
+      "kind": "kill",
+      "died_at": "2026-08-18T03:12:07.000000Z",
+      "reported_at": "2026-08-18T03:13:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M03",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R04",
+      "kind": "kill",
+      "died_at": "2026-08-18T03:41:07.000000Z",
+      "reported_at": "2026-08-18T03:42:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M04",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R05",
+      "kind": "kill",
+      "died_at": "2026-08-18T04:10:07.000000Z",
+      "reported_at": "2026-08-18T04:11:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M05",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    }
+  ],
+  "want": {
+    "status": "in_window",
+    "died_at": "2026-08-18T03:41:07.000000Z",
+    "up_since": null,
+    "window": {
+      "kind": "variance",
+      "open_at": "2026-08-24T15:41:07.000000Z",
+      "close_at": "2026-08-25T15:41:07.000000Z",
+      "spawn_at": null,
+      "progress_bp": 4395,
+      "seconds_until_open": -37980,
+      "seconds_until_close": 48420
+    },
+    "confidence": "medium",
+    "contested": true,
+    "contest_reason": "implausible_ordering",
+    "alternatives": [
+      {
+        "died_at": "2026-08-18T02:43:07.000000Z",
+        "report_count": 3,
+        "distinct_reporter_count": 3,
+        "confidence": "medium",
+        "window": {
+          "kind": "variance",
+          "open_at": "2026-08-24T14:43:07.000000Z",
+          "close_at": "2026-08-25T14:43:07.000000Z",
+          "spawn_at": null,
+          "progress_bp": 4798,
+          "seconds_until_open": -41460,
+          "seconds_until_close": 44940
+        },
+        "report_ids": [
+          "01K3R000000000000000000R01",
+          "01K3R000000000000000000R02",
+          "01K3R000000000000000000R03"
+        ]
+      }
+    ],
+    "alternatives_total": 1,
+    "evidence": {
+      "report_count": 2,
+      "distinct_reporter_count": 2,
+      "log_line_count": 0,
+      "spread_seconds": 1740,
+      "revoked_reporter_count": 0,
+      "report_ids": [
+        "01K3R000000000000000000R04",
+        "01K3R000000000000000000R05"
+      ]
+    },
+    "implausible_report_ids": [
+      "01K3R000000000000000000R01",
+      "01K3R000000000000000000R02",
+      "01K3R000000000000000000R03"
+    ],
+    "as_of": "2026-08-25T02:14:07.000000Z"
+  }
+}

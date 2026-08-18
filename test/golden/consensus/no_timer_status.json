@@ -1,0 +1,60 @@
+{
+  "name": "no_timer_status",
+  "description": "A ToD with `window_kind = 'unknown'` is `no_timer`, never `unknown`: the client renders \"died 4 hours ago\" and must not render a window. §7.",
+  "now": "2026-08-18T06:14:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "unknown",
+    "window_open_offset_seconds": null,
+    "window_close_offset_seconds": null,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    }
+  ],
+  "want": {
+    "status": "no_timer",
+    "died_at": "2026-08-18T02:14:07.000000Z",
+    "up_since": null,
+    "window": {
+      "kind": "unknown",
+      "open_at": null,
+      "close_at": null,
+      "spawn_at": null,
+      "progress_bp": null,
+      "seconds_until_open": null,
+      "seconds_until_close": null
+    },
+    "confidence": "low",
+    "contested": false,
+    "contest_reason": null,
+    "alternatives": [],
+    "alternatives_total": 0,
+    "evidence": {
+      "report_count": 1,
+      "distinct_reporter_count": 1,
+      "log_line_count": 0,
+      "spread_seconds": 0,
+      "revoked_reporter_count": 0,
+      "report_ids": [
+        "01K3R000000000000000000R01"
+      ]
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-18T06:14:07.000000Z"
+  }
+}

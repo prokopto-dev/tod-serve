@@ -1,0 +1,75 @@
+{
+  "name": "quake_truncation",
+  "description": "Reports before the latest quake cannot form the current cluster. The post-quake kill is the whole answer and the pre-quake one is history, so `alternatives` stays empty. §2.",
+  "now": "2026-08-19T05:14:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "variance",
+    "window_open_offset_seconds": 561600,
+    "window_close_offset_seconds": 648000,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [
+    {
+      "id": "01K3Q000000000000000000Q01",
+      "occurred_at": "2026-08-19T02:14:07.000000Z"
+    }
+  ],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R02",
+      "kind": "kill",
+      "died_at": "2026-08-19T04:14:07.000000Z",
+      "reported_at": "2026-08-19T04:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M02",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    }
+  ],
+  "want": {
+    "status": "pre_window",
+    "died_at": "2026-08-19T04:14:07.000000Z",
+    "up_since": null,
+    "window": {
+      "kind": "variance",
+      "open_at": "2026-08-25T16:14:07.000000Z",
+      "close_at": "2026-08-26T16:14:07.000000Z",
+      "spawn_at": null,
+      "progress_bp": 0,
+      "seconds_until_open": 558000,
+      "seconds_until_close": 644400
+    },
+    "confidence": "medium",
+    "contested": false,
+    "contest_reason": null,
+    "alternatives": [],
+    "alternatives_total": 0,
+    "evidence": {
+      "report_count": 1,
+      "distinct_reporter_count": 1,
+      "log_line_count": 1,
+      "spread_seconds": 0,
+      "revoked_reporter_count": 0,
+      "report_ids": [
+        "01K3R000000000000000000R02"
+      ]
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-19T05:14:07.000000Z"
+  }
+}

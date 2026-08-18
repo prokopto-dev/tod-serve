@@ -1,0 +1,60 @@
+{
+  "name": "overdue",
+  "description": "Past `close_at`. Real, actionable intel and not an error state; `progress_bp` clamps to 10000 rather than exceeding it. §6, §7.",
+  "now": "2026-08-26T02:14:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "variance",
+    "window_open_offset_seconds": 561600,
+    "window_close_offset_seconds": 648000,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    }
+  ],
+  "want": {
+    "status": "overdue",
+    "died_at": "2026-08-18T02:14:07.000000Z",
+    "up_since": null,
+    "window": {
+      "kind": "variance",
+      "open_at": "2026-08-24T14:14:07.000000Z",
+      "close_at": "2026-08-25T14:14:07.000000Z",
+      "spawn_at": null,
+      "progress_bp": 10000,
+      "seconds_until_open": -129600,
+      "seconds_until_close": -43200
+    },
+    "confidence": "medium",
+    "contested": false,
+    "contest_reason": null,
+    "alternatives": [],
+    "alternatives_total": 0,
+    "evidence": {
+      "report_count": 1,
+      "distinct_reporter_count": 1,
+      "log_line_count": 1,
+      "spread_seconds": 0,
+      "revoked_reporter_count": 0,
+      "report_ids": [
+        "01K3R000000000000000000R01"
+      ]
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-26T02:14:07.000000Z"
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "name": "log_line_median_only",
+  "description": "The estimate is the median of the log lines alone — 60 seconds, not the 120 the whole cluster would give. The manual reports are corroboration and raise confidence to `high` through the log-line clause, and the 20-minute spread is still reported as `wide_spread`: a confident answer and a visible disagreement are not exclusive. §5, §7.",
+  "now": "2026-08-25T02:14:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "variance",
+    "window_open_offset_seconds": 561600,
+    "window_close_offset_seconds": 648000,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R02",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:15:07.000000Z",
+      "reported_at": "2026-08-18T02:16:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M02",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R03",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:16:07.000000Z",
+      "reported_at": "2026-08-18T02:17:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M03",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R04",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:30:47.000000Z",
+      "reported_at": "2026-08-18T02:31:47.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M04",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R05",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:34:07.000000Z",
+      "reported_at": "2026-08-18T02:35:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M05",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    }
+  ],
+  "want": {
+    "status": "in_window",
+    "died_at": "2026-08-18T02:15:07.000000Z",
+    "up_since": null,
+    "window": {
+      "kind": "variance",
+      "open_at": "2026-08-24T14:15:07.000000Z",
+      "close_at": "2026-08-25T14:15:07.000000Z",
+      "spawn_at": null,
+      "progress_bp": 4993,
+      "seconds_until_open": -43140,
+      "seconds_until_close": 43260
+    },
+    "confidence": "high",
+    "contested": true,
+    "contest_reason": "wide_spread",
+    "alternatives": [],
+    "alternatives_total": 0,
+    "evidence": {
+      "report_count": 5,
+      "distinct_reporter_count": 5,
+      "log_line_count": 3,
+      "spread_seconds": 1200,
+      "revoked_reporter_count": 0,
+      "report_ids": [
+        "01K3R000000000000000000R01",
+        "01K3R000000000000000000R02",
+        "01K3R000000000000000000R03",
+        "01K3R000000000000000000R04",
+        "01K3R000000000000000000R05"
+      ]
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-25T02:14:07.000000Z"
+  }
+}

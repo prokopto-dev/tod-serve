@@ -1,0 +1,93 @@
+{
+  "name": "in_window",
+  "description": "The evidence block from §7, reproduced: four reports, three reporters, two log lines, a 190-second spread and one revoked reporter. The estimate is the median of the log lines alone and the even count takes the earlier of the two.",
+  "now": "2026-08-24T23:13:02.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "variance",
+    "window_open_offset_seconds": 561600,
+    "window_close_offset_seconds": 648000,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [],
+  "reports": [
+    {
+      "id": "01K3R000000000000000000R01",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:14:07.000000Z",
+      "reported_at": "2026-08-18T02:15:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R02",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:15:07.000000Z",
+      "reported_at": "2026-08-18T02:16:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M02",
+      "reporter_revoked": false,
+      "source": "log_line",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R03",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:17:17.000000Z",
+      "reported_at": "2026-08-18T02:18:17.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M03",
+      "reporter_revoked": true,
+      "source": "manual",
+      "retracts_report_id": null
+    },
+    {
+      "id": "01K3R000000000000000000R04",
+      "kind": "kill",
+      "died_at": "2026-08-18T02:16:07.000000Z",
+      "reported_at": "2026-08-18T02:17:07.000000Z",
+      "reporter_membership_id": "01K3M000000000000000000M01",
+      "reporter_revoked": false,
+      "source": "manual",
+      "retracts_report_id": null
+    }
+  ],
+  "want": {
+    "status": "in_window",
+    "died_at": "2026-08-18T02:14:07.000000Z",
+    "up_since": null,
+    "window": {
+      "kind": "variance",
+      "open_at": "2026-08-24T14:14:07.000000Z",
+      "close_at": "2026-08-25T14:14:07.000000Z",
+      "spawn_at": null,
+      "progress_bp": 3742,
+      "seconds_until_open": -32335,
+      "seconds_until_close": 54065
+    },
+    "confidence": "high",
+    "contested": false,
+    "contest_reason": null,
+    "alternatives": [],
+    "alternatives_total": 0,
+    "evidence": {
+      "report_count": 4,
+      "distinct_reporter_count": 3,
+      "log_line_count": 2,
+      "spread_seconds": 190,
+      "revoked_reporter_count": 1,
+      "report_ids": [
+        "01K3R000000000000000000R01",
+        "01K3R000000000000000000R02",
+        "01K3R000000000000000000R04",
+        "01K3R000000000000000000R03"
+      ]
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-24T23:13:02.000000Z"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "unknown_no_reports",
+  "description": "No report at all is `unknown`, and it is not `no_timer`: the timer is known, the ToD is not. §7.",
+  "now": "2026-08-18T03:14:07.000000Z",
+  "circle": {
+    "min_reporters_to_supersede": 1
+  },
+  "timer": {
+    "kind": "variance",
+    "window_open_offset_seconds": 561600,
+    "window_close_offset_seconds": 648000,
+    "fixed_grace_seconds": 900,
+    "cluster_epsilon_seconds": null,
+    "is_quake_target": true
+  },
+  "quakes": [],
+  "reports": [],
+  "want": {
+    "status": "unknown",
+    "died_at": null,
+    "up_since": null,
+    "window": {
+      "kind": "variance",
+      "open_at": null,
+      "close_at": null,
+      "spawn_at": null,
+      "progress_bp": null,
+      "seconds_until_open": null,
+      "seconds_until_close": null
+    },
+    "confidence": "unknown",
+    "contested": false,
+    "contest_reason": null,
+    "alternatives": [],
+    "alternatives_total": 0,
+    "evidence": {
+      "report_count": 0,
+      "distinct_reporter_count": 0,
+      "log_line_count": 0,
+      "spread_seconds": 0,
+      "revoked_reporter_count": 0,
+      "report_ids": []
+    },
+    "implausible_report_ids": [],
+    "as_of": "2026-08-18T03:14:07.000000Z"
+  }
+}

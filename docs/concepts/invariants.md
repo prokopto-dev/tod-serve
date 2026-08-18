@@ -40,13 +40,13 @@ rule that survives until the first tired Friday.
 
 | Invariant | Means | Enforced by |
 |---|---|---|
-| `Pure` | `internal/consensus` imports no store, no `time.Now`, no `math/rand` | `PURE001`, `PURE002`, `CLOCK001` |
-| `NoFloat` | No `float32`/`float64` anywhere in the window computation, because a boundary computed in float is not bit-identical across platforms and the nightly verify job diffs exact values | `NOFLOAT001` plus a `golangci-lint` rule on the package |
-| `Deterministic` | The same inputs produce byte-identical output on every platform | The golden corpus, run on every CI platform |
-| `ClusterSpanBounded` | No cluster spans more than 2ε, so reports cannot chain into a fictitious multi-hour kill | A property test over generated report sequences |
-| `LatestDiedAtWins` | The current cluster is the one with the latest `died_at`, never the most recently reported | Golden fixture `backfilled_older_report.json` |
+| `Pure` | `internal/consensus` imports no store, no `time.Now`, no `math/rand` | `PURE001`, `PURE002`, `CLOCK001`. `PURE002` is an import deny-list rather than a call grep, so a package that has no way to *spell* a clock cannot grow one |
+| `NoFloat` | No `float32`/`float64` anywhere in the window computation, because a boundary computed in float is not bit-identical across platforms and the nightly verify job diffs exact values | `NOFLOAT001` is the grep pre-check; `TestNoFloat_Package_ContainsNoFloatingPointAtAll` parses the package and is the authority, because `x := 1.5` is a float that never spells the word. [Canonical §3](../design/00-canonical-conventions.md#3-no-floats-anywhere-that-computes-a-window) also names a `golangci-lint` rule: `.golangci.yml` records that one cannot be written without switching the other `forbidigo` rules off everywhere else, so the parser carries that half |
+| `Deterministic` | The same inputs produce byte-identical output on every platform | The golden corpus, run on every CI platform, plus `TestDerive_ReportsInAnyOrder_SameState` and `TestDerive_CalledTwice_ReturnsEqualStates` — map iteration order is how a Go derivation usually stops being one |
+| `ClusterSpanBounded` | No cluster spans more than 2ε, so reports cannot chain into a fictitious multi-hour kill | `TestCluster_GeneratedSequences_SpanNeverExceedsTwoEpsilon` over a seeded generator — `math/rand` is banned, so the seed is a written-down constant and a red build reproduces — and `TestCluster_AdversarialSequences_SpanNeverExceedsTwoEpsilon` over the boundaries a generator hits rarely |
+| `LatestDiedAtWins` | The current cluster is the one with the latest `died_at`, never the most recently reported | Golden fixture `backfilled_older_report.json`, plus `TestDerive_ReportedAtPermuted_SameState` over the whole corpus: system truth may say anything at all and the answer does not move |
 | `ObservationNeverVetoed` | A physically implausible `died_at` is flagged, never rejected — derived state must not veto an observation | Golden fixture `implausible_ordering.json` |
-| `RevokedReportsCount` | A revoked member's reports still contribute, and their retractions still apply | Golden fixture `revoked_reporter.json` |
+| `RevokedReportsCount` | A revoked member's reports still contribute, and their retractions still apply | Golden fixtures `revoked_reporter.json` and `revoked_reporter_retraction.json`, the second of which must produce the same state as `retraction_folding.json` |
 | `CacheIsNotAuthority` | A nightly job recomputes every state from the reports and diffs; the recomputation wins and an alert fires | `internal/jobs`, plus an integration test that corrupts a cache row and asserts the job repairs it |
 
 ## Architectural laws
@@ -55,7 +55,7 @@ rule that survives until the first tired Friday.
 |---|---|---|
 | HTTP routes are declared only in `internal/api` | An architectural test walking the route registry | Phase 1 |
 | `*sql.DB` is held only by `internal/store` | An import-graph test; `SQL001`/`SQL002` | Phase 1 |
-| `internal/consensus` is pure | See the consensus table above | Phase 2 |
+| `internal/consensus` is pure | See the consensus table above | landed |
 | Outbound HTTP originates only from `internal/identity/discord` and `internal/identity/oidc`, to allowlisted hosts | `NET001` grepping `http.Get`, `http.Client` and `net.Dial` outside those packages, plus a unit test on the dialer's deny list — which must deny link-local and cloud-metadata addresses, not merely RFC1918 | Phase 1 |
 | `web/src` contains no `fetch` or `XMLHttpRequest` outside `web/src/api` | An ESLint rule plus a CI grep | Phase 4 |
 | `time.Now` appears only in `internal/clock` | `CLOCK001`, an AST analyser in `internal/repogate` run by `TestCLOCK001_Repository_HasNoTimeNowOutsideClock`, so an aliased import does not defeat it. The grep in `scripts/repo-gates.sh` is a pre-check, not the authority | landed |
@@ -96,7 +96,8 @@ The ones that exist because the fastest route to a green build is to change the 
 
 | Invariant | Enforced by |
 |---|---|
-| The consensus golden corpus is not rewritten to go green | `test/golden/` is CODEOWNERS-protected; `-update` is refused when `CI=true`; a test asserts the fixture count is non-decreasing |
+| The consensus golden corpus is not rewritten to go green | `test/golden/` is CODEOWNERS-protected — which covers the runner and its floor, not only the fixtures; `-update` is refused when `CI=true`; `TestGoldenCorpus_FixtureCount_NeverShrinks` asserts the fixture count is non-decreasing |
+| The corpus exercises every derived enum value, rather than merely being large | `TestDerive_CorpusCovers_EveryStatusAndConfidence` — a corpus that never produced `overdue` would pass every day and pin nothing about it |
 | Tests are not skipped or weakened to land a change | Review, plus a coverage floor per package |
 | No test sleeps | `SLEEP001` in `internal/repogate`, run by `TestSLEEP001_Tests_DoNotSleep`; time-dependent tests use `testing/synctest` |
 | No goroutine leaks in the event package | `goleak.VerifyTestMain` in `TestMain` |
