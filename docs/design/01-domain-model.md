@@ -233,7 +233,13 @@ CHECK ((kind = 'discord') = (client_id IS NOT NULL))
 
 `auth_flow` — `id`, `state` (unique), `pkce_verifier`, `provider_id`, `invite_code_hash` (nullable),
 `circle_id` (nullable, **advisory** — it selects the OAuth scopes and the guild to check, and is
-re-derived at redemption), `expires_at`, `consumed_at`. **The PKCE verifier stays on the server**: a
+re-derived at redemption), `expires_at`, `consumed_at`.
+
+A row is written **only for a request that passes the shared invite rate limit**
+([02-api-design](02-api-design.md#one-shared-bucket-for-invite-code-probing)),
+so a rejected probe costs no storage. Rows are short-lived, capped per caller, and swept on expiry
+along with `credential_ticket` — an unredeemed flow is litter, not history, and nothing reads it
+after `expires_at`. **The PKCE verifier stays on the server**: a
 confidential client has a `client_secret` to bind the exchange, and handing the verifier to the
 browser would buy nothing and leak it into `sessionStorage`. `invite_code_hash`, not the code —
 the same reasoning as `invite.code_hash`.

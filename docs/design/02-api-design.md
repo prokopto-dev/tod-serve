@@ -15,7 +15,7 @@ Cross-circle access returns **`404`, never `403`** — see
 |---|---|---|---|---|---|
 | GET | `/meta` | `getServerMeta` | public | — | Version, api versions, feature flags, whether self-service circle creation is on |
 | GET | `/identity-providers` | `listIdentityProviders` | public | — | Enabled providers: key, kind, display name, `verifiable_subject`, and for OIDC the issuer, client id and authorization endpoint. Never a secret. Needed *before* auth. |
-| POST | `/auth/authorization-url` | `createAuthorizationURL` | public | — | Start a browser OAuth flow. `{provider, invite_code?, circle_id?}` → `{authorization_url, expires_at}`. Stores `auth_flow(state, pkce_verifier, …)`; the **verifier never leaves the server**. |
+| POST | `/auth/authorization-url` | `createAuthorizationURL` | public | — | Start a browser OAuth flow. `{provider, invite_code?, circle_id?}` → `{authorization_url, expires_at}`. Stores `auth_flow(state, pkce_verifier, …)`; the **verifier never leaves the server**. Shares `previewInvite`'s hard rate limit — see below. |
 | GET | `/auth/callback/{provider_key}` | `completeAuthorization` | public | — | The OAuth redirect target. `Hidden: true`. Exchanges the code, checks the token's audience (`GET /oauth2/@me`), reads the provider's facts, **discards the provider access token**, mints a single-use `credential_ticket`, and `302`s to `<spa>/join#ticket=…` — **fragment, never query**. |
 | GET | `/me` | `getCurrentPrincipal` | self | any | Membership, circle, role, effective permissions, token prefix, scopes, expiry |
 | POST | `/invites/preview` | `previewInvite` | public | — | Code **in the body, never the path**. Returns circle name, server, granted role, accepted providers, `revocation_strength`. Hard rate limit. |
@@ -34,6 +34,26 @@ body one paragraph up, applied to the link an officer actually pastes into Disco
 `location.hash`, POSTs it to `previewInvite`, and **clears `location.hash` immediately** so a
 screenshot or a shared browser tab does not leak it. A one-time login link is this and nothing more:
 an invite with `max_uses = 1`.
+
+### One shared bucket for invite-code probing
+
+`createAuthorizationURL` resolves the supplied invite so it can pick the OAuth scopes and the guild
+to check ([04-identity §5](04-identity-and-revocation.md#5-one-join-endpoint)). That makes it a
+**second oracle for invite-code validity**, next to the one `previewInvite`'s hard rate limit exists
+to defend. Two buckets would simply hand an attacker twice the guessing budget, so:
+
+**Both public routes that accept an invite code are metered from a single shared bucket, keyed on
+the caller, not one bucket per route.** Exhaustion is the generic `429`. Adding a third route that
+takes a code means joining that bucket, not minting another.
+
+`createAuthorizationURL` must also **reveal no more about a code than `previewInvite` already
+does** — it is held to that endpoint's disclosure as a ceiling, rather than being separately
+reasoned about. It creates an `auth_flow` row only for a request that passes the limit, so a
+rejected probe costs the instance nothing to store.
+
+**Enforced by:** `TestInviteOracle_PreviewAndAuthorizationURL_ShareOneBucket`,
+`TestCreateAuthorizationURL_RevealsNoMoreThanPreviewInvite` and
+`TestAuthFlow_RateLimitedCaller_CreatesNoRows`.
 
 ### The credential union
 

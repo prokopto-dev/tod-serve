@@ -180,6 +180,29 @@ resolving an invite's circle to *parameterise authorization*; what it forbids is
 advisory. **Redemption re-derives the circle from the invite and is the authority**, so a flow that
 resolved one circle can never cause a join into a different one.
 
+**It also makes this a second invite-code oracle, and that has a cost.** A public endpoint that
+behaves differently for a live code than a dead one tells an attacker which codes are live — which
+is precisely what `previewInvite`'s hard rate limit exists to make expensive. Standing up an
+unmetered second route would have quietly repealed that defence.
+
+So **both public routes that accept an invite code draw on one shared rate-limit bucket keyed on the
+caller**, not a bucket each; two buckets is just twice the guessing budget. `createAuthorizationURL`
+is additionally held to `previewInvite`'s disclosure as a **ceiling** — it may reveal no more about
+a code than `previewInvite` already does — and it writes an `auth_flow` row only for a request that
+passes the limit, so a rejected probe stores nothing. See
+[02-api-design](02-api-design.md#one-shared-bucket-for-invite-code-probing).
+
+*What this does not close.* The returned `authorization_url` names its scopes, and
+`guilds.members.read` is requested only when the circle gates on a guild — so the URL still
+distinguishes a gated circle from an ungated one to somebody who already holds a live code. Closing
+that would mean requesting the maximal scope set for everyone, which puts a permission on every
+consent screen that most circles never need. **Rate-limited disclosure to a holder of a valid code
+is the accepted trade; over-permissioning every user to hide it is not.**
+
+**Enforced by:** `TestInviteOracle_PreviewAndAuthorizationURL_ShareOneBucket`,
+`TestCreateAuthorizationURL_RevealsNoMoreThanPreviewInvite`,
+`TestAuthFlow_RateLimitedCaller_CreatesNoRows`.
+
 ### If the invite dies mid-flow
 
 A user can sit on Discord's consent screen for minutes, so the invite can be revoked, expire or be
