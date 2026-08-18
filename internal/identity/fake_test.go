@@ -97,6 +97,20 @@ func (f *fakeStore) EnabledProviders(context.Context) ([]identity.Provider, erro
 	return out, nil
 }
 
+func (f *fakeStore) SetProviderEnabled(_ context.Context, id string, enabled bool, at core.Micros) (identity.Provider, error) {
+	f.record("SetProviderEnabled", id, enabled, at)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.providersByID[id]
+	if !ok {
+		return identity.Provider{}, identity.ErrNotFound
+	}
+	p.Enabled = enabled
+	f.providersByID[id] = p
+	f.providersByKey[p.Key] = p
+	return p, nil
+}
+
 func (f *fakeStore) CreateAuthFlow(_ context.Context, flow identity.AuthFlow) error {
 	f.record("CreateAuthFlow", flow)
 	f.mu.Lock()

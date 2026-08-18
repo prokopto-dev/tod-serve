@@ -74,6 +74,23 @@ func (s *Store) ProviderByID(ctx context.Context, id string) (identity.Provider,
 	return toProvider(row), nil
 }
 
+func (s *Store) SetProviderEnabled(ctx context.Context, id string, enabled bool, at core.Micros) (identity.Provider, error) {
+	var flag int64
+	if enabled {
+		flag = 1
+	}
+	row, err := s.q.SetIdentityProviderEnabled(ctx, sqlitegen.SetIdentityProviderEnabledParams{
+		Enabled: flag, UpdatedAt: int64(at), ID: id,
+	})
+	if store.IsNotFound(err) {
+		return identity.Provider{}, fmt.Errorf("provider %s: %w", id, identity.ErrNotFound)
+	}
+	if err != nil {
+		return identity.Provider{}, fmt.Errorf("set provider %s enabled: %w", id, err)
+	}
+	return toProvider(row), nil
+}
+
 func (s *Store) EnabledProviders(ctx context.Context) ([]identity.Provider, error) {
 	rows, err := s.q.ListEnabledIdentityProviders(ctx)
 	if err != nil {

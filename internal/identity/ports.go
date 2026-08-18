@@ -70,11 +70,16 @@ type StoredIdentity struct {
 	Blocked bool
 }
 
-// ProviderPort reads the registry.
+// ProviderPort reads the registry, and flips the one column an operator may flip.
+//
+// There is deliberately no SetVerifiableSubject: it is a CHECK against `kind`, not an operator
+// toggle, and a port method offering to change it would be the first half of somebody making it
+// one. `enabled` is the only mutable bit here.
 type ProviderPort interface {
 	ProviderByKey(ctx context.Context, key string) (Provider, error)
 	ProviderByID(ctx context.Context, id string) (Provider, error)
 	EnabledProviders(ctx context.Context) ([]Provider, error)
+	SetProviderEnabled(ctx context.Context, id string, enabled bool, at core.Micros) (Provider, error)
 }
 
 // AuthFlowPort writes and consumes `auth_flow`. Consumption is single-use in the database — the
