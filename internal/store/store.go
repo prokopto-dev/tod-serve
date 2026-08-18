@@ -1,0 +1,243 @@
+// Package store is the only package in this repository that holds a *sql.DB.
+//
+// Everything above it takes a [*DB] or the typed query set it exposes, so "which layer talks to
+// the database" is a compile-time fact rather than a review habit. SQL001 in
+// scripts/repo-gates.sh and TestSQL001_DatabaseSQL_IsImportedOnlyByTheStore are the mechanism.
+//
+// The generated half lives in internal/store/sqlitegen and is never hand-edited: `make gen` writes
+// it from db/queries with sqlc.
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/url"
+	"strings"
+
+	// modernc.org/sqlite is a pure-Go SQLite. It costs some speed against the cgo driver and buys
+	// the thing this project is built around: `go build` produces one static binary an officer can
+	// double-click, cross-compiled from anywhere, with no toolchain on the target machine.
+	_ "modernc.org/sqlite"
+
+	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
+)
+
+// closeRows releases a result set.
+//
+// Its error is deliberately discarded, and this is the one place that says why: every caller
+// checks rows.Err() after iterating, which reports anything that went wrong, and Close on a
+// drained result set can only report the same failure a second time. A `defer rows.Close()` at
+// each call site would be seven undocumented waivers instead of one documented one.
+func closeRows(rows *sql.Rows) { _ = rows.Close() }
+
+// driverName is the database/sql driver modernc.org/sqlite registers.
+const driverName = "sqlite"
+
+// MemoryPath opens a private in-memory database. It exists for tests that genuinely do not touch
+// migrations; the integration suite uses a real file in t.TempDir(), because a schema this
+// trigger-dependent deserves to be exercised the way it will actually be run.
+const MemoryPath = ":memory:"
+
+// ErrClosed is returned by operations on a store that has been closed.
+var ErrClosed = errors.New("store is closed")
+
+// DB is an open database. It is safe for concurrent use.
+type DB struct {
+	sql     *sql.DB
+	queries *sqlitegen.Queries
+	path    string
+	log     *slog.Logger
+}
+
+// Open opens the database at path, applying the pragmas this workload needs, and verifies the
+// connection. It does NOT migrate; call [DB.Migrate] for that, so that a caller which only wants
+// to inspect an existing database cannot accidentally upgrade it.
+//
+// A nil logger is an error rather than a silent default: the migration runner logs through it, and
+// a migration that ran with its output discarded is the one thing an operator most needs to see.
+func Open(ctx context.Context, path string, log *slog.Logger) (*DB, error) {
+	if log == nil {
+		return nil, errors.New("open store: logger is nil")
+	}
+	if path == "" {
+		return nil, errors.New("open store: path is empty")
+	}
+
+	handle, err := sql.Open(driverName, dsn(path))
+	if err != nil {
+		return nil, fmt.Errorf("open database %s: %w", path, err)
+	}
+	if err := handle.PingContext(ctx); err != nil {
+		// The failed handle is closed here rather than left to a finaliser: on Windows an open
+		// handle to a corrupt file is what stops the operator moving it out of the way.
+		return nil, errors.Join(
+			fmt.Errorf("reach database %s: %w", path, err),
+			handle.Close(),
+		)
+	}
+
+	return &DB{sql: handle, queries: sqlitegen.New(handle), path: path, log: log}, nil
+}
+
+// dsn builds the connection string. Every pragma is set here, in the DSN, rather than with an Exec
+// after opening: database/sql keeps a POOL, it opens new connections whenever it feels like it,
+// and a pragma applied to one connection is not applied to the next one. A foreign-key check that
+// holds on some connections is worse than one that holds on none, because it passes in testing.
+//
+//	journal_mode=WAL    readers do not block the writer, which is what makes a long read (the
+//	                    nightly projection verify) survivable on a box also taking reports.
+//	foreign_keys=ON     SQLite defaults it OFF. Every REFERENCES in db/schema.hcl is decoration
+//	                    without this line.
+//	busy_timeout=5000   WAL still serialises writers. Five seconds of retry turns the ordinary
+//	                    two-writers-at-once case into a wait instead of an error a user sees.
+//	synchronous=NORMAL  With WAL this loses at most the last transactions on power loss, never the
+//	                    database. FULL costs an fsync per commit for a durability guarantee a home
+//	                    server's disk does not really make anyway.
+//	_txlock=immediate   Take the write lock when a transaction BEGINS. Without it a transaction
+//	                    that reads and then writes can fail with SQLITE_BUSY_SNAPSHOT, which
+//	                    busy_timeout does NOT retry — the classic Go-plus-SQLite deadlock. The cost
+//	                    is that a read-only transaction also serialises; our transactions are short
+//	                    and nearly all of them write.
+func dsn(path string) string {
+	if path == MemoryPath {
+		path = ":memory:"
+	}
+	pragmas := []string{
+		"journal_mode(WAL)",
+		"foreign_keys(1)",
+		"busy_timeout(5000)",
+		"synchronous(NORMAL)",
+	}
+	q := url.Values{}
+	for _, p := range pragmas {
+		q.Add("_pragma", p)
+	}
+	q.Set("_txlock", "immediate")
+	return "file:" + path + "?" + q.Encode()
+}
+
+// Path returns the file the store was opened from, for log and error context.
+func (d *DB) Path() string { return d.path }
+
+// Queries returns the generated query set, bound to the pool.
+//
+// It is deliberately not embedded: a caller writing d.CreateCircle(...) would read as though the
+// store had a domain method, and the whole point of this package is that it does not.
+func (d *DB) Queries() *sqlitegen.Queries {
+	return d.queries
+}
+
+// InTx runs fn inside a transaction, committing when it returns nil and rolling back otherwise.
+//
+// The queries handed to fn are bound to the transaction. That is the only way to get transactional
+// queries, so "did this run in a transaction" is answerable by looking at the call rather than at
+// what was in scope.
+func (d *DB) InTx(ctx context.Context, fn func(context.Context, *sqlitegen.Queries) error) error {
+	if d.sql == nil {
+		return ErrClosed
+	}
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	if err := fn(ctx, d.queries.WithTx(tx)); err != nil {
+		// Deliberate waiver: the rollback's own error is reported instead of the cause, and the
+		// cause is what the caller can act on. A failed rollback still ends the transaction when
+		// the connection returns to the pool.
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// Close releases the pool. A closed store returns [ErrClosed] rather than panicking on a nil
+// pointer, because shutdown ordering is exactly where a late request arrives.
+func (d *DB) Close() error {
+	if d.sql == nil {
+		return nil
+	}
+	handle := d.sql
+	d.sql, d.queries = nil, nil
+	if err := handle.Close(); err != nil {
+		return fmt.Errorf("close database %s: %w", d.path, err)
+	}
+	return nil
+}
+
+// IntegrityCheck runs `PRAGMA integrity_check` and reports what SQLite found.
+//
+// SQLite answers with the single row "ok" on a healthy database and one row per problem otherwise,
+// so a caller cannot tell success from failure by the absence of an error. This turns that into a
+// Go error, which is the shape `tod-serve doctor` and the readiness check both want.
+func (d *DB) IntegrityCheck(ctx context.Context) error {
+	if d.sql == nil {
+		return ErrClosed
+	}
+	rows, err := d.sql.QueryContext(ctx, "PRAGMA integrity_check")
+	if err != nil {
+		return fmt.Errorf("integrity check %s: %w", d.path, err)
+	}
+	defer closeRows(rows)
+
+	var problems []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return fmt.Errorf("integrity check %s: %w", d.path, err)
+		}
+		if line != "ok" {
+			problems = append(problems, line)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("integrity check %s: %w", d.path, err)
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("integrity check %s: %s", d.path, strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// ForeignKeyCheck runs `PRAGMA foreign_key_check` and reports any orphaned row.
+//
+// Foreign keys are only enforced when foreign_keys is ON, and this schema is full of them. If the
+// pragma were ever lost — a connection opened outside [Open], a restored database written by
+// something else — the damage is silent until a join returns nothing. This is how that is found.
+func (d *DB) ForeignKeyCheck(ctx context.Context) error {
+	if d.sql == nil {
+		return ErrClosed
+	}
+	rows, err := d.sql.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("foreign key check %s: %w", d.path, err)
+	}
+	defer closeRows(rows)
+
+	var violations []string
+	for rows.Next() {
+		var (
+			table  string
+			rowid  sql.NullInt64
+			parent string
+			fkid   int64
+		)
+		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			return fmt.Errorf("foreign key check %s: %w", d.path, err)
+		}
+		violations = append(violations,
+			fmt.Sprintf("%s row %d references a missing %s", table, rowid.Int64, parent))
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("foreign key check %s: %w", d.path, err)
+	}
+	if len(violations) > 0 {
+		return fmt.Errorf("foreign key check %s: %s", d.path, strings.Join(violations, "; "))
+	}
+	return nil
+}
