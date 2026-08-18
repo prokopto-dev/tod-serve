@@ -111,14 +111,33 @@ else
   vacant SQL001 "*sql.DB held only by internal/store"
 fi
 
-# --- NET001 — outbound HTTP only from internal/identity/{discord,oidc} -------------------------
+# --- NET001 — outbound HTTP only from the identity providers, through the guarded client -------
+# Two halves, because the rule has two halves.
+#
+# NET001a: an HTTP CLIENT, TRANSPORT or DIALER may be constructed only in
+# internal/identity/outbound. That is narrower than the two-package rule it replaces: previously
+# internal/identity/discord and internal/identity/oidc could each build a bare http.Client with
+# the default transport, and the SSRF guard would simply not be in the path. Now there is one
+# client, it is guarded, and a provider cannot spell an unguarded one.
+#
+# NET001b: an outbound REQUEST may still only be issued from internal/identity — the confinement
+# canonical conventions §14 describes, unchanged.
+#
+# Test files are outside both halves by construction (go_files excludes them): a provider's tests
+# inject a stub transport, and the guard itself is tested directly by the deny-list unit test that
+# docs/concepts/invariants.md names.
 if has_go; then
-  scanned=$(go_files | grep -vE '^./internal/identity/(discord|oidc)/')
-  bad=$(echo "$scanned" | xargs grep -ln 'http\.Get\|http\.Client{\|net\.Dial' 2>/dev/null || true)
-  if [ -n "$bad" ]; then report NET001 "outbound HTTP outside internal/identity/{discord,oidc}:"; echo "$bad"; \
-  else pass NET001 "outbound HTTP originates only from the identity providers ($(count "$scanned") files)"; fi
+  scanned=$(go_files | grep -v '^./internal/identity/outbound/')
+  bad=$(echo "$scanned" | xargs grep -ln 'http\.Get\|http\.Post\|http\.Head\|http\.Client{\|http\.Transport{\|http\.DefaultClient\|http\.DefaultTransport\|net\.Dial' 2>/dev/null || true)
+  if [ -n "$bad" ]; then report NET001 "an HTTP client, transport or dialer outside internal/identity/outbound:"; echo "$bad"; \
+  else pass NET001 "the only HTTP client, transport and dialer are internal/identity/outbound's ($(count "$scanned") files)"; fi
+
+  scanned=$(go_files | grep -v '^./internal/identity/')
+  bad=$(echo "$scanned" | xargs grep -ln 'http\.NewRequest' 2>/dev/null || true)
+  if [ -n "$bad" ]; then report NET001 "an outbound request outside internal/identity:"; echo "$bad"; \
+  else pass NET001 "outbound requests are issued only from internal/identity ($(count "$scanned") files)"; fi
 else
-  vacant NET001 "outbound HTTP only from internal/identity/{discord,oidc}"
+  vacant NET001 "outbound HTTP only from internal/identity, through the guarded client"
 fi
 
 # --- TEN001 - every circle-scoped query names circle_id in its WHERE --------------------------

@@ -18,7 +18,7 @@ than writing it down as though it were enforced.
 | `internal/api/` | Every HTTP route. Huma v2 registration, problem+json, ETag, idempotency |
 | `internal/authz/` | **The** catalogue — permissions, scopes, roles, capability floor. Generates the DDL seed, the OpenAPI extensions, the scope enum and the docs page |
 | `internal/auth/` | PAT mint and verify, sessions, step-up |
-| `internal/identity/{,discord,oidc}/` | Provider registry, credential dispatch, identity and link resolution. **The only packages permitted to make outbound HTTP requests** |
+| `internal/identity/{,discord,oidc,local,outbound}/` | Provider registry, credential dispatch, identity and link resolution, the OAuth flow. **The only packages permitted to make outbound HTTP requests**, and `outbound` is the only one that may construct a client |
 | `internal/circle/`, `membership/`, `catalogue/`, `tod/` | Domain services |
 | `internal/schemaenum/` | The enum catalogue — every enumerated column, and the ordering rule for the two that have one |
 | `internal/dbschema/` | Binds each catalogue enum to the column that holds it, and generates `db/enums.hcl`. Enum `CHECK` lists are never hand-written |
@@ -53,9 +53,11 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    `TestTenancy_CrossCircle_EveryOperationDenies`, derived from the route registry so a new uncovered
    route is a red test. **This is the load-bearing gate**; it buys back what
    [ADR-0002](docs/adr/0002-circle-is-the-tenant.md) gave up.
-6. **Outbound HTTP only from `internal/identity/discord` and `internal/identity/oidc`,** to
-   allowlisted hosts. `NET001`, plus a dialer denying private, link-local, loopback and
-   cloud-metadata addresses.
+6. **Outbound HTTP only from `internal/identity`,** to allowlisted hosts, and only through the one
+   guarded client in `internal/identity/outbound` — `discord` and `oidc` issue the requests, but
+   neither may construct a client. `NET001`, plus a dialer that resolves, checks every resolved
+   address against a deny list covering private, link-local, loopback and cloud-metadata ranges,
+   and then dials the checked address literal so a DNS rebind has no second lookup to win.
 7. **`web/src` contains no `fetch` outside `web/src/api`.** ESLint rule plus a CI grep.
 8. **Migrations are forward-only and the report log is never rewritten.** `MIG001` fails a `Down`
    block containing DDL or a file out of sequence; `LOG001` fails an `UPDATE` or `DELETE` against an

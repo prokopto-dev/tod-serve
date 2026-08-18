@@ -336,17 +336,30 @@ listener and requires `TOD_METRICS_TOKEN`. It is never public and never gated by
 
 ## 14. Outbound requests
 
-**Outbound HTTP originates only from `internal/identity/discord` and `internal/identity/oidc`, and
-only to allowlisted hosts.** Discord's URL is fixed. OIDC discovery and JWKS URLs are
-*operator-supplied*, which is the classic SSRF pivot, so the dialer denies private, link-local,
-loopback and cloud-metadata addresses, follows no redirects, caps the response size and enforces a
-timeout.
+**Outbound HTTP originates only from `internal/identity`, and every request goes through the one
+guarded client in `internal/identity/outbound`.** The providers that issue requests are
+`internal/identity/discord` and `internal/identity/oidc`; neither may construct a client of its
+own. Discord's URL is fixed. OIDC discovery and JWKS URLs are *operator-supplied*, which is the
+classic SSRF pivot, so the dialer denies private, link-local, loopback and cloud-metadata
+addresses, follows no redirects, caps the response size and enforces a timeout.
+
+**One client rather than one per provider.** The rule used to name the two provider packages and
+let each build its own `http.Client`; that admitted a provider whose client simply did not have the
+guard in it, which is a guard nobody would notice was missing. Confining *construction* to a third
+package is a narrower rule than the one it replaces, not a wider one.
+
+**The dialer resolves, checks every resolved address, and then dials the address literal.** The
+ordering is the mechanism: a filter that validates a hostname and then hands the *name* to the
+dialer leaves a window in which the attacker's resolver answers the second query differently, which
+is DNS rebinding. There is no second lookup to win. One denied answer refuses the whole name rather
+than the surviving addresses being used.
 
 `instance.security.manage` is step-up and PAT-forbidden precisely so that a leaked token cannot add a
 malicious issuer and pivot.
 
-**Enforced by:** `NET001` grepping `http.Get`, `http.Client` and `net.Dial` outside those two
-packages, plus a unit test on the dialer's deny list.
+**Enforced by:** `NET001`, in two halves — `http.Client`, `http.Transport` and `net.Dial` outside
+`internal/identity/outbound`, and `http.NewRequest` outside `internal/identity` — plus a unit test
+on the dialer's deny list.
 
 ## 15. Data provenance
 
