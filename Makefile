@@ -64,7 +64,7 @@ lint: lint-repo lint-go
 # two would put a permanent row in `make status` that never goes away and teach people to skim it.
 .PHONY: lint-go
 lint-go:
-	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run; \
+	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint config verify && golangci-lint run; \
 	 else printf '\033[33m  skipped\033[0m  golangci-lint is not on PATH; CI runs it (see .golangci.yml)\n'; fi
 
 ## lint-repo: repository gates (PIN001, TEN001, NET001, CLOCK001, NOFLOAT001, PURE001/2)
