@@ -123,12 +123,16 @@ fi
 # NET001b: an outbound REQUEST may still only be issued from internal/identity — the confinement
 # canonical conventions §14 describes, unchanged.
 #
+# The convenience helpers are matched WITH their opening parenthesis on purpose: `http.Head` is a
+# prefix of `http.Header`, and a gate that reports every file constructing a header is a gate
+# somebody switches off.
+#
 # Test files are outside both halves by construction (go_files excludes them): a provider's tests
 # inject a stub transport, and the guard itself is tested directly by the deny-list unit test that
 # docs/concepts/invariants.md names.
 if has_go; then
   scanned=$(go_files | grep -v '^./internal/identity/outbound/')
-  bad=$(echo "$scanned" | xargs grep -ln 'http\.Get\|http\.Post\|http\.Head\|http\.Client{\|http\.Transport{\|http\.DefaultClient\|http\.DefaultTransport\|net\.Dial' 2>/dev/null || true)
+  bad=$(echo "$scanned" | xargs grep -ln 'http\.Get(\|http\.Post(\|http\.Head(\|http\.Client{\|http\.Transport{\|http\.DefaultClient\|http\.DefaultTransport\|net\.Dial' 2>/dev/null || true)
   if [ -n "$bad" ]; then report NET001 "an HTTP client, transport or dialer outside internal/identity/outbound:"; echo "$bad"; \
   else pass NET001 "the only HTTP client, transport and dialer are internal/identity/outbound's ($(count "$scanned") files)"; fi
 

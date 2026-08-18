@@ -9,6 +9,25 @@ import (
 	"context"
 )
 
+const anyCircleGatesOnAGuild = `-- name: AnyCircleGatesOnAGuild :one
+SELECT EXISTS (
+  SELECT 1 FROM circle_provider WHERE discord_guild_id IS NOT NULL
+) AS gated
+`
+
+// tenancy: an INSTANCE-level fact that names no circle, and must not. createAuthorizationURL
+// with no invite code has no circle to resolve - resolving one from a caller-supplied id is the
+// existence oracle canonical section 7 closes - so the OAuth scope decision falls back to "does
+// any circle on this instance gate on a guild at all". The answer is one bit about the instance
+// and identifies nothing. Adding a circle_id here would require the public caller to supply one,
+// which is the whole thing this query exists to avoid.
+func (q *Queries) AnyCircleGatesOnAGuild(ctx context.Context) (bool, error) {
+	row := q.db.QueryRowContext(ctx, anyCircleGatesOnAGuild)
+	var gated bool
+	err := row.Scan(&gated)
+	return gated, err
+}
+
 const deleteCircleProvider = `-- name: DeleteCircleProvider :execrows
 DELETE FROM circle_provider
 WHERE circle_id = ?1 AND provider_id = ?2

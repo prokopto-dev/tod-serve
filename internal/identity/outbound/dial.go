@@ -2,9 +2,11 @@ package outbound
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"syscall"
 )
 
@@ -71,9 +73,13 @@ func (d *guardedDialer) DialContext(ctx context.Context, network, address string
 		}
 	}
 
-	portNum, err := net.LookupPort(network, port)
+	// strconv rather than net.LookupPort: LookupPort accepts a SERVICE NAME and resolves it,
+	// which is a lookup with no ctx (`noctx` says so) for a case that cannot arise — http.Transport
+	// always hands the dialer a numeric port, defaulting to 443 for https. A non-numeric port
+	// here is refused rather than resolved.
+	portNum, err := strconv.ParseUint(port, 10, 16)
 	if err != nil {
-		return nil, fmt.Errorf("parse port %s: %w", port, err)
+		return nil, fmt.Errorf("parse port %q: %w", port, errors.Join(ErrRefused, err))
 	}
 
 	var lastErr error

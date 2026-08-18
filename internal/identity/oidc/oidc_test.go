@@ -153,7 +153,7 @@ func TestVerify_AlgorithmsOutsideTheAllowlist_AreRefused(t *testing.T) {
 		c, err := json.Marshal(goodClaims())
 		require.NoError(t, err)
 		input := b64(h) + "." + b64(c)
-		mac := hmac.New(sha256.New, key.PublicKey.N.Bytes())
+		mac := hmac.New(sha256.New, key.N.Bytes())
 		_, err = mac.Write([]byte(input))
 		require.NoError(t, err)
 		token := input + "." + b64(mac.Sum(nil))
@@ -335,7 +335,7 @@ func TestKeySet_HostileDocuments_AreRefused(t *testing.T) {
 	for i := range oidc.DefaultMaxKeys + 1 {
 		oversized = append(oversized, map[string]any{
 			"kty": "RSA", "kid": string(rune('a' + i)), "use": "sig",
-			"n": b64(key.PublicKey.N.Bytes()), "e": b64(big.NewInt(int64(key.PublicKey.E)).Bytes()),
+			"n": b64(key.N.Bytes()), "e": b64(big.NewInt(int64(key.E)).Bytes()),
 		})
 	}
 	oversizedDoc, err := json.Marshal(map[string]any{"keys": oversized})
@@ -345,7 +345,7 @@ func TestKeySet_HostileDocuments_AreRefused(t *testing.T) {
 	require.NoError(t, err)
 	weakDoc, err := json.Marshal(map[string]any{"keys": []map[string]any{{
 		"kty": "RSA", "kid": kid, "use": "sig",
-		"n": b64(weak.PublicKey.N.Bytes()), "e": b64(big.NewInt(int64(weak.PublicKey.E)).Bytes()),
+		"n": b64(weak.N.Bytes()), "e": b64(big.NewInt(int64(weak.E)).Bytes()),
 	}}})
 	require.NoError(t, err)
 
@@ -390,11 +390,11 @@ func TestKeySet_EncryptionKeys_AreSkipped(t *testing.T) {
 	doc, err := json.Marshal(map[string]any{"keys": []map[string]any{
 		{
 			"kty": "RSA", "kid": "enc-1", "use": "enc",
-			"n": b64(encKey.PublicKey.N.Bytes()), "e": b64(big.NewInt(int64(encKey.PublicKey.E)).Bytes()),
+			"n": b64(encKey.N.Bytes()), "e": b64(big.NewInt(int64(encKey.E)).Bytes()),
 		},
 		{
 			"kty": "RSA", "kid": kid, "use": "sig",
-			"n": b64(sigKey.PublicKey.N.Bytes()), "e": b64(big.NewInt(int64(sigKey.PublicKey.E)).Bytes()),
+			"n": b64(sigKey.N.Bytes()), "e": b64(big.NewInt(int64(sigKey.E)).Bytes()),
 		},
 	}})
 	require.NoError(t, err)
@@ -413,10 +413,15 @@ func TestVerify_ES256Token_Verifies(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
+	// The uncompressed point, split back into its coordinates. Reading key.PublicKey.X directly
+	// is deprecated in Go 1.26 and this is the encoding a JWK carries anyway.
+	point, err := key.PublicKey.Bytes()
+	require.NoError(t, err)
+	require.Len(t, point, 65)
 	doc, err := json.Marshal(map[string]any{"keys": []map[string]any{{
 		"kty": "EC", "kid": kid, "crv": "P-256", "use": "sig",
-		"x": b64(key.PublicKey.X.FillBytes(make([]byte, 32))),
-		"y": b64(key.PublicKey.Y.FillBytes(make([]byte, 32))),
+		"x": b64(point[1:33]),
+		"y": b64(point[33:]),
 	}}})
 	require.NoError(t, err)
 

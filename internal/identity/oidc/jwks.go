@@ -181,8 +181,10 @@ func (s *keySet) fetchLocked(ctx context.Context, now core.Micros) error {
 
 // parseJWK turns one JWK into a key this package can verify with.
 func parseJWK(k jwk) (publicKey, error) {
+	// The JWK `kty` values for the two asymmetric key types spell the same words as the JWS
+	// signature families, so the same constants name both.
 	switch k.Kty {
-	case "RSA":
+	case familyRSA:
 		n, err := decodeBigInt(k.N)
 		if err != nil {
 			return publicKey{}, fmt.Errorf("rsa modulus: %w", err)
@@ -201,15 +203,18 @@ func parseJWK(k jwk) (publicKey, error) {
 		}
 		return publicKey{rsaKey: &rsa.PublicKey{N: n, E: int(e.Int64())}}, nil
 
-	case "EC":
-		var curve elliptic.Curve
+	case familyEC:
+		var (
+			curve elliptic.Curve
+			size  int // the fixed width of each coordinate on this curve, in bytes
+		)
 		switch k.Crv {
 		case "P-256":
-			curve = elliptic.P256()
+			curve, size = elliptic.P256(), 32
 		case "P-384":
-			curve = elliptic.P384()
+			curve, size = elliptic.P384(), 48
 		case "P-521":
-			curve = elliptic.P521()
+			curve, size = elliptic.P521(), 66
 		default:
 			return publicKey{}, fmt.Errorf("unsupported curve %q", k.Crv)
 		}
@@ -221,11 +226,21 @@ func parseJWK(k jwk) (publicKey, error) {
 		if err != nil {
 			return publicKey{}, fmt.Errorf("ec y: %w", err)
 		}
-		if !curve.IsOnCurve(x, y) {
-			// An off-curve point is an invalid-curve attack, not a typo.
-			return publicKey{}, errors.New("ec point is not on the named curve")
+		if x.BitLen() > size*8 || y.BitLen() > size*8 {
+			return publicKey{}, errors.New("ec coordinate is wider than the named curve")
 		}
-		return publicKey{ecdsaKey: &ecdsa.PublicKey{Curve: curve, X: x, Y: y}}, nil
+		// The uncompressed point encoding, parsed by the standard library so the ON-CURVE check
+		// is the standard library's. An off-curve point is an invalid-curve attack, not a typo,
+		// and hand-rolling that check is exactly the kind of arithmetic worth not owning.
+		point := make([]byte, 1+2*size)
+		point[0] = 4
+		x.FillBytes(point[1 : 1+size])
+		y.FillBytes(point[1+size:])
+		pub, err := ecdsa.ParseUncompressedPublicKey(curve, point)
+		if err != nil {
+			return publicKey{}, fmt.Errorf("ec point: %w", err)
+		}
+		return publicKey{ecdsaKey: pub}, nil
 
 	default:
 		return publicKey{}, fmt.Errorf("unsupported key type %q", k.Kty)

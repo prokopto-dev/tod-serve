@@ -30,6 +30,14 @@ var (
 	ErrUnreachable = errors.New("the provider's key set is unreachable")
 )
 
+// The signature families, named because they appear in the algorithm table, in the verifier and —
+// for the two asymmetric key types — as JWK `kty` values that happen to spell the same word.
+const (
+	familyRSA    = "RSA"
+	familyRSAPSS = "RSA-PSS"
+	familyEC     = "EC"
+)
+
 // The algorithms this package will verify. An ALLOWLIST, keyed on the `alg` header, because the
 // alternative lets the token pick.
 //
@@ -41,15 +49,15 @@ var algorithms = map[string]struct {
 	family  string
 	sigSize int // ECDSA only: the fixed width of r and s, in bytes
 }{
-	"RS256": {crypto.SHA256, "RSA", 0},
-	"RS384": {crypto.SHA384, "RSA", 0},
-	"RS512": {crypto.SHA512, "RSA", 0},
-	"PS256": {crypto.SHA256, "RSA-PSS", 0},
-	"PS384": {crypto.SHA384, "RSA-PSS", 0},
-	"PS512": {crypto.SHA512, "RSA-PSS", 0},
-	"ES256": {crypto.SHA256, "EC", 32},
-	"ES384": {crypto.SHA384, "EC", 48},
-	"ES512": {crypto.SHA512, "EC", 66},
+	"RS256": {crypto.SHA256, familyRSA, 0},
+	"RS384": {crypto.SHA384, familyRSA, 0},
+	"RS512": {crypto.SHA512, familyRSA, 0},
+	"PS256": {crypto.SHA256, familyRSAPSS, 0},
+	"PS384": {crypto.SHA384, familyRSAPSS, 0},
+	"PS512": {crypto.SHA512, familyRSAPSS, 0},
+	"ES256": {crypto.SHA256, familyEC, 32},
+	"ES384": {crypto.SHA384, familyEC, 48},
+	"ES512": {crypto.SHA512, familyEC, 66},
 }
 
 // header is the JOSE header, of which only two fields are read. Everything else — `jku`, `x5u`,
@@ -144,7 +152,7 @@ func verifySignature(token string, keyFor func(kid string) (publicKey, error)) (
 // configuration mistake to paper over.
 func verifyWith(key publicKey, family string, hash crypto.Hash, sigSize int, digest, sig []byte) error {
 	switch family {
-	case "RSA":
+	case familyRSA:
 		pub, ok := key.rsa()
 		if !ok {
 			return fmt.Errorf("id token names an RSA algorithm but the key is not RSA: %w", ErrCredentialInvalid)
@@ -152,7 +160,7 @@ func verifyWith(key publicKey, family string, hash crypto.Hash, sigSize int, dig
 		if err := rsa.VerifyPKCS1v15(pub, hash, digest, sig); err != nil {
 			return fmt.Errorf("id token signature: %w", errors.Join(ErrCredentialInvalid, err))
 		}
-	case "RSA-PSS":
+	case familyRSAPSS:
 		pub, ok := key.rsa()
 		if !ok {
 			return fmt.Errorf("id token names an RSA algorithm but the key is not RSA: %w", ErrCredentialInvalid)
@@ -161,7 +169,7 @@ func verifyWith(key publicKey, family string, hash crypto.Hash, sigSize int, dig
 		if err := rsa.VerifyPSS(pub, hash, digest, sig, opts); err != nil {
 			return fmt.Errorf("id token signature: %w", errors.Join(ErrCredentialInvalid, err))
 		}
-	case "EC":
+	case familyEC:
 		pub, ok := key.ecdsa()
 		if !ok {
 			return fmt.Errorf("id token names an EC algorithm but the key is not EC: %w", ErrCredentialInvalid)

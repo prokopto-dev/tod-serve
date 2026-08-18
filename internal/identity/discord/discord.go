@@ -205,32 +205,54 @@ func (c *Client) Exchange(ctx context.Context, code, verifier string) (core.Secr
 // The order is fixed and the first step is the audience check. Everything after it is reading
 // facts about a subject we have already established is ours to read.
 func (c *Client) Verify(ctx context.Context, token core.Secret, guildIDs []string) (Facts, error) {
+	facts, err := c.Identify(ctx, token)
+	if err != nil {
+		return Facts{}, err
+	}
+	if err := c.AddGuildFacts(ctx, token, &facts, guildIDs); err != nil {
+		return Facts{}, err
+	}
+	return facts, nil
+}
+
+// Identify performs the audience check and reads the subject, and stops there.
+//
+// It is separate from [Client.AddGuildFacts] because the browser callback cannot know which
+// guilds to ask about until it knows WHO is asking: with no invite, the guild set comes from the
+// circles this identity already belongs to, which is a lookup keyed on something the caller
+// proved rather than something they supplied.
+func (c *Client) Identify(ctx context.Context, token core.Secret) (Facts, error) {
 	scopes, err := c.authorizationInfo(ctx, token)
 	if err != nil {
 		return Facts{}, err
 	}
-
 	subject, displayName, err := c.currentUser(ctx, token)
 	if err != nil {
 		return Facts{}, err
 	}
+	return Facts{Subject: subject, DisplayName: displayName, Scopes: scopes, Guilds: GuildFacts{}}, nil
+}
 
-	facts := Facts{Subject: subject, DisplayName: displayName, Scopes: scopes, Guilds: GuildFacts{}}
+// AddGuildFacts fills in one member object per guild, using the scopes [Client.Identify] read.
+func (c *Client) AddGuildFacts(ctx context.Context, token core.Secret, facts *Facts, guildIDs []string) error {
 	if len(guildIDs) == 0 {
-		return facts, nil
+		return nil
+	}
+	if facts.Guilds == nil {
+		facts.Guilds = GuildFacts{}
 	}
 
 	// A guild question with no scope to answer it is a declined scope, reported as one. Falling
 	// through to the member call would produce a 401 from Discord and — if that were read as
 	// "not a member" — a role failure reported to somebody who holds the role.
-	if !hasScope(scopes, ScopeGuildsMembersRead) {
-		return facts, fmt.Errorf("%s was not granted: %w", ScopeGuildsMembersRead, ErrScopeDeclined)
+	if !hasScope(facts.Scopes, ScopeGuildsMembersRead) {
+		return fmt.Errorf("%s was not granted: %w", ScopeGuildsMembersRead, ErrScopeDeclined)
 	}
 
 	for _, id := range guildIDs {
 		fact, known, err := c.guildMember(ctx, token, id)
 		if err != nil {
-			return Facts{}, err
+			return err
 		}
 		// `known` false means the call did not settle the question. The entry is left ABSENT
 		// rather than written as a non-member, so the gate rejects for "no facts" instead of
@@ -239,7 +261,7 @@ func (c *Client) Verify(ctx context.Context, token core.Secret, guildIDs []strin
 			facts.Guilds[id] = fact
 		}
 	}
-	return facts, nil
+	return nil
 }
 
 // authorizationInfo is `GET /oauth2/@me`. It answers two questions in one call: whose application
