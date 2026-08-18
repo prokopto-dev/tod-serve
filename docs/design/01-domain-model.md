@@ -39,8 +39,10 @@ it is a reviewed decision.
 | `tod_meta` | mutable | `key`/`value`/`updated_at`, `WITHOUT ROWID`. Schema version, pepper generation, event head. |
 | `instance` | mutable | Singleton, `id INTEGER CHECK (id = 1)`. Name, public URL, timezone, self-service flag. |
 | `identity_provider` | mutable | The pluggable IdP registry. |
-| `identity` | append-mostly | `(provider_id, subject)` → a person, instance-wide. |
+| `identity` | append-mostly | `(provider_id, subject)` → a person, instance-wide. Carries `blocked_at`. |
 | `identity_link` | append-only | Officer-asserted equivalence between two **verifiable** identities. |
+| `auth_flow` | mutable, prunable | One in-flight OAuth authorization: `state`, the **server-side** PKCE verifier, TTL. |
+| `credential_ticket` | mutable, prunable | A verified subject, single-use, 120-second TTL, between the OAuth callback and `/join` or `/sessions`. |
 | `raid_target` | mutable | Catalogue: mob identity. Server-agnostic. |
 | `raid_target_alias` | mutable | `VA`, `Naggy`, `Vox`, `Trak` → target. |
 | `raid_target_timer` | mutable | **Per-server** respawn window. PK `(target_id, server)`. |
@@ -55,7 +57,7 @@ Every row carries `circle_id NOT NULL REFERENCES circle(id)`.
 | Table | Mutability | Purpose |
 |---|---|---|
 | `circle` | mutable | The tenant. |
-| `circle_provider` | mutable | Which instance providers this circle accepts. |
+| `circle_provider` | mutable | Which instance providers this circle accepts, **and the Discord guild gate**. |
 | `membership` | mutable | `(circle, identity)` → role + revocation. Mutable because a role change and a revocation are *state*, not events. |
 | `invite` | mutable | `uses` and `revoked_at` mutate. |
 | `invite_redemption` | append-only | Who redeemed what, when. |
@@ -211,6 +213,72 @@ field from [consensus](03-consensus.md).
 Invalidated on any insert into `tod_report`/`quake_event` for that `(circle, target)` and on any
 timer change. Rebuilt lazily on read-miss and wholly by `tod-serve rebuild-states`. A nightly job
 recomputes every state from the reports and diffs; **the recomputation wins and an alert fires.**
+
+### `identity_provider`, `auth_flow` and `credential_ticket`
+
+[ADR-0011](../adr/0011-operator-registered-discord-application.md) makes the Discord application
+**per-instance and operator-registered**, so the instance is a confidential OAuth client rather than
+a relay for somebody else's app. `identity_provider` therefore gains:
+
+| Column | Notes |
+|---|---|
+| `client_id` | The operator's own application. Public; returned by `listIdentityProviders`. |
+| `client_secret` | `core.Secret` — **never serialised, never logged**, `***` in every renderer |
+| `redirect_uri` | Must match what the operator registered with the provider |
+| `token_endpoint` | Fixed for `discord`, discovered for `oidc` |
+
+```sql
+CHECK ((kind = 'discord') = (client_id IS NOT NULL))
+```
+
+`auth_flow` — `id`, `state` (unique), `pkce_verifier`, `provider_id`, `invite_code_hash` (nullable),
+`circle_id` (nullable), `expires_at`, `consumed_at`. **The PKCE verifier stays on the server**: a
+confidential client has a `client_secret` to bind the exchange, and handing the verifier to the
+browser would buy nothing and leak it into `sessionStorage`. `invite_code_hash`, not the code —
+the same reasoning as `invite.code_hash`.
+
+`credential_ticket` — `id`, `ticket_hash` (unique), `provider_id`, `subject`, `display_name`,
+`guild_ids_json`, `role_ids_json`, `expires_at`, `consumed_at`. Minted by `completeAuthorization`,
+**single-use**, 120-second TTL, and it carries the provider's *facts* precisely so that the Discord
+access token can be discarded inside the request that read them.
+
+Both are instance-scoped and on the
+[canonical §9](00-canonical-conventions.md#9-tenancy--this-project-diverges-from-dkp) allowlist
+because they exist **before a circle is known** — the circle behind an invite code is not resolved
+until redemption. Both are prunable on expiry; neither is authority for anything.
+
+### `identity.blocked_at` — the instance-wide block
+
+`identity` gains `blocked_at`, `blocked_by_membership_id` and `block_reason`. A blocked identity is
+refused at **join and at ticket redemption**, so a banned Discord id cannot join *any* circle on the
+instance — including a new one, and including one whose officers have never heard of them.
+
+This is deliberately **not** a replacement for `revokeMember`, which stays the normal tool:
+per-circle revocation is the officers' decision about their own circle, and it takes effect on the
+very next request. `blocked_at` is the instance operator's decision about their whole instance, and
+it is the only thing that stops a re-join into a circle the operator does not run.
+
+**Enforced by:** `TestJoin_BlockedIdentity_Refused` — `403 identity_blocked`.
+
+### `circle_provider` — where the Discord gate lives
+
+| Column | Notes |
+|---|---|
+| `circle_id`, `provider_id` | PK |
+| `discord_guild_id` | TEXT NULL — the guild whose membership this circle requires |
+| `discord_required_role_ids_json` | TEXT NOT NULL DEFAULT `'[]'` — **empty means "anyone in the guild"** |
+
+Discord has **no channel-membership API**. Channel visibility is derived from guild membership plus
+roles, which is how the channel an officer is actually thinking of is gated, so that is what the
+server can check and therefore what it models. Anything else would be a guess dressed as a rule.
+
+The gate is circle-scoped, not instance-scoped, because **the instance owns the application and the
+circle owns the gate**: two circles on one instance may point at two different guilds, which is the
+whole reason `circle_provider` already exists. It is evaluated in **both** `/join` and `/sessions`,
+against the facts on the 120-second ticket — `403 guild_membership_required` or
+`403 guild_role_required`.
+
+**Enforced by:** `TestGuildGate_EvaluatedOnJoinAndSessions`.
 
 ## Deferred, with reasons
 

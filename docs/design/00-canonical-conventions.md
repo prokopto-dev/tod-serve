@@ -262,8 +262,23 @@ The replacement is three gates, not a promise:
 | `TestTenancy_CrossCircle_EveryOperationDenies` | Derived from the route registry, so coverage cannot be forgotten |
 
 The instance-scoped allowlist is explicit and short: `tod_meta`, `instance`, `identity_provider`,
-`identity`, `identity_link`, `raid_target`, `raid_target_alias`, `raid_target_timer`, `api_token`,
-`idempotency_record`, `event_outbox`. Adding a table to it is a reviewed decision, not a convenience.
+`identity`, `identity_link`, `auth_flow`, `credential_ticket`, `raid_target`, `raid_target_alias`,
+`raid_target_timer`, `api_token`, `idempotency_record`, `event_outbox`. Adding a table to it is a
+reviewed decision, not a convenience.
+
+The two newest entries are on it because **they exist before a circle is known**, not as an
+exemption:
+
+- `auth_flow` holds the OAuth `state` and the server-side PKCE verifier from the moment the browser
+  is sent to the provider. At that point the caller may hold nothing but an invite code, and the
+  circle behind that code is not resolved until redemption, so there is no `circle_id` to write.
+- `credential_ticket` carries a verified subject for 120 seconds between the OAuth callback and
+  whichever of `/join` or `/sessions` redeems it. The same ticket is valid for either, and `/join`
+  discovers the circle from the invite, so binding it to a circle at mint time would be a guess.
+
+This list and `INSTANCE_SCOPED` in `scripts/repo-gates.sh` are two copies of one fact.
+**Enforced by:** `TestInstanceScopedAllowlist_MatchesRepoGates`, which parses both and compares them
+in each direction — exactly the drift this repository gates against elsewhere.
 
 ## 10. The report log — non-negotiable
 

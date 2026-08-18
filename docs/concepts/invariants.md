@@ -16,6 +16,11 @@ rule that survives until the first tired Friday.
 | Every table is `STRICT` | Atlas generates the DDL from `db/schema.hcl`; `PRAGMA integrity_check` then verifies column content types | Phase 1 |
 | Every circle-scoped table carries `circle_id NOT NULL REFERENCES circle(id)` | A schema test enumerating tables against the explicit instance-scoped allowlist in [canonical §9](../design/00-canonical-conventions.md#9-tenancy--this-project-diverges-from-dkp) | Phase 1 |
 | Every circle-scoped query names `circle_id` in its `WHERE` | `TEN001` over `db/queries/*.sql`, same allowlist | Phase 1 |
+| The instance-scoped allowlist in [canonical §9](../design/00-canonical-conventions.md#9-tenancy--this-project-diverges-from-dkp) and `INSTANCE_SCOPED` in `scripts/repo-gates.sh` are the same list | `TestInstanceScopedAllowlist_MatchesRepoGates`, which parses both and compares them in **each** direction. Two hand-maintained copies of one fact is exactly the drift this repository gates against everywhere else, and the copy that silently grows is the one that stops a table being tenancy-checked | Phase 1 |
+| A `credential_ticket` is redeemable **once**, at either `/join` or `/sessions` | A `consumed_at` write in the same transaction as the redemption, on a unique index; `TestCredentialTicket_SecondRedemption_Refused` — `401 auth_ticket_invalid` | Phase 1 |
+| A `credential_ticket` expires 120 seconds after it is minted | `expires_at` checked against the injected clock at redemption; `TestCredentialTicket_After120s_Refused` under `testing/synctest` — `401 auth_ticket_expired` | Phase 1 |
+| An identity with `blocked_at` set cannot join **any** circle on the instance | `TestJoin_BlockedIdentity_Refused` — checked at join *and* at ticket redemption, so a second circle is not a second door. `403 identity_blocked` | Phase 1 |
+| `identity_provider.client_id` is present exactly when `kind = 'discord'` | `CHECK ((kind = 'discord') = (client_id IS NOT NULL))` — a Discord provider row with no operator application is unrepresentable, not merely invalid | Phase 1 |
 | `circle.server` never changes after creation | A `BEFORE UPDATE` trigger, plus `422 field_immutable` at the edge | Phase 1 |
 | A revoked identity cannot rejoin the same circle | The partial unique index `ux_membership_identity`, which makes a second membership row unrepresentable — there is no delete-membership operation at all | Phase 1 |
 | An `identity_link` participant has `verifiable_subject = 1` | A DB trigger plus `TestIdentityLink_LocalProvider_Rejected` | Phase 1 |
@@ -60,6 +65,8 @@ rule that survives until the first tired Friday.
 | Every error code has a documentation page | A Go test enumerating the enum against the docs tree | Phase 1 |
 | The capability floor cannot drift from the canonical conventions | `TestCapabilityFloor_MatchesCanonicalConventions` parses the fenced block in [canonical §6](../design/00-canonical-conventions.md#6-permissions-and-scopes--one-catalogue-generated) and compares element by element, both directions | Phase 1 |
 | No token appears in a URL | Query-string tokens are rejected with `401`, **with no exception** — asserted by a test | Phase 1 |
+| An invite code never reaches the server in a URL path or query | The link carries it in the **fragment** (`/join#TODI-…`), which no browser transmits; `previewInvite` and `redeemInvite` take it in a POST body. A route-registry test asserts no operation declares an invite code as a path or query parameter | Phase 1 |
+| The Discord guild gate is evaluated on **both** `/join` and `/sessions` | `TestGuildGate_EvaluatedOnJoinAndSessions`. Evaluated against the facts on the `credential_ticket`, never a cached copy and never a client-supplied claim. A gate on join alone would let `/sessions` mint a fresh PAT for someone who has left the guild | Phase 1 |
 
 ## Test-integrity invariants
 
@@ -78,7 +85,8 @@ The ones that exist because the fastest route to a green build is to change the 
 | The container health check never touches the database | The Dockerfile calls `/healthz`, which does not. A DB-touching healthcheck lets Docker kill the container mid-migration |
 | `/metrics` is not exposed by default | Default `TOD_METRICS_ENABLED=false`; when enabled it binds a separate listener and requires a token. Never gated by a PAT scope |
 | No secret is ever logged | `type Secret` renders as `***` in `String`, `MarshalJSON` and `LogValue`; a test marshals the whole config and asserts no known secret value appears |
-| A Discord access token is never persisted | Verified and discarded inside the request; a test asserts no store call receives it |
+| A Discord access token is never persisted | Read and discarded inside the OAuth callback; only the derived subject, display name, guild ids and role ids reach `credential_ticket`. `TestDiscord_AccessToken_NeverPersisted` asserts no store call receives it |
+| `identity_provider.client_secret` is never serialised or logged | It is a `core.Secret` — `***` in `String`, `MarshalJSON` and `LogValue` — and `listIdentityProviders` returns `client_id` but never the secret. Covered by the no-secret-is-ever-logged test above |
 
 ## Licence invariants
 

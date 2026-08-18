@@ -15,6 +15,8 @@ Cross-circle access returns **`404`, never `403`** — see
 |---|---|---|---|---|---|
 | GET | `/meta` | `getServerMeta` | public | — | Version, api versions, feature flags, whether self-service circle creation is on |
 | GET | `/identity-providers` | `listIdentityProviders` | public | — | Enabled providers: key, kind, display name, `verifiable_subject`, and for OIDC the issuer, client id and authorization endpoint. Never a secret. Needed *before* auth. |
+| POST | `/auth/authorization-url` | `createAuthorizationURL` | public | — | Start a browser OAuth flow. `{provider, invite_code?, circle_id?}` → `{authorization_url, expires_at}`. Stores `auth_flow(state, pkce_verifier, …)`; the **verifier never leaves the server**. |
+| GET | `/auth/callback/{provider_key}` | `completeAuthorization` | public | — | The OAuth redirect target. `Hidden: true`. Exchanges the code, reads the provider's facts, **discards the provider access token**, mints a single-use `credential_ticket`, `302`s to the SPA. |
 | GET | `/me` | `getCurrentPrincipal` | self | any | Membership, circle, role, effective permissions, token prefix, scopes, expiry |
 | POST | `/invites/preview` | `previewInvite` | public | — | Code **in the body, never the path**. Returns circle name, server, granted role, accepted providers, `revocation_strength`. Hard rate limit. |
 | POST | `/join` | `redeemInvite` | public | — | Redeem, verify credential, create identity + membership, mint a PAT. `Idempotency-Key` required. |
@@ -24,6 +26,32 @@ Cross-circle access returns **`404`, never `403`** — see
 
 `previewInvite` takes the code in a POST body rather than `GET /invites/{code}` because a code is a
 bearer credential and a path segment lands in access logs, browser history and referrers.
+
+**An invite link carries its code in the URL *fragment*, never a path segment:**
+`https://tod.example.com/join#TODI-4KQ7M-9XPB2`. A fragment is never sent to any server — not to
+ours, not to a proxy, and not in a `Referer` — which is the same reason the code travels in a POST
+body one paragraph up, applied to the link an officer actually pastes into Discord. The SPA reads
+`location.hash`, POSTs it to `previewInvite`, and **clears `location.hash` immediately** so a
+screenshot or a shared browser tab does not leak it. A one-time login link is this and nothing more:
+an invite with `max_uses = 1`.
+
+### The credential union
+
+`credential` is a discriminated union on `kind`, identical in `redeemInvite` and
+`authenticateIdentity` — see [ADR-0007](../adr/0007-one-join-endpoint.md) and
+[04-identity §5](04-identity-and-revocation.md#5-one-join-endpoint):
+
+| `kind` | Carries | Used by |
+|---|---|---|
+| `provider_ticket` | `ticket` — from `completeAuthorization`, single-use, 120-second TTL | Any browser flow: `discord` **and** `oidc` |
+| `bearer_token` | `token` | Non-browser `discord` clients |
+| `id_token` | `id_token` + `nonce` | Non-browser `oidc` clients |
+| `none` | nothing | `local` |
+
+`provider_ticket` exists because [ADR-0011](../adr/0011-operator-registered-discord-application.md)
+makes the instance a confidential OAuth client, so the token exchange must happen server-side. Both
+browser providers therefore land on one ticket and **the SPA has a single code path**; `id_token`
+and `bearer_token` remain for clients that have no browser to redirect.
 
 ## Circles
 
@@ -174,4 +202,6 @@ acknowledgement_required (422)   server_mismatch (422)         died_at_in_future
 died_at_too_old (422)            report_immutable (409)        already_retracted (409)
 retract_not_permitted (403)      unknown_target (422)          ambiguous_target (422)
 last_owner (409)                 field_immutable (422)         link_requires_verifiable_identity (422)
+guild_membership_required (403)  guild_role_required (403)     auth_ticket_invalid (401)
+auth_ticket_expired (401)        auth_flow_expired (409)       identity_blocked (403)
 ```
