@@ -223,8 +223,19 @@ table "identity_provider" {
   check "ck_identity_provider_local_is_unverifiable" {
     expr = "((kind = 'local') = (verifiable_subject = 0))"
   }
-  check "ck_identity_provider_discord_has_application" {
-    expr = "((kind = 'discord') = (client_id IS NOT NULL))"
+  // Every provider that talks to a third party is an OAuth client of it, and an OAuth client has
+  // a `client_id`. `discord` needs one because the audience check compares `application.id`
+  // against it; `oidc` needs one because `aud = client_id` IS the audience check, and it is what
+  // makes `oidc` structurally immune to the replay hole ADR-0011 had to close for Discord with an
+  // extra request. `local` talks to nobody and has none.
+  //
+  // This started as `((kind = 'discord') = (client_id IS NOT NULL))`, which made an `oidc` row
+  // with a client id UNREPRESENTABLE — and therefore made `oidc` unconfigurable, because a
+  // verifier with no audience to check is one this codebase refuses to build. Two normative
+  // statements in docs/design/04-identity-and-revocation.md §1 disagreed: the column table's
+  // CHECK, and the same section's `aud = client_id`. The CHECK was the wrong one.
+  check "ck_identity_provider_application_matches_kind" {
+    expr = "((kind = 'local') = (client_id IS NULL))"
   }
   strict = true
 }

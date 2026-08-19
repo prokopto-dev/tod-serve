@@ -91,7 +91,7 @@ test-golden:
 # that stops running the first time somebody is in a hurry; this target is the focused re-run.
 .PHONY: test-integration
 test-integration:
-	$(GO) test -race -count=1 ./internal/store/... ./db/...
+	$(GO) test -race -count=1 ./internal/store/... ./internal/identity/identitysql/... ./db/...
 
 ## test-tenancy: cross-circle isolation over the route registry
 # Walks the registry rather than a hand-written list, so a circle-scoped route added without

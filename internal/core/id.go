@@ -27,6 +27,10 @@ type (
 	IdentityProvider struct{}
 	// IdentityLink marks an identity_link id.
 	IdentityLink struct{}
+	// AuthFlow marks an auth_flow id — one in-flight browser OAuth authorization.
+	AuthFlow struct{}
+	// CredentialTicket marks a credential_ticket id. It is not the ticket secret; see [Secret].
+	CredentialTicket struct{}
 	// TodReport marks a tod_report id, which is also the report log's cursor.
 	TodReport struct{}
 	// QuakeEvent marks a quake_event id.
@@ -53,6 +57,8 @@ func (InviteRedemption) entity() string  { return "invite_redemption" }
 func (Identity) entity() string          { return "identity" }
 func (IdentityProvider) entity() string  { return "identity_provider" }
 func (IdentityLink) entity() string      { return "identity_link" }
+func (AuthFlow) entity() string          { return "auth_flow" }
+func (CredentialTicket) entity() string  { return "credential_ticket" }
 func (TodReport) entity() string         { return "tod_report" }
 func (QuakeEvent) entity() string        { return "quake_event" }
 func (RaidTarget) entity() string        { return "raid_target" }
@@ -80,6 +86,8 @@ type (
 	IdentityID          = ID[Identity]
 	IdentityProviderID  = ID[IdentityProvider]
 	IdentityLinkID      = ID[IdentityLink]
+	AuthFlowID          = ID[AuthFlow]
+	CredentialTicketID  = ID[CredentialTicket]
 	TodReportID         = ID[TodReport]
 	QuakeEventID        = ID[QuakeEvent]
 	RaidTargetID        = ID[RaidTarget]

@@ -249,3 +249,11 @@ func (d *DB) ForeignKeyCheck(ctx context.Context) error {
 	}
 	return nil
 }
+
+// IsNotFound reports whether err is "no such row".
+//
+// It exists so that a service package can answer that question without importing database/sql,
+// which SQL001 forbids everywhere outside this package. Without it, every adapter above the store
+// would either import the driver's error — reopening the rule this package exists to enforce — or
+// compare error strings.
+func IsNotFound(err error) bool { return errors.Is(err, sql.ErrNoRows) }

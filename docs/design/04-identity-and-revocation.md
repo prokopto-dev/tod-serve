@@ -20,7 +20,7 @@ step-up).
 | `enabled` | 0/1 |
 | `verifiable_subject` | 0/1 — `CHECK ((kind = 'local') = (verifiable_subject = 0))` |
 | `issuer`, `authorization_endpoint`, `jwks_uri`, `subject_claim` | OIDC only; `NULL` otherwise |
-| `client_id`, `client_secret`, `redirect_uri`, `token_endpoint` | The operator's **own** OAuth application — see [ADR-0011](../adr/0011-operator-registered-discord-application.md). `CHECK ((kind = 'discord') = (client_id IS NOT NULL))` |
+| `client_id`, `client_secret`, `redirect_uri`, `token_endpoint` | The operator's **own** OAuth application — see [ADR-0011](../adr/0011-operator-registered-discord-application.md). `CHECK ((kind = 'local') = (client_id IS NULL))` |
 
 **`verifiable_subject` cannot be lied about.** It is a CHECK against `kind`, not an operator toggle.
 Everything downstream about revocation strength hangs off it, so it must not be settable.
@@ -32,6 +32,14 @@ rest that the shared-app design did not have, and it is named as a cost in
 
 **Enforced by:** the `No secret is ever logged` invariant — a test marshals the whole config and
 asserts no known secret value appears.
+
+**Every provider that talks to a third party carries a `client_id`; `local` talks to nobody and
+carries none.** This CHECK read `((kind = 'discord') = (client_id IS NOT NULL))` until it was found
+to contradict the `oidc` row of the table below: `aud = client_id` **is** the OIDC audience check,
+and the old predicate made an `oidc` row with a client id *unrepresentable*, so `oidc` could not be
+configured at all. With no audience to compare against, an ID token minted for a different relying
+party at the same issuer would verify — and §7's claim that `oidc` is structurally immune to the
+replay hole would quietly stop being true. Corrected in migration `000003`.
 
 At most one `discord` row and at most one `local` row, by partial unique index. Any number of `oidc`.
 
@@ -168,7 +176,9 @@ GET  /api/v1/auth/callback/{provider_key}    completeAuthorization    Hidden: tr
      No call to /users/@me/guilds. One endpoint answers membership AND roles. [see below]
   6. Re-read the invite, if there was one. If it is no longer live, mint NOTHING.
   7. DISCARD the access token. Write a single-use credential_ticket (TTL 120s) carrying
-     subject, display_name and guild_roles_json (gated guild id -> role ids, absent when 404).
+     subject, display_name and guild_roles_json: gated guild id -> {member, roles}, with
+     `member: false` recording a 404 and the ENTRY ABSENT when the call never settled.
+     Section 8 needs those to be two different facts.
   8. 302 to  <spa>/join#ticket=<ticket>  on success,  <spa>/join#error=<code>  on failure.
      Always the FRAGMENT, never the query. [see below]
 
@@ -420,9 +430,22 @@ structurally immune with no extra call.
 **Enforced by:** `TestDiscord_ForeignApplicationToken_Refused`, which presents a token whose
 `application.id` is not ours on **both** the callback and the `bearer_token` path and asserts `401`.
 
-`credential_stale` remains on the `bearer_token` path as defence in depth. It is no longer the
-*primary* mitigation — the audience check is — but it still bounds how long a stolen same-instance
+`credential_stale` was to remain on the `bearer_token` path as defence in depth: no longer the
+*primary* mitigation — the audience check is — but still bounding how long a stolen same-instance
 token is useful, which the audience check does not address.
+
+**It is not implemented, and this is the honest reason.** The 60-second rule needs the token's
+AGE, and `GET /oauth2/@me` reports `expires` but no issue time. Age is derivable only by assuming
+Discord's token lifetime and subtracting — an assumption that stops being true silently, the day
+Discord changes it, leaving a check that reports `credential_stale` for fresh tokens or accepts old
+ones depending on which direction the change went. A freshness rule that is wrong in an unknown
+direction is worse than no freshness rule, because it is *believed*. So the audience check carries
+the whole `bearer_token` path, which §7's last bullet already said it does, and this is recorded
+here rather than left as a code comment somebody has to go looking for.
+
+**What would close it:** a token-age signal from Discord, or minting our own short-lived credential
+for non-browser clients instead of accepting theirs — which is the browser flow, and is why
+`bearer_token` exists on sufferance.
 
 ### What is honestly still weak
 
@@ -456,7 +479,7 @@ The gate therefore lives on `circle_provider`, which is already circle-scoped:
 | Column | Meaning |
 |---|---|
 | `discord_guild_id` | `TEXT NULL` — the guild this circle requires membership of. `NULL` means no guild gate |
-| `discord_required_role_ids_json` | `TEXT NOT NULL DEFAULT '[]'` — **an empty list means "anyone in the guild"** |
+| `discord_required_role_ids_json` | `TEXT NOT NULL DEFAULT '[]'` — **an empty list means "anyone in the guild"**, and a non-empty one admits anybody holding **any** listed role |
 
 **The instance owns the application; the circle owns the gate.** Two circles on one instance may
 point at two different guilds, which is why this is not an instance setting. It is evaluated in
@@ -471,9 +494,24 @@ the circles the verified identity already belongs to, and carried on the ticket 
 `roles` on a `200` decide `guild_role_required`. The flow never requests the broader `guilds` scope
 or the guild list it returns — see §5.
 
+**Any one listed role admits, not all of them.** The list *widens* as it grows — `[]` is "anyone in
+the guild", `["raider", "officer"]` is "anyone in the guild who is a raider or an officer" — so
+"empty means anyone" is the same rule at its most permissive rather than a special case bolted on
+the front. Requiring all of them would mean a circle naming two roles admitted only the people who
+hold both, which is usually nobody, and the failure would be indistinguishable from a broken gate.
+
 **If the required facts are absent, the gate rejects.** No member object means no evaluation, and no
 evaluation means no entry: `403 guild_role_required`. An implementation that read an absent role
 list as an empty one would disable the gate for every user while appearing to enforce it.
+
+**`guild_roles_json` therefore records three states per guild, not two.** An entry that is *absent*
+means the call was never made or did not complete; an entry with `"member": false` means Discord
+answered `404`, which is a fact we hold. Collapsing those two makes `guild_membership_required`
+unreportable, because the gate can no longer tell "not in the guild" from "we never looked". The
+shape is `{"<guild id>": {"member": true, "roles": ["..."]}}`.
+
+**Enforced by:** `TestEvaluateGate_EveryOutcome` and `TestFacts_RoundTripThroughTheTicketColumn` in
+`internal/identity/discord`.
 
 **Enforced by:** `TestGuildGate_EvaluatedOnJoinAndSessions` and
 `TestGuildGate_MissingRoleFacts_Refused`.

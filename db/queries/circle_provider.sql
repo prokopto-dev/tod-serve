@@ -27,3 +27,14 @@ SELECT * FROM circle_provider WHERE circle_id = sqlc.arg(circle_id) ORDER BY pro
 -- removal is a footgun that eventually deletes a guild's whole roster with one click.
 DELETE FROM circle_provider
 WHERE circle_id = sqlc.arg(circle_id) AND provider_id = sqlc.arg(provider_id);
+
+-- name: AnyCircleGatesOnAGuild :one
+-- tenancy: an INSTANCE-level fact that names no circle, and must not. createAuthorizationURL
+-- with no invite code has no circle to resolve - resolving one from a caller-supplied id is the
+-- existence oracle canonical section 7 closes - so the OAuth scope decision falls back to "does
+-- any circle on this instance gate on a guild at all". The answer is one bit about the instance
+-- and identifies nothing. Adding a circle_id here would require the public caller to supply one,
+-- which is the whole thing this query exists to avoid.
+SELECT EXISTS (
+  SELECT 1 FROM circle_provider WHERE discord_guild_id IS NOT NULL
+) AS gated;
