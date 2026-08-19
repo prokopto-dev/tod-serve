@@ -2,6 +2,7 @@ package identity_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -662,4 +663,110 @@ func TestCompleteAuthorization_InvalidProviderRow_IsRefusedBeforeAnyExchange(t *
 	require.Empty(t, h.store.tickets)
 	require.Equal(t, "error=credential_invalid", mustFragment(t, callback.Location),
 		"an uncoded failure still redirects, so the browser is not left on a blank callback page")
+}
+
+// The callback's own resistance to a guessed `state`.
+//
+// The shared invite-code rate limit sits in front of `createAuthorizationURL`, not in front of the
+// callback — reaching the callback needs a state that route already minted. So nothing upstream
+// meters a caller who simply guesses states, and the whole defence is that a state is not
+// guessable and not reusable. That makes these three properties load-bearing rather than tidy.
+func TestCompleteAuthorization_State_IsUnguessableSingleUseAndOpaqueInFailure(t *testing.T) {
+	t.Parallel()
+
+	t.Run("256 bits, from the injected entropy source", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.withLiveInvite(identity.GuildGate{})
+
+		first, err := h.service.CreateAuthorizationURL(t.Context(),
+			identity.AuthorizationRequest{ProviderKey: "discord", InviteCode: inviteCode})
+		require.NoError(t, err)
+		second, err := h.service.CreateAuthorizationURL(t.Context(),
+			identity.AuthorizationRequest{ProviderKey: "discord", InviteCode: inviteCode})
+		require.NoError(t, err)
+
+		raw, err := base64.RawURLEncoding.DecodeString(first.State)
+		require.NoError(t, err)
+		require.Len(t, raw, 32, "a state is 256 bits; anything shorter is a brute-force surface")
+		require.NotEqual(t, first.State, second.State, "two flows never share a state")
+
+		// The service refuses to exist without an entropy source rather than defaulting to one.
+		// A generator that quietly falls back to a weak source is one nobody notices is weak; the
+		// binary passes crypto/rand.
+		_, err = identity.New(identity.Config{
+			Store: h.store, Clients: h.clients, Clock: h.clock,
+			IDs: core.NewGenerator(&countingEntropy{}), Entropy: nil,
+			SPAJoinURL: spaJoinURL, Logger: slog.New(slog.DiscardHandler),
+		})
+		require.Error(t, err)
+	})
+
+	// Unknown, already-consumed and expired must be ONE answer. Telling them apart would confirm
+	// that a guessed state was real, which is the only thing a guesser is trying to learn.
+	t.Run("unknown, consumed and expired are indistinguishable", func(t *testing.T) {
+		t.Parallel()
+
+		consumed := newHarness(t)
+		consumed.withLiveInvite(identity.GuildGate{})
+		used, err := consumed.service.CreateAuthorizationURL(t.Context(),
+			identity.AuthorizationRequest{ProviderKey: "discord", InviteCode: inviteCode})
+		require.NoError(t, err)
+		_, err = consumed.service.CompleteAuthorization(t.Context(), identity.CallbackRequest{
+			ProviderKey: "discord", State: used.State, Code: "code-1",
+		})
+		require.NoError(t, err)
+
+		expired := newHarness(t)
+		expired.withLiveInvite(identity.GuildGate{})
+		stale, err := expired.service.CreateAuthorizationURL(t.Context(),
+			identity.AuthorizationRequest{ProviderKey: "discord", InviteCode: inviteCode})
+		require.NoError(t, err)
+		expired.clock.Advance(identity.AuthFlowTTL + time.Second)
+
+		unknown := newHarness(t)
+
+		answers := []identity.Callback{}
+		for _, tc := range []struct {
+			h     *harness
+			state string
+		}{
+			{unknown, "a-state-nobody-ever-issued"},
+			{consumed, used.State},
+			{expired, stale.State},
+		} {
+			got, err := tc.h.service.CompleteAuthorization(t.Context(), identity.CallbackRequest{
+				ProviderKey: "discord", State: tc.state, Code: "code-1",
+			})
+			require.Error(t, err)
+			answers = append(answers, got)
+		}
+
+		for _, got := range answers {
+			require.Equal(t, identity.CodeAuthFlowExpired, got.Code)
+			require.Equal(t, answers[0].Code, got.Code)
+			require.Equal(t, answers[0].Location, got.Location,
+				"the browser must not be able to tell a real state from an invented one")
+		}
+	})
+
+	// The row is keyed on the state, so a second exchange finds nothing — and the database refuses
+	// it a second time even if the query forgot the `WHERE consumed_at IS NULL`.
+	t.Run("a consumed state mints no second ticket", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.withLiveInvite(identity.GuildGate{})
+		authorization, err := h.service.CreateAuthorizationURL(t.Context(),
+			identity.AuthorizationRequest{ProviderKey: "discord", InviteCode: inviteCode})
+		require.NoError(t, err)
+
+		req := identity.CallbackRequest{ProviderKey: "discord", State: authorization.State, Code: "c"}
+		_, err = h.service.CompleteAuthorization(t.Context(), req)
+		require.NoError(t, err)
+		require.Len(t, h.store.tickets, 1)
+
+		_, err = h.service.CompleteAuthorization(t.Context(), req)
+		require.Error(t, err)
+		require.Len(t, h.store.tickets, 1, "one authorization, one ticket, one PAT")
+	})
 }
