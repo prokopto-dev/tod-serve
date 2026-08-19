@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/danielgtaylor/huma/v2/negotiation"
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/auth"
@@ -252,27 +251,25 @@ func withBufferedBody(next http.Handler, limit int64, write func(http.ResponseWr
 	})
 }
 
-// MediaTypeJSON is the one media type this API produces. Errors carry [apierr.ContentType], which
-// is also JSON.
-const MediaTypeJSON = "application/json"
-
-// servedFormats are the media types this API produces. There is one, and `json` is its extension
-// alias, exactly as the framework's format map spells them.
-func servedFormats() []string { return []string{MediaTypeJSON, "json"} }
-
-// withAcceptableFormat refuses a request whose `Accept` this API cannot satisfy.
+// withAcceptableFormat refuses a request whose `Accept` this listener cannot satisfy.
 //
 // The framework's own behaviour is to fall back to JSON, which would answer a client that
 // explicitly excluded JSON with JSON — a small lie told on every request. Turning its strict mode
 // on instead would refuse a request with NO `Accept` at all, which means "anything" and must
-// succeed. So the check is here, where both cases can be right: an absent header is fine, and a
-// present one that admits nothing we serve is a 406 with a code.
-func withAcceptableFormat(next http.Handler, write func(http.ResponseWriter, error)) http.Handler {
+// succeed. So the check is here, where both cases can be right.
+//
+// `served` is per listener. The API produces JSON and the metrics listener produces the Prometheus
+// text exposition, and a single shared list meant the metrics listener refused every scraper —
+// including one asking for exactly the format it was about to be sent.
+func withAcceptableFormat(
+	next http.Handler, served []string, write func(http.ResponseWriter, error),
+) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		accept := trimHeader(r.Header.Get("Accept"))
-		if accept != "" && negotiation.SelectQValueFast(accept, servedFormats()) == "" {
-			write(w, apierr.New(apierr.CodeNotAcceptable,
-				"this API produces application/json; the Accept header admits nothing it serves"))
+		if accept != "" && !acceptable(accept, served) {
+			write(w, apierr.Newf(apierr.CodeNotAcceptable,
+				"this endpoint produces %s; the Accept header admits none of it",
+				strings.Join(served, ", ")))
 			return
 		}
 		next.ServeHTTP(w, r)

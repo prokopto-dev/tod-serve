@@ -77,8 +77,8 @@ func newStubRig(t *testing.T, ops ...OperationID) *stubRig {
 	invites := newLimiter(cfg.InviteRateLimit)
 	server := &Server{
 		cfg: cfg, counts: counts, invites: invites,
-		api:     newBuilder(cfg, counts, invites, true),
-		metrics: newBuilder(cfg, counts, invites, false),
+		api:     newBuilder(cfg, counts, invites, apiMediaTypes(), true),
+		metrics: newBuilder(cfg, counts, invites, metricsMediaTypes(), false),
 	}
 
 	rig := &stubRig{t: t, server: server, db: db, clock: clk, ids: ids, minter: minter}

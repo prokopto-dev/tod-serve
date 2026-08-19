@@ -449,7 +449,7 @@ func TestProblem_FrameworkErrors_AreRFC9457(t *testing.T) {
 			code: apierr.CodeValidationFailed,
 		},
 		{
-			name: "an Accept header we cannot satisfy",
+			name: "an Accept header we genuinely cannot satisfy",
 			request: func(*harness) request {
 				return request{
 					Method: http.MethodGet, Path: api.BasePath + "/meta",
@@ -597,6 +597,81 @@ func TestResponses_EveryBody_CarriesAsOfFromTheInjectedClock(t *testing.T) {
 			require.NotNil(t, body.AsOf, "%s answered with no as_of: %s", tc.name, got.Body)
 			require.Equal(t, want, *body.AsOf,
 				"%s did not read the injected clock", tc.name)
+		})
+	}
+}
+
+// The regression this test exists for: `Accept: */*` is what curl sends by default and what most
+// HTTP clients send, and the Accept check read it as admitting nothing — so EVERY route 406'd for
+// the most common client in the world. Only an absent header worked.
+//
+// The suite missed it because every other test in this package either omits `Accept` entirely
+// (httptest sets none) or sends `application/json`. It exercised the two ends of the range and
+// never the middle, which is where the common case lives.
+func TestAccept_TheCommonHeaders_AreSatisfiedOnBothListeners(t *testing.T) {
+	t.Parallel()
+	const stockPrometheus = "application/openmetrics-text;version=1.0.0;q=0.5," +
+		"text/plain;version=0.0.4;q=0.4,*/*;q=0.1"
+
+	cases := []struct {
+		name    string
+		metrics bool
+		accept  string
+		status  int
+	}{
+		{"no Accept at all means anything", false, "", http.StatusOK},
+		{"the wildcard curl sends", false, "*/*", http.StatusOK},
+		{"an explicit application/json", false, "application/json", http.StatusOK},
+		{
+			"a browser's Accept", false,
+			"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", http.StatusOK,
+		},
+		{"a client asking only for XML", false, "application/xml", http.StatusNotAcceptable},
+		{"a client asking only for plain text", false, "text/plain", http.StatusNotAcceptable},
+
+		{"no Accept at all, scraping metrics", true, "", http.StatusOK},
+		{"the wildcard, scraping metrics", true, "*/*", http.StatusOK},
+		{"a bare text/plain, scraping metrics", true, "text/plain", http.StatusOK},
+		{
+			"the versioned exposition Prometheus names", true,
+			"text/plain;version=0.0.4", http.StatusOK,
+		},
+		{"the stock Prometheus Accept header", true, stockPrometheus, http.StatusOK},
+		{
+			"a client asking the metrics listener for JSON", true,
+			"application/json", http.StatusNotAcceptable,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.seedInstance(false)
+
+			req := request{
+				Method:  http.MethodGet,
+				Path:    api.BasePath + "/meta",
+				Headers: map[string]string{"Accept": tc.accept},
+			}
+			if tc.metrics {
+				req.Path, req.Metrics = "/metrics", true
+				req.Headers["Authorization"] = auth.BearerScheme + testMetricsTok.Reveal()
+			}
+			if tc.accept == "" {
+				delete(req.Headers, "Accept")
+			}
+
+			got := h.do(req)
+			require.Equal(t, tc.status, got.Status, "Accept: %q gave: %s", tc.accept, got.Body)
+			if tc.status != http.StatusOK {
+				require.Equal(t, apierr.CodeNotAcceptable, got.Problem.Code)
+				return
+			}
+			require.NotEmpty(t, got.Body)
+			if tc.metrics {
+				require.Contains(t, got.Body, "tod_build_info",
+					"the scraper was admitted and then served something that is not metrics")
+			}
 		})
 	}
 }

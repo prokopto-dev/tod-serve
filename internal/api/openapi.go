@@ -66,8 +66,8 @@ func newDocumentServer() (*Server, error) {
 		cfg:     cfg,
 		counts:  counts,
 		invites: invites,
-		api:     newBuilder(cfg, counts, invites, true),
-		metrics: newBuilder(cfg, counts, invites, false),
+		api:     newBuilder(cfg, counts, invites, apiMediaTypes(), true),
+		metrics: newBuilder(cfg, counts, invites, metricsMediaTypes(), false),
 	}
 	if err := s.registerAll(); err != nil {
 		return nil, err
