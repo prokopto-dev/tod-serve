@@ -93,6 +93,9 @@ type Builder struct {
 	registered map[OperationID]bool
 	order      []OperationID
 	metrics    *metrics
+	// served are the media types THIS listener produces, for the `Accept` check. The API and the
+	// metrics listener produce different things, and sharing one list refused every scraper.
+	served []string
 	// invites is the SHARED invite-code bucket. It is one limiter passed to every builder rather
 	// than one per builder: two buckets is two guessing budgets, which is the whole failure this
 	// limiter exists to prevent.
@@ -113,7 +116,9 @@ func (b *Builder) OpenAPI() *huma.OpenAPI { return b.api.OpenAPI() }
 func (b *Builder) Registered() []OperationID { return append([]OperationID(nil), b.order...) }
 
 // newBuilder wires a router and an API over it.
-func newBuilder(cfg Config, metrics *metrics, invites *limiter, docs bool) *Builder {
+func newBuilder(
+	cfg Config, metrics *metrics, invites *limiter, served []string, docs bool,
+) *Builder {
 	mux := http.NewServeMux()
 	config := huma.DefaultConfig(Title, DocumentVersion)
 	config.OpenAPIPath = ""
@@ -136,6 +141,7 @@ func newBuilder(cfg Config, metrics *metrics, invites *limiter, docs bool) *Buil
 		registered: map[OperationID]bool{},
 		metrics:    metrics,
 		invites:    invites,
+		served:     served,
 	}
 }
 
@@ -166,7 +172,7 @@ func securitySchemes() map[string]*huma.SecurityScheme {
 // handler wraps the router in the middleware every request passes through, outermost first.
 func (b *Builder) handler() http.Handler {
 	var h http.Handler = b.mux
-	h = withAcceptableFormat(h, b.writeRawProblem)
+	h = withAcceptableFormat(h, b.served, b.writeRawProblem)
 	h = withFrameworkProblems(h, b.writeRawProblem)
 	h = withIdempotencyCapture(h)
 	h = withBufferedBody(h, MaxBodyBytes, b.writeRawProblem)
@@ -228,8 +234,8 @@ func New(cfg Config) (*Server, error) {
 		cfg:     cfg,
 		counts:  counts,
 		invites: invites,
-		api:     newBuilder(cfg, counts, invites, true),
-		metrics: newBuilder(cfg, counts, invites, false),
+		api:     newBuilder(cfg, counts, invites, apiMediaTypes(), true),
+		metrics: newBuilder(cfg, counts, invites, metricsMediaTypes(), false),
 	}
 	if err := s.registerAll(); err != nil {
 		return nil, err
