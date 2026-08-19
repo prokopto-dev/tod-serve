@@ -20,7 +20,10 @@ import (
 	// modernc.org/sqlite is a pure-Go SQLite. It costs some speed against the cgo driver and buys
 	// the thing this project is built around: `go build` produces one static binary an officer can
 	// double-click, cross-compiled from anywhere, with no toolchain on the target machine.
-	_ "modernc.org/sqlite"
+	//
+	// It is imported by NAME rather than blankly so that [IsUniqueViolation] can read the driver's
+	// own error code. This is the only package permitted to know the driver exists at all.
+	"modernc.org/sqlite"
 
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 )
@@ -257,3 +260,26 @@ func (d *DB) ForeignKeyCheck(ctx context.Context) error {
 // would either import the driver's error — reopening the rule this package exists to enforce — or
 // compare error strings.
 func IsNotFound(err error) bool { return errors.Is(err, sql.ErrNoRows) }
+
+// The SQLite extended result codes for a duplicate key. They are spelled here rather than imported
+// from the driver's constant set because that set lives in a generated subpackage whose import
+// path is an implementation detail of the driver; the numbers are SQLite's own and stable.
+const (
+	sqliteConstraintUnique     = 2067 // SQLITE_CONSTRAINT_UNIQUE
+	sqliteConstraintPrimaryKey = 1555 // SQLITE_CONSTRAINT_PRIMARYKEY
+)
+
+// IsUniqueViolation reports whether err is SQLite refusing a duplicate on a unique index or a
+// primary key.
+//
+// It lives here for the same reason [IsNotFound] does: this is the only package that may name the
+// driver, so a service above it would otherwise have to compare error strings — and a string match
+// that stops matching after a driver upgrade turns a `409 conflict` into a `500` silently.
+func IsUniqueViolation(err error) bool {
+	var e *sqlite.Error
+	if !errors.As(err, &e) {
+		return false
+	}
+	code := e.Code()
+	return code == sqliteConstraintUnique || code == sqliteConstraintPrimaryKey
+}

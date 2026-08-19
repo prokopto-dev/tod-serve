@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 	"testing"
 
@@ -15,16 +16,17 @@ import (
 // TestTenancy_CrossCircle_EveryOperationDenies is the load-bearing gate AGENTS.md law 5 names: a
 // principal of circle A gets 404 — never 403 — on every circle-scoped operation against circle B.
 //
-// **It is not load-bearing yet, and this is the honest statement of why.** It walks the route
-// registry rather than a hand-written list, so a circle-scoped route added without coverage is a
-// red test the moment its handler lands. Today NO circle-scoped route has a handler — they belong
-// to milestones that have not landed — so the loop below runs zero times and the test logs that
-// rather than reporting a green tick it has not earned.
+// **It is PARTIALLY load-bearing, and the honest statement of that is [uncoveredCircleRoutes].**
+// It walks the route registry rather than a hand-written list, so a circle-scoped route added
+// without coverage is a red test the moment its handler lands. The circles, members and invites
+// handlers are here; the ToD, quake, audit, event and timer-override handlers are not, and every
+// one of them is named below with the milestone that owns it. A green tick over a partial route
+// set, reported as "the tenancy gate passes", is exactly the failure this repository is built
+// against — so the count is logged and the remainder is enumerated in BOTH directions.
 //
-// What IS enforced today is the middleware the loop would exercise:
+// What is additionally enforced is the middleware the loop drives:
 // TestTenancy_TheMiddleware_AnswersNotFoundAcrossCircles drives a real registry row with a stub
-// handler and asserts the 404. When the circle routes land, this test starts covering them without
-// anybody having to remember to add them.
+// handler and asserts the 404 even for a route with no handler at all.
 func TestTenancy_CrossCircle_EveryOperationDenies(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -41,8 +43,10 @@ func TestTenancy_CrossCircle_EveryOperationDenies(t *testing.T) {
 	}
 
 	covered := 0
+	var uncovered []api.OperationID
 	for _, route := range api.CircleScopedRoutes() {
 		if !served[route.ID] {
+			uncovered = append(uncovered, route.ID)
 			continue
 		}
 		t.Run(string(route.ID), func(t *testing.T) {
@@ -52,7 +56,10 @@ func TestTenancy_CrossCircle_EveryOperationDenies(t *testing.T) {
 
 			got := h.do(request{
 				Method: route.Method, Path: path, Token: token,
-				Headers: map[string]string{api.IdempotencyKeyHeader: "cross-circle"},
+				Headers: map[string]string{
+					api.IdempotencyKeyHeader: "cross-circle",
+					api.IfMatchHeader:        "*",
+				},
 			})
 			require.Equal(t, http.StatusNotFound, got.Status,
 				"%s answered %d for another circle; a 403 confirms the circle exists",
@@ -64,8 +71,75 @@ func TestTenancy_CrossCircle_EveryOperationDenies(t *testing.T) {
 
 	total := len(api.CircleScopedRoutes())
 	require.Positive(t, total, "the registry holds no circle-scoped routes; the filter is wrong")
-	t.Logf("%d of %d circle-scoped operations have a handler and were driven; "+
-		"this test is not yet load-bearing coverage of the circle routes", covered, total)
+
+	// Both directions, so the remainder cannot rot. A route that gains a handler and is still
+	// listed here is as red as one that loses coverage and is not.
+	owners := uncoveredCircleRoutes()
+	for _, id := range uncovered {
+		require.Contains(t, owners, id,
+			"%s is circle-scoped, has no handler, and is not named in uncoveredCircleRoutes; "+
+				"a gap nobody wrote down is a gap nobody is tracking", id)
+	}
+	for id := range owners {
+		require.False(t, served[id],
+			"%s now has a handler; remove it from uncoveredCircleRoutes so the count is honest",
+			id)
+	}
+	require.Len(t, uncovered, len(owners))
+
+	t.Logf("%d of %d circle-scoped operations have a handler and were driven. "+
+		"The remaining %d are UNCOVERED: %s", covered, total, len(uncovered), owners.String())
+}
+
+// uncoveredCircleRoutes names every circle-scoped operation with no handler, and who owns it.
+//
+// It is a map rather than a comment because the test above compares it against the registry in
+// both directions: an operation that gains a handler and stays listed here is red, and one that
+// loses coverage without being listed is red. That is what stops "N of 27" drifting into a number
+// nobody recomputed.
+func uncoveredCircleRoutes() coverageGap {
+	return coverageGap{
+		// Phase 2 — reports, consensus, windows.
+		api.OpCreateTodReport:  "Phase 2 (internal/tod)",
+		api.OpListTodReports:   "Phase 2 (internal/tod)",
+		api.OpGetTodReport:     "Phase 2 (internal/tod)",
+		api.OpRetractTodReport: "Phase 2 (internal/tod)",
+		api.OpListTargetStates: "Phase 2 (internal/projection)",
+		api.OpGetTargetState:   "Phase 2 (internal/projection)",
+		api.OpReportQuake:      "Phase 2 (internal/tod)",
+		api.OpListQuakes:       "Phase 2 (internal/tod)",
+		api.OpListCircleAudit:  "Phase 2 — the rows are already written; this is the read side",
+
+		// Phase 3 — the raid-target catalogue and its per-circle overrides.
+		api.OpListCircleTimerOverrides:  "Phase 3 (catalogue)",
+		api.OpPutCircleTimerOverride:    "Phase 3 (catalogue)",
+		api.OpDeleteCircleTimerOverride: "Phase 3 (catalogue)",
+
+		// Phase 6 — realtime, moved out of Phase 4 deliberately (see ROADMAP.md).
+		api.OpSubscribeCircleEvent: "Phase 6 (internal/events)",
+		api.OpReplayCircleEvents:   "Phase 6 (internal/events)",
+
+		// Not a milestone: a conflict between two normative rules, reported rather than resolved
+		// quietly. docs/design/02-api-design.md says `deleteCircle` deletes "the circle and every
+		// report in it", and canonical §10 makes `tod_report`, `quake_event`, `invite_redemption`
+		// and `audit_log` append-only by trigger — so with `foreign_keys` ON a circle that has any
+		// of those rows cannot be deleted at all. AGENTS.md: the invariant wins, and the conflict
+		// is a bug worth reporting.
+		api.OpDeleteCircle: "BLOCKED — deleting a circle requires deleting append-only rows",
+	}
+}
+
+// coverageGap maps an uncovered operation to the milestone that owns it.
+type coverageGap map[api.OperationID]string
+
+// String renders the gap for the log line, sorted so two runs read the same.
+func (g coverageGap) String() string {
+	ids := make([]string, 0, len(g))
+	for id, owner := range g {
+		ids = append(ids, string(id)+" -> "+owner)
+	}
+	sort.Strings(ids)
+	return "\n  " + strings.Join(ids, "\n  ")
 }
 
 // The registry's own promise: the moment a circle-scoped handler is registered, the test above

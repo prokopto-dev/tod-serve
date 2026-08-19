@@ -285,20 +285,31 @@ func (q *Queries) RevokeInvite(ctx context.Context, arg RevokeInviteParams) (Inv
 const revokeLiveInvitesForCircle = `-- name: RevokeLiveInvitesForCircle :execrows
 UPDATE invite
 SET revoked_at = ?1, updated_at = ?2
-WHERE circle_id = ?3 AND revoked_at IS NULL
+WHERE circle_id = ?3
+  AND revoked_at IS NULL AND expires_at > ?4 AND uses < max_uses
 `
 
 type RevokeLiveInvitesForCircleParams struct {
 	RevokedAt *int64
 	UpdatedAt int64
 	CircleID  string
+	Now       int64
 }
 
 // When a weakly-revocable member is revoked and revoke_invalidates_invites = 1, every outstanding
 // invite goes in the SAME transaction. The officers' false belief that revocation worked is the
 // damage, not the re-entry.
+//
+// The predicate is the same one CountLiveInvites uses, and it has to be: the row count this
+// returns is reported to an officer as "2 invites were revoked", and an UPDATE that also touched
+// expired and exhausted rows would report a number larger than the number of doors it closed.
 func (q *Queries) RevokeLiveInvitesForCircle(ctx context.Context, arg RevokeLiveInvitesForCircleParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeLiveInvitesForCircle, arg.RevokedAt, arg.UpdatedAt, arg.CircleID)
+	result, err := q.db.ExecContext(ctx, revokeLiveInvitesForCircle,
+		arg.RevokedAt,
+		arg.UpdatedAt,
+		arg.CircleID,
+		arg.Now,
+	)
 	if err != nil {
 		return 0, err
 	}

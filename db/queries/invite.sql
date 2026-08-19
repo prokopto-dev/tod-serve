@@ -42,9 +42,14 @@ RETURNING *;
 -- When a weakly-revocable member is revoked and revoke_invalidates_invites = 1, every outstanding
 -- invite goes in the SAME transaction. The officers' false belief that revocation worked is the
 -- damage, not the re-entry.
+--
+-- The predicate is the same one CountLiveInvites uses, and it has to be: the row count this
+-- returns is reported to an officer as "2 invites were revoked", and an UPDATE that also touched
+-- expired and exhausted rows would report a number larger than the number of doors it closed.
 UPDATE invite
 SET revoked_at = sqlc.arg(revoked_at), updated_at = sqlc.arg(updated_at)
-WHERE circle_id = sqlc.arg(circle_id) AND revoked_at IS NULL;
+WHERE circle_id = sqlc.arg(circle_id)
+  AND revoked_at IS NULL AND expires_at > sqlc.arg(now) AND uses < max_uses;
 
 -- name: ConsumeInvite :one
 -- The CHECK (uses <= max_uses) makes over-redemption unrepresentable; `uses < max_uses` here turns

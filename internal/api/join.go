@@ -1,0 +1,146 @@
+package api
+
+import (
+	"context"
+	"errors"
+
+	"github.com/prokopto-dev/tod-serve/internal/apierr"
+	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/identity"
+	"github.com/prokopto-dev/tod-serve/internal/membership"
+)
+
+// CredentialBody is the discriminated union [ADR-0007] chose over a route per provider.
+//
+// One shape in the system rather than one per provider — and `/join` and `/sessions` take the same
+// one, so there is a single credential to secure, audit and rate-limit. The cost is stated in the
+// ADR: a `oneOf` with a discriminator is uglier in a generated SDK than three clean bodies, and
+// part of the validation lives in the service rather than purely in the schema.
+//
+// [ADR-0007]: docs/adr/0007-one-join-endpoint.md
+type CredentialBody struct {
+	Kind string `json:"kind" doc:"provider_ticket, bearer_token, id_token or none" enum:"provider_ticket,bearer_token,id_token,none"`
+	// Ticket is the single-use, 120-second `credential_ticket` the OAuth callback delivered in the
+	// redirect FRAGMENT. Any browser flow — discord and oidc alike.
+	Ticket string `json:"ticket,omitempty"`
+	// Token is a Discord access token, for a client with no browser to redirect. Its safety rests
+	// entirely on the audience check inside internal/identity/discord.
+	Token string `json:"token,omitempty"`
+	// IDToken and Nonce are the non-browser OIDC path. The nonce is not optional: it is what binds
+	// an ID token to the authorization request that asked for it.
+	IDToken string `json:"id_token,omitempty"`
+	Nonce   string `json:"nonce,omitempty"`
+}
+
+func (c CredentialBody) toCredential() identity.Credential {
+	return identity.Credential{
+		Kind:    identity.CredentialKind(c.Kind),
+		Ticket:  c.Ticket,
+		Token:   core.Secret(c.Token),
+		IDToken: c.IDToken,
+		Nonce:   c.Nonce,
+	}
+}
+
+// ClientBody names the device a token is being minted for, so a person can recognise it in their
+// own token list and cut off the one they no longer have.
+type ClientBody struct {
+	Name    string `json:"name,omitempty" doc:"e.g. nparse-plus-tod" maxLength:"64"`
+	Version string `json:"version,omitempty" maxLength:"32"`
+}
+
+type redeemInviteInput struct {
+	Body struct {
+		// InviteCode travels in the body, never the path. The link an officer pastes carries it in
+		// the URL FRAGMENT, which no browser transmits at all.
+		InviteCode  string         `json:"invite_code" doc:"The invite code, in any case, with or without the TODI- prefix"`
+		Provider    string         `json:"provider" doc:"A provider key from previewInvite's providers[]"`
+		Credential  CredentialBody `json:"credential"`
+		DisplayName string         `json:"display_name,omitempty" doc:"Required for local, optional elsewhere, where it overrides what the provider reported" maxLength:"64"`
+		Client      ClientBody     `json:"client,omitempty"`
+		Scopes      []string       `json:"scopes,omitempty" doc:"Narrow the minted token. Empty means every scope, still bounded by the role"`
+	}
+}
+
+type redeemInviteOutput struct{ Body membership.Joined }
+
+type authenticateIdentityInput struct {
+	Body struct {
+		// CircleID is accepted here and nowhere else on a public route, and only WITH a
+		// credential: the circle is resolved after the credential verifies, and every failure
+		// answers 404 so the route confirms nothing about which circles exist.
+		CircleID    string         `json:"circle_id" doc:"The circle to re-authenticate into"`
+		Provider    string         `json:"provider" doc:"A provider key"`
+		Credential  CredentialBody `json:"credential"`
+		DisplayName string         `json:"display_name,omitempty" maxLength:"64"`
+		Client      ClientBody     `json:"client,omitempty"`
+		Scopes      []string       `json:"scopes,omitempty"`
+	}
+}
+
+type authenticateIdentityOutput struct{ Body membership.Joined }
+
+// registerJoin attaches the two public operations that mint a token.
+//
+// They are one credential union and one code path on purpose. The guild gate is evaluated in BOTH,
+// through the single evaluator in internal/identity: a gate checked only at join is a gate
+// somebody walks around by re-authing on a new device.
+func (s *Server) registerJoin() error {
+	return errors.Join(
+		registerFailure(OpRedeemInvite, Register(s.api, OpRedeemInvite,
+			func(ctx context.Context, in *redeemInviteInput) (*redeemInviteOutput, error) {
+				key, _ := IdempotencyKeyFrom(ctx)
+				joined, err := s.cfg.Members.Join(ctx, membership.JoinRequest{
+					Code:           in.Body.InviteCode,
+					ProviderKey:    in.Body.Provider,
+					Credential:     in.Body.Credential.toCredential(),
+					DisplayName:    in.Body.DisplayName,
+					ClientName:     clientName(in.Body.Client),
+					Scopes:         in.Body.Scopes,
+					IdempotencyKey: key,
+				})
+				if err != nil {
+					return nil, err
+				}
+				return &redeemInviteOutput{Body: joined}, nil
+			})),
+
+		registerFailure(OpAuthenticateIdentity, Register(s.api, OpAuthenticateIdentity,
+			func(ctx context.Context, in *authenticateIdentityInput) (*authenticateIdentityOutput, error) {
+				circleID, err := core.ParseID[core.Circle](in.Body.CircleID)
+				if err != nil {
+					// A malformed circle id answers exactly what an unknown one does. Anything
+					// narrower would tell a caller their guess was at least well-formed.
+					return nil, apierr.Wrap(apierr.CodeNotFound, err,
+						"no membership for this identity in that circle")
+				}
+				key, _ := IdempotencyKeyFrom(ctx)
+				joined, err := s.cfg.Members.Authenticate(ctx, membership.AuthenticateRequest{
+					CircleID:       circleID,
+					ProviderKey:    in.Body.Provider,
+					Credential:     in.Body.Credential.toCredential(),
+					DisplayName:    in.Body.DisplayName,
+					ClientName:     clientName(in.Body.Client),
+					Scopes:         in.Body.Scopes,
+					IdempotencyKey: key,
+				})
+				if err != nil {
+					return nil, err
+				}
+				return &authenticateIdentityOutput{Body: joined}, nil
+			})),
+	)
+}
+
+// clientName renders the device name a token is filed under. The version is folded in because
+// "nparse-plus-tod 1.2.0" is what somebody scanning their own device list can actually act on.
+func clientName(c ClientBody) string {
+	switch {
+	case c.Name == "":
+		return ""
+	case c.Version == "":
+		return c.Name
+	default:
+		return c.Name + " " + c.Version
+	}
+}

@@ -124,3 +124,31 @@ func CanLink(primary, linked Provider) error {
 	}
 	return nil
 }
+
+// Provider returns one row of the instance registry, by its wire key.
+//
+// It exists so that a caller which has to hand [Service.Verify] a [Provider] — `/join`,
+// `/sessions`, `listIdentityProviders` — does not read `identity_provider` itself. The row carries
+// a `client_secret`, and the fewer packages that can name one, the smaller the set of places a
+// future field could leak from.
+func (s *Service) Provider(ctx context.Context, key string) (Provider, error) {
+	provider, err := s.store.ProviderByKey(ctx, key)
+	if errors.Is(err, ErrNotFound) {
+		return Provider{}, NewValidationError("body.provider",
+			fmt.Sprintf("no provider %q on this instance", key))
+	}
+	if err != nil {
+		return Provider{}, fmt.Errorf("read provider %q: %w", key, err)
+	}
+	return provider, nil
+}
+
+// EnabledProviders returns the instance's enabled providers, for the public discovery endpoint and
+// for deciding what a new circle auto-accepts.
+func (s *Service) EnabledProviders(ctx context.Context) ([]Provider, error) {
+	providers, err := s.store.EnabledProviders(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled providers: %w", err)
+	}
+	return providers, nil
+}

@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,27 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/prokopto-dev/tod-serve/internal/api"
-	"github.com/prokopto-dev/tod-serve/internal/auth"
-	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
-	"github.com/prokopto-dev/tod-serve/internal/store"
-)
-
-// The environment this command reads. Named rather than spelled at each call site, so that
-// `grep -n TOD_ cmd/` lists everything an operator can set.
-const (
-	envAddr           = "TOD_ADDR"
-	envTokenPepper    = "TOD_TOKEN_PEPPER"
-	envSessionKey     = "TOD_SESSION_KEY"
-	envMetricsEnabled = "TOD_METRICS_ENABLED"
-	envMetricsToken   = "TOD_METRICS_TOKEN"
-	envMetricsAddr    = "TOD_METRICS_ADDR"
-)
-
-const (
-	defaultAddr        = ":8080"
-	defaultMetricsAddr = ":9090"
 )
 
 // The server's own timeouts. A home server on a domestic connection meets slow clients routinely,
@@ -45,88 +26,84 @@ const (
 	shutdownTimeout   = 15 * time.Second
 )
 
-// serve runs the HTTP server until the process is asked to stop.
+// newServeCommand runs the HTTP server until the process is asked to stop.
 //
 // The metrics listener is separate and disabled by default — canonical §13. It is a second
 // [http.Server] rather than a route on the first, so that binding it to a loopback address or
 // leaving it off is a deployment decision an operator can actually make.
-func serve(ctx context.Context, args []string, out io.Writer) error {
-	if len(args) > 0 {
-		return fmt.Errorf("unknown argument %q: %s takes no arguments; it reads the environment",
-			args[0], cmdServe)
-	}
+func newServeCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "serve",
+		Short: "Serve the API ($" + envAddr + ", default " + defaultAddr + ")",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
+			out := cmd.OutOrStdout()
+			log := slog.New(slog.NewJSONHandler(out, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	log := slog.New(slog.NewJSONHandler(out, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			pepper := core.Secret(os.Getenv(envTokenPepper))
+			if pepper.IsZero() {
+				// Refused rather than defaulted. A generated pepper would change on every restart,
+				// which invalidates every token an officer has already handed out.
+				return fmt.Errorf(
+					"%s is required: it is what makes a stolen database file useless on its own",
+					envTokenPepper)
+			}
+			sessionKey := core.Secret(os.Getenv(envSessionKey))
+			if sessionKey.IsZero() {
+				return fmt.Errorf("%s is required: it signs every browser session", envSessionKey)
+			}
 
-	pepper := core.Secret(os.Getenv(envTokenPepper))
-	if pepper.IsZero() {
-		// Refused rather than defaulted. A generated pepper would change on every restart, which
-		// invalidates every token an officer has already handed out.
-		return fmt.Errorf("%s is required: it is what makes a stolen database file useless on its own",
-			envTokenPepper)
-	}
-	sessionKey := core.Secret(os.Getenv(envSessionKey))
-	if sessionKey.IsZero() {
-		return fmt.Errorf("%s is required: it signs every browser session", envSessionKey)
-	}
+			path, err := databasePath(cmd)
+			if err != nil {
+				return err
+			}
+			db, closeDB, err := openStore(ctx, path, log)
+			if err != nil {
+				return err
+			}
+			defer closeDB()
+			// Migrations are NOT applied here. `tod-serve migrate` is a separate, deliberate step:
+			// a server that migrates on boot upgrades a database whenever a container restarts,
+			// which is how a half-tested schema change reaches production without anybody deciding
+			// to run it.
+			if err := db.Ready(ctx); err != nil {
+				return fmt.Errorf("%w: run `tod-serve migrate` first", err)
+			}
 
-	path, err := databasePath(nil, os.Getenv(dbPathEnv))
-	if err != nil {
-		return err
-	}
-	db, err := store.Open(ctx, path, log)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if cerr := db.Close(); cerr != nil {
-			log.ErrorContext(ctx, "close database", slog.Any("error", cerr))
-		}
-	}()
-	// Migrations are NOT applied here. `tod-serve migrate` is a separate, deliberate step: a server
-	// that migrates on boot upgrades a database whenever a container restarts, which is how a
-	// half-tested schema change reaches production without anybody deciding to run it.
-	if err := db.Ready(ctx); err != nil {
-		return fmt.Errorf("%w: run `tod-serve migrate` first", err)
-	}
+			svc, err := wire(ctx, db, log, pepper, sessionKey)
+			if err != nil {
+				return err
+			}
+			server, err := api.New(api.Config{
+				Version:    version,
+				Store:      db,
+				Auth:       svc.authn,
+				Circles:    svc.circles,
+				Members:    svc.members,
+				Invites:    svc.invites,
+				Identities: svc.identity,
+				Clock:      svc.clock,
+				Log:        log,
+				IDs:        svc.ids,
+				Metrics: api.MetricsConfig{
+					Enabled: os.Getenv(envMetricsEnabled) == "true",
+					Token:   core.Secret(os.Getenv(envMetricsToken)),
+				},
+			})
+			if err != nil {
+				return err
+			}
 
-	clk := clock.System{}
-	minter, err := auth.NewMinter(pepper, rand.Reader)
-	if err != nil {
-		return err
-	}
-	codec, err := auth.NewSessionCodec(sessionKey)
-	if err != nil {
-		return err
-	}
-	authn, err := auth.NewAuthenticator(db, minter, codec, clk, log, auth.DefaultStepUpWindow)
-	if err != nil {
-		return err
-	}
+			log.InfoContext(ctx, "serving",
+				slog.String("addr", envOr(envAddr, defaultAddr)),
+				slog.String("database", path),
+				slog.Int("operations", len(server.Registered())),
+				slog.Int("unimplemented", len(server.Unimplemented())))
 
-	server, err := api.New(api.Config{
-		Version: version,
-		Store:   db,
-		Auth:    authn,
-		Clock:   clk,
-		Log:     log,
-		IDs:     api.NewIDGenerator(),
-		Metrics: api.MetricsConfig{
-			Enabled: os.Getenv(envMetricsEnabled) == "true",
-			Token:   core.Secret(os.Getenv(envMetricsToken)),
+			return listenAndServe(ctx, log, server)
 		},
-	})
-	if err != nil {
-		return err
 	}
-
-	log.InfoContext(ctx, "serving",
-		slog.String("addr", envOr(envAddr, defaultAddr)),
-		slog.String("database", path),
-		slog.Int("operations", len(server.Registered())),
-		slog.Int("unimplemented", len(server.Unimplemented())))
-
-	return listenAndServe(ctx, log, server)
 }
 
 // listenAndServe starts the listeners and drains them on the first signal.
@@ -184,11 +161,4 @@ func listenAndServe(ctx context.Context, log *slog.Logger, server *api.Server) e
 		}
 	}
 	return errors.Join(errs...)
-}
-
-func envOr(name, fallback string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return fallback
 }
