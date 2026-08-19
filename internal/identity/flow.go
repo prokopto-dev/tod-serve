@@ -261,6 +261,22 @@ func (s *Service) completeAuthorization(ctx context.Context, req CallbackRequest
 	if provider.Key != req.ProviderKey {
 		// The callback path names a provider and the flow records one. A mismatch is a crafted
 		// callback, not a user error.
+		//
+		// This answers `credential_invalid` while an unknown, consumed or expired state all answer
+		// `auth_flow_expired`, and that difference is DELIBERATE — do not collapse it into one
+		// code for the sake of uniformity.
+		//
+		// The reasoning: those three are collapsed precisely so a caller guessing states cannot
+		// learn that a guess was real, which is the only thing a guesser is after. This branch is
+		// not reachable that way. Getting here requires a state that resolved to a live
+		// `auth_flow` row, and states are 256 bits from a CSPRNG — so the only party who can
+		// trigger it is the one who started the flow, and it tells them nothing they did not
+		// already know. What a distinguishable answer DOES buy is an operator reading logs being
+		// able to see a crafted or mismatched callback instead of it hiding inside the ordinary
+		// expiry code. Never hide a row silently cuts this way too.
+		//
+		// TestCompleteAuthorization_State_IsUnguessableSingleUseAndOpaqueInFailure pins the three
+		// that must stay indistinguishable; this one is deliberately outside it.
 		return "", NewError(CodeCredentialInvalid, "this callback does not match the authorization it claims", nil)
 	}
 	if !provider.Enabled {
