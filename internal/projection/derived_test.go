@@ -307,28 +307,34 @@ func TestOnCatalogueTimerChange_FansOutToEveryCircleOnThatServerButNotTheOverrid
 	f.seedCatalogueTimer(target, catalogueOpen, 7*24*time.Hour)
 	f.seedCatalogueTimerOn(target, schemaenum.ServerGreen, catalogueOpen, 7*24*time.Hour)
 
-	// f.circle is on blue and takes the catalogue's word for it.
+	// Two plain circles on blue, not one. The failure worth guarding against is a fan-out that
+	// reaches SOME circle without an override and stops — a single plain circle would pass that
+	// just as well as a correct loop does.
 	plain := f.circle
+	alsoPlain := f.seedCircle("Second Blue", schemaenum.ServerBlue)
 	overriding := f.seedCircle("Overrider", schemaenum.ServerBlue)
 	elsewhere := f.seedCircle("Green Guild", schemaenum.ServerGreen)
+	all := []core.CircleID{plain, alsoPlain, overriding, elsewhere}
 
 	died := fixtureNow.Add(-time.Hour)
 	f.report(target, died, schemaenum.TodReportSourceLogLine)
-	f.reportIn(overriding, target, died, schemaenum.TodReportSourceLogLine)
-	f.reportIn(elsewhere, target, died, schemaenum.TodReportSourceLogLine)
+	for _, circleID := range []core.CircleID{alsoPlain, overriding, elsewhere} {
+		f.reportIn(circleID, target, died, schemaenum.TodReportSourceLogLine)
+	}
 
 	f.seedOverrideIn(overriding, target, overrideOpen, 4*24*time.Hour)
-	for _, circleID := range []core.CircleID{plain, overriding, elsewhere} {
+	for _, circleID := range all {
 		_, err := f.states.Rebuild(t.Context(), circleID)
 		require.NoError(t, err)
 	}
 	before := map[core.CircleID]sqlitegen.TargetStateCache{}
-	for _, circleID := range []core.CircleID{plain, overriding, elsewhere} {
+	for _, circleID := range all {
 		row, ok := f.cachedIn(circleID, target)
 		require.True(t, ok)
 		before[circleID] = row
 	}
 	require.Equal(t, int64(died.Add(catalogueOpen)), *before[plain].WindowOpenAt)
+	require.Equal(t, int64(died.Add(catalogueOpen)), *before[alsoPlain].WindowOpenAt)
 	require.Equal(t, int64(died.Add(overrideOpen)), *before[overriding].WindowOpenAt)
 
 	// The catalogue's blue window moves. Nothing is reported anywhere.
@@ -336,12 +342,16 @@ func TestOnCatalogueTimerChange_FansOutToEveryCircleOnThatServerButNotTheOverrid
 	require.NoError(t, f.states.OnCatalogueTimerChange(
 		t.Context(), core.Server(schemaenum.ServerBlue), target.ID))
 
-	moved, ok := f.cachedIn(plain, target)
-	require.True(t, ok)
-	require.Equal(t, int64(died.Add(movedOpen)), *moved.WindowOpenAt,
-		"a circle taking the catalogue's word for it moved with it")
-	require.Equal(t, schemaenum.TargetStateChangeReasonTimerChange, *moved.ChangeReason,
-		"and says why, since nothing was reported")
+	// EVERY circle without an override, not just the first one the loop reached. A missed circle
+	// is a silently stale board, which is the failure this fan-out exists to prevent.
+	for _, circleID := range []core.CircleID{plain, alsoPlain} {
+		moved, ok := f.cachedIn(circleID, target)
+		require.True(t, ok)
+		require.Equal(t, int64(died.Add(movedOpen)), *moved.WindowOpenAt,
+			"a circle taking the catalogue's word for it moved with it")
+		require.Equal(t, schemaenum.TargetStateChangeReasonTimerChange, *moved.ChangeReason,
+			"and says why, since nothing was reported")
+	}
 
 	held, ok := f.cachedIn(overriding, target)
 	require.True(t, ok)
