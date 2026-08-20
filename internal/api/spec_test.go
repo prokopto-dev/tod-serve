@@ -299,3 +299,100 @@ func TestSpec_EverySuccessResponse_CarriesAsOf(t *testing.T) {
 	}
 	require.Positive(t, checked, "no success responses were checked; the walk is wrong")
 }
+
+// TestSpec_EveryConditionalRead_Documents304 keeps the contract and the behaviour together.
+//
+// A conditional read returns its `304` through a dynamic `Status` field, and the framework derives
+// documented responses from the output STRUCT rather than from what a handler assigns — so the
+// response is real and, without [api.responsesFor], absent from the document. A generated client
+// then treats a genuine 304 as an undocumented error, which is precisely the failure the ETag was
+// added to avoid.
+//
+// It is compared in BOTH directions. A route that revalidates and documents nothing is the bug
+// above; a route that documents a 304 it never emits is a client waiting for a response that
+// cannot arrive, which is the same lie facing the other way.
+func TestSpec_EveryConditionalRead_Documents304(t *testing.T) {
+	t.Parallel()
+	doc, _ := loadSpec(t)
+
+	conditional := map[string]bool{}
+	for _, route := range api.Routes() {
+		if route.ConditionalRead {
+			conditional[string(route.ID)] = true
+		}
+	}
+	require.NotEmpty(t, conditional, "no route revalidates; the filter is wrong")
+
+	documented := map[string]bool{}
+	for path, item := range doc.Paths {
+		for method, body := range item {
+			var op specOperation
+			require.NoError(t, json.Unmarshal(body.Raw, &op))
+			response, has304 := body.Responses["304"]
+			if !has304 {
+				continue
+			}
+			documented[op.ID] = true
+			require.Empty(t, response.Content,
+				"%s %s documents a 304 with a body; a 304 carries none", method, path)
+		}
+	}
+
+	for id := range conditional {
+		require.True(t, documented[id],
+			"%s revalidates and answers a real 304, and the document does not describe one. A "+
+				"generated client treats it as an undocumented error", id)
+	}
+	for id := range documented {
+		require.True(t, conditional[id],
+			"%s documents a 304 and carries no ConditionalRead, so nothing answers one; a client "+
+				"would wait for a response that cannot arrive", id)
+	}
+}
+
+// TestSpec_ADocumented304_CarriesTheETagHeader. A 304 without the tag is a dead end: the client has
+// nothing to send on the next revalidation and falls back to unconditional reads, which is the cost
+// the whole mechanism exists to avoid.
+func TestSpec_ADocumented304_CarriesTheETagHeader(t *testing.T) {
+	t.Parallel()
+	raw, err := api.SpecJSON()
+	require.NoError(t, err)
+
+	var doc struct {
+		Paths map[string]map[string]struct {
+			Responses map[string]struct {
+				Headers map[string]json.RawMessage `json:"headers"`
+			} `json:"responses"`
+		} `json:"paths"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &doc))
+
+	checked := 0
+	for path, item := range doc.Paths {
+		for method, op := range item {
+			response, has304 := op.Responses["304"]
+			if !has304 {
+				continue
+			}
+			require.Contains(t, response.Headers, api.ETagHeader,
+				"%s %s answers 304 without an ETag; the client has nothing to revalidate with next "+
+					"time and gives up on conditional requests", method, path)
+			checked++
+		}
+	}
+	require.Positive(t, checked, "no 304 was checked; the walk is wrong")
+}
+
+// TestSpec_ARouteThatRevalidates_AlsoReturnsAnETag. `ConditionalRead` without `ETag` is a route
+// that compares against a tag it never gave anybody.
+func TestSpec_ARouteThatRevalidates_AlsoReturnsAnETag(t *testing.T) {
+	t.Parallel()
+	for _, route := range api.Routes() {
+		if !route.ConditionalRead {
+			continue
+		}
+		require.True(t, route.ETag,
+			"%s revalidates and returns no ETag, so there is no tag for a caller to send back",
+			route.ID)
+	}
+}

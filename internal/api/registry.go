@@ -179,6 +179,22 @@ type Route struct {
 	// bucket, so adding a third route that accepts a code is a one-word decision rather than a
 	// second limiter somebody has to remember to wire.
 	InviteOracle bool
+	// ConditionalRead marks a read that actually PERFORMS revalidation: it compares the caller's
+	// `If-None-Match` against the tag it would have returned and answers `304` with no body.
+	//
+	// It is separate from ETag, and the gap between them is deliberate rather than redundant.
+	// `ETag: true` says the operation returns a tag, which is what an `If-Match` writer needs.
+	// Revalidating is a second thing a handler has to actually do, and a route that advertises
+	// `If-None-Match` without doing it is worse than one that offers neither: a client that
+	// implements conditional requests against it pays for a full body on every poll while
+	// believing it does not.
+	//
+	// The flag drives the documented `304` — huma cannot infer one from a dynamic `Status` field,
+	// and a real response absent from the contract is one a generated client treats as an
+	// undocumented error. TestSpec_EveryConditionalRead_Documents304 compares the two in both
+	// directions, so the flag cannot be set on a route that does not revalidate, and a documented
+	// 304 cannot appear without it.
+	ConditionalRead bool
 	// InvalidatesTimer marks an operation that MOVES A RESPAWN WINDOW, and therefore changes every
 	// derived answer hanging off it with no row appended anywhere.
 	//
@@ -539,8 +555,8 @@ func routes() []Route {
 			Versioned: true, Auth: AuthPermission,
 			Permissions: []authz.Permission{authz.PermissionCatalogueRead},
 			Scopes:      []authz.Scope{authz.ScopeCatalogueRead},
-			ETag:        true,
-			Summary:     "One raid target",
+			ETag:        true, ConditionalRead: true,
+			Summary: "One raid target",
 		},
 		{
 			ID: OpResolveRaidTarget, Method: http.MethodPost, Path: "/raid-targets/resolve",
