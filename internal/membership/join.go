@@ -228,17 +228,16 @@ func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (Jo
 	if err != nil {
 		return Joined{}, fromIdentity(err)
 	}
-	// The circle's gate is read before verification because the `bearer_token` path needs the
-	// guild id to fetch facts for. Nothing about the result reaches the caller: every failure
-	// below this point answers 404, so a real circle and an invented one are indistinguishable.
-	accepted, gateErr := circle.Accepted(ctx, s.db.Queries(), req.CircleID, req.ProviderKey)
+	// The circle's gate is read BEFORE verification because the `bearer_token` path needs a guild
+	// id to fetch facts for, and the scope decision is made before the provider is called. Its
+	// error is held rather than returned: at this point the caller has proved nothing, and
+	// answering "this circle does not accept discord" to an unauthenticated request would say
+	// that the circle exists.
+	accepted, acceptErr := circle.Accepted(ctx, s.db.Queries(), req.CircleID, req.ProviderKey)
 
 	verified, err := s.verify(ctx, provider, accepted, req.Credential, req.DisplayName)
 	if err != nil {
 		return Joined{}, err
-	}
-	if gateErr != nil {
-		return Joined{}, notFoundMembership()
 	}
 
 	scopes, err := ParseScopes(req.Scopes)
@@ -281,6 +280,16 @@ func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (Jo
 		if existing.RevokedAt != nil {
 			return apierr.New(apierr.CodeMembershipRevoked,
 				"this membership has been revoked; an officer has to reinstate it")
+		}
+
+		// The provider error is surfaced HERE and not earlier. By this line the caller has proved
+		// an identity and a live membership in this circle, so its existence is already theirs to
+		// know — and the two answers send them to different places: `provider_not_accepted` means
+		// the circle stopped taking this way in and another one may still work, while a 404 means
+		// go and get invited. Answering 404 to a member whose circle merely dropped Discord would
+		// be the confident mistake, and it is the one this ordering exists to prevent.
+		if acceptErr != nil {
+			return acceptErr
 		}
 
 		membershipID, txErr := core.ParseID[core.Membership](existing.ID)

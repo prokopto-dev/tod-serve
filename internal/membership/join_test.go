@@ -8,6 +8,7 @@ import (
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/identity/discord"
@@ -514,4 +515,80 @@ func TestJoin_ARetryWithTheSameKey_ReplaysTheSameResponse(t *testing.T) {
 	require.Equal(t, first.Token.Prefix, again.Token.Prefix,
 		"a replay hands back the token the first call minted, not a second one")
 	require.Equal(t, owner.Membership.ID, again.Membership.ID)
+}
+
+// A member whose circle has since DROPPED their provider is told that, not told they are not a
+// member. The two answers send them to different places — "another way in may still work" versus
+// "go and get invited" — and answering 404 to somebody who is standing in the circle is the
+// confident mistake this ordering exists to prevent.
+//
+// It is still not an oracle: the provider error is surfaced only after a credential has verified
+// AND a live membership has been found, so nobody learns anything about a circle they are not in.
+func TestAuthenticate_AMemberWhoseProviderTheCircleDropped_IsNotToldTheyAreNotAMember(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	view, providerID := f.discordCircle("Riot Blue", "", nil)
+	member, err := f.members.Join(t.Context(), membership.JoinRequest{
+		Code: string(f.ownerGrant(view)), ProviderKey: "discord",
+		Credential: identity.Credential{
+			Kind:   identity.CredentialProviderTicket,
+			Ticket: f.ticket(providerID, "snowflake-1", "Tankguy", discord.GuildFacts{}),
+		},
+		IdempotencyKey: "join",
+	})
+	require.NoError(t, err)
+
+	// The owner drops Discord. Existing memberships are untouched — that is the rule — so this
+	// person is still a member of a circle they can no longer re-authenticate into that way.
+	_, err = f.circles.SetProviders(t.Context(), view.ID, circle.SetProvidersRequest{})
+	require.NoError(t, err)
+
+	_, err = f.members.Authenticate(t.Context(), membership.AuthenticateRequest{
+		CircleID: view.ID, ProviderKey: "discord",
+		Credential: identity.Credential{
+			Kind:   identity.CredentialProviderTicket,
+			Ticket: f.ticket(providerID, "snowflake-1", "Tankguy", discord.GuildFacts{}),
+		},
+		IdempotencyKey: "sessions",
+	})
+	require.True(t, apierr.HasCode(err, apierr.CodeProviderNotAccepted),
+		"a member was told they are not a member; got %v", err)
+
+	// And they really are still a member: revocation is what removes somebody, not a provider
+	// change, and this is the assertion that the two did not get confused.
+	view2, err := f.members.Get(t.Context(), view.ID, member.Membership.ID)
+	require.NoError(t, err)
+	require.Nil(t, view2.RevokedAt)
+}
+
+// The other half of the same ordering: somebody who is NOT a member still gets 404, even when the
+// circle would have refused their provider anyway. The provider error must never be the thing that
+// confirms a circle exists to a stranger.
+func TestAuthenticate_ANonMember_StillGets404_EvenWhenTheProviderIsAlsoWrong(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	view, providerID := f.discordCircle("Riot Blue", "", nil)
+	_, err := f.members.Join(t.Context(), membership.JoinRequest{
+		Code: string(f.ownerGrant(view)), ProviderKey: "discord",
+		Credential: identity.Credential{
+			Kind:   identity.CredentialProviderTicket,
+			Ticket: f.ticket(providerID, "owner", "Tankguy", discord.GuildFacts{}),
+		},
+		IdempotencyKey: "join",
+	})
+	require.NoError(t, err)
+	_, err = f.circles.SetProviders(t.Context(), view.ID, circle.SetProvidersRequest{})
+	require.NoError(t, err)
+
+	_, err = f.members.Authenticate(t.Context(), membership.AuthenticateRequest{
+		CircleID: view.ID, ProviderKey: "discord",
+		Credential: identity.Credential{
+			Kind: identity.CredentialProviderTicket,
+			// A verified subject with no membership in this circle at all.
+			Ticket: f.ticket(providerID, "a-stranger", "Sneakco", discord.GuildFacts{}),
+		},
+		IdempotencyKey: "stranger",
+	})
+	require.True(t, apierr.HasCode(err, apierr.CodeNotFound),
+		"the provider error leaked a circle's existence to a stranger; got %v", err)
 }
