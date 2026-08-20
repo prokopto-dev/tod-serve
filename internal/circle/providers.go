@@ -133,19 +133,37 @@ func (s *Service) SetProviders(
 	return view, nil
 }
 
-// validateGate refuses a guild gate on a provider that has no guilds.
+// validateGate refuses a guild gate that would not be evaluated.
 //
-// Reporting it rather than storing it is the point: `circle_provider.discord_guild_id` on an OIDC
-// row would be a gate nothing evaluates, which reads to an owner as a gate that is on.
+// Reporting it rather than storing it is the point, and there are two ways to write one:
+//
+//   - A gate on a provider that has no guilds. `circle_provider.discord_guild_id` on an OIDC row
+//     is a gate nothing evaluates, which reads to an owner as a gate that is on.
+//   - **Required roles with no guild to require them in.** A gate is identified by its guild:
+//     `discord.Gate.IsZero()` is `GuildID == ""`, and `EvaluateGate` returns nil for a zero gate
+//     before it looks at anything else. So a `discord` entry carrying `discord_required_role_ids`
+//     and no `discord_guild_id` is stored, rendered back to the owner as a role gate, and admits
+//     every verified Discord identity — including one with no member object at all.
+//
+// The second is the more dangerous of the two by a distance, because the circle's own
+// representation shows the roles it is not enforcing. The damage is not the admission; it is the
+// officers' belief that the gate is on, which is the confident mistake this project is built
+// against.
 func validateGate(provider sqlitegen.IdentityProvider, want AcceptedProvider) error {
-	if provider.Kind == string(identity.KindDiscord) {
+	if provider.Kind != string(identity.KindDiscord) {
+		if want.DiscordGuildID != "" || len(want.DiscordRequiredRoleIDs) > 0 {
+			return apierr.Newf(apierr.CodeValidationFailed,
+				"provider %q is %s, and only discord has guilds to gate on",
+				want.Key, provider.Kind).
+				WithField("body.providers", "sets a Discord guild gate on a provider that has none")
+		}
 		return nil
 	}
-	if want.DiscordGuildID != "" || len(want.DiscordRequiredRoleIDs) > 0 {
+	if want.DiscordGuildID == "" && len(want.DiscordRequiredRoleIDs) > 0 {
 		return apierr.Newf(apierr.CodeValidationFailed,
-			"provider %q is %s, and only discord has guilds to gate on",
-			want.Key, provider.Kind).
-			WithField("body.providers", "sets a Discord guild gate on a provider that has none")
+			"provider %q names required Discord roles but no guild to require them in, "+
+				"so nothing would evaluate them; set discord_guild_id", want.Key).
+			WithField("body.providers", "required role ids need a discord_guild_id")
 	}
 	return nil
 }

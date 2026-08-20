@@ -359,17 +359,31 @@ func acceptedProviders(
 			// an empty one opens the gate for everybody while appearing to enforce it.
 			return nil, apierr.Wrap(apierr.CodeInternalError, provErr, "")
 		}
+		guildID := deref(row.DiscordGuildID)
+		if guildID == "" && len(roleIDs) > 0 {
+			// The same rule [validateGate] enforces on the way in, asserted on the way out. A gate
+			// is identified by its guild — `discord.Gate.IsZero()` is `GuildID == ""` — so this
+			// row would render to an owner as a role gate and evaluate as no gate at all, and
+			// every read of the circle would show an admission control that is not running.
+			//
+			// Refused rather than repaired, and loudly: a row in a shape the write path cannot
+			// produce was written by something else, and quietly dropping the roles or quietly
+			// denying everybody are both answers that hide which. Same discipline as the
+			// unparseable list above.
+			return nil, apierr.Wrap(apierr.CodeInternalError,
+				fmt.Errorf("circle %s accepts provider %s with required roles %v and no guild id",
+					id, row.ProviderID, roleIDs), "")
+		}
 		providerID, provErr := core.ParseID[core.IdentityProvider](provider.ID)
 		if provErr != nil {
 			return nil, apierr.Wrap(apierr.CodeInternalError, provErr, "")
 		}
 		out = append(out, ProviderView{
 			ProviderID: providerID, Key: provider.Key, Kind: provider.Kind,
-			DisplayName:       provider.DisplayName,
-			VerifiableSubject: provider.VerifiableSubject == 1,
-			Available:         provider.Enabled == 1,
-			DiscordGuildID:    deref(row.DiscordGuildID),
-
+			DisplayName:            provider.DisplayName,
+			VerifiableSubject:      provider.VerifiableSubject == 1,
+			Available:              provider.Enabled == 1,
+			DiscordGuildID:         guildID,
 			DiscordRequiredRoleIDs: roleIDs,
 		})
 	}
