@@ -100,7 +100,13 @@ func TestWiring_IdentityService_WithNoEntropy_RefusesToStart(t *testing.T) {
 // WHEN YOU LAND internal/projection:
 //   - pass the projection service as api.Config.Invalidator in serve.go,
 //   - delete api.UnprojectedTimers and both of its methods,
-//   - delete this test.
+//   - delete this test,
+//   - and close the last hole in [api.TimerInvalidator]: the push happens after the write commits,
+//     so a crash between the two leaves the cache stale until the nightly job. The fix is the one
+//     audit.Append already uses — take the writing transaction's query set — which means threading
+//     a *sqlitegen.Queries through recompute, storeOrDrop, revokedReporters and
+//     catalogue.ResolveTimer. Every handler is retryable today, which closes the case a client can
+//     see; this closes the one it cannot.
 //
 // It will not compile once the stub is gone, which is the point.
 func TestWiring_TimerInvalidation_IsStillTheStub(t *testing.T) {

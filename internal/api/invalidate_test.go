@@ -272,3 +272,124 @@ func routeByID(t *testing.T, id api.OperationID) api.Route {
 	require.NoError(t, err)
 	return route
 }
+
+// TestDeleteCircleTimerOverride_AFailedInvalidation_IsRetryableToConvergence is the property that
+// distinguishes this route from the two PUTs beside it.
+//
+// A PUT converges on its own: the retry re-writes the same row and re-pushes. A DELETE has nothing
+// left to re-delete, so a push that failed once could never be attempted again — the retry would
+// answer 404 before reaching it, and the board would keep serving an override an officer removed
+// until the nightly verify job noticed. Up to twenty-four hours of a confidently wrong window,
+// caused by one transient failure.
+//
+// The invariant asserted here: after any non-5xx answer from this route, the projection has been
+// told.
+func TestDeleteCircleTimerOverride_AFailedInvalidation_IsRetryableToConvergence(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedCatalogue()
+	reader, circleID := h.catalogueReader()
+	owner := h.seedMember(circleID, authz.RoleOwner)
+	session := h.session(owner, true)
+	id := h.resolveTargetID(reader, "Venril Sathir")
+	path := api.BasePath + "/circles/" + circleID.String() + "/timer-overrides/" + id
+
+	created := h.do(request{
+		Method: http.MethodPut, Path: path, Session: session,
+		Headers: map[string]string{api.IfMatchHeader: "*"},
+		Body:    `{"window_kind": "unknown"}`,
+	})
+	require.Equal(t, http.StatusOK, created.Status, created.Body)
+
+	// The projection is unreachable. The row goes, the push does not, and the caller is told.
+	h.invalidator.failWith(errors.New("the projection is unreachable"))
+	h.invalidator.reset()
+	failed := h.do(request{Method: http.MethodDelete, Path: path, Session: session})
+	require.GreaterOrEqual(t, failed.Status, http.StatusInternalServerError,
+		"the delete reported success while the board kept the override: %s", failed.Body)
+
+	// The retry. Before the fix this answered 404 without pushing, and the staleness was permanent
+	// until the nightly job: the row was already gone, so nothing could re-trigger the
+	// invalidation ever again.
+	h.invalidator.failWith(nil)
+	h.invalidator.reset()
+	retried := h.do(request{Method: http.MethodDelete, Path: path, Session: session})
+	require.Equal(t, http.StatusNotFound, retried.Status, retried.Body)
+
+	pushed := h.invalidator.recorded()
+	require.Len(t, pushed, 1,
+		"the retry answered %d and pushed nothing; the board is stale until the nightly verify "+
+			"job and no request can fix it", retried.Status)
+	require.Equal(t, id, pushed[0].Target.String())
+	require.Equal(t, circleID, pushed[0].Circle)
+}
+
+// TestDeleteCircleTimerOverride_ANonExistentOverride_StillPushesBeforeItAnswers.
+//
+// The 404 is answered only once the projection knows, which is what makes the retry above
+// converge. It costs one idempotent recompute on a genuinely spurious delete, which is far less
+// than the staleness it removes — and if that push fails, the 404 is withheld and the caller is
+// told to try again rather than being given a terminal answer that is not yet true.
+func TestDeleteCircleTimerOverride_ANonExistentOverride_StillPushesBeforeItAnswers(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedCatalogue()
+	reader, circleID := h.catalogueReader()
+	owner := h.seedMember(circleID, authz.RoleOwner)
+	session := h.session(owner, true)
+	id := h.resolveTargetID(reader, "Venril Sathir")
+	path := api.BasePath + "/circles/" + circleID.String() + "/timer-overrides/" + id
+
+	h.invalidator.reset()
+	got := h.do(request{Method: http.MethodDelete, Path: path, Session: session})
+	h.requireProblem(got, apierr.CodeNotFound)
+	require.Len(t, h.invalidator.recorded(), 1)
+
+	// And when the push itself fails, the 404 is withheld: a terminal answer that is not yet true
+	// is what stops the caller retrying.
+	h.invalidator.failWith(errors.New("the projection is unreachable"))
+	h.invalidator.reset()
+	failed := h.do(request{Method: http.MethodDelete, Path: path, Session: session})
+	require.GreaterOrEqual(t, failed.Status, http.StatusInternalServerError, failed.Body)
+}
+
+// TestTimerWritingRoutes_EveryNon5xxAnswer_HasPushedTheInvalidation states the invariant over the
+// registry rather than over the three handlers, so a fourth window-writing route inherits it.
+func TestTimerWritingRoutes_EveryNon5xxAnswer_HasPushedTheInvalidation(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedCatalogue()
+	reader, circleID := h.catalogueReader()
+	owner := h.seedMember(circleID, authz.RoleOwner)
+	session := h.session(owner, true)
+	id := h.resolveTargetID(reader, "Venril Sathir")
+	base := api.BasePath + "/circles/" + circleID.String() + "/timer-overrides/" + id
+
+	// Every terminal outcome of the circle-scoped pair: create, replace, delete, delete again.
+	steps := []struct {
+		name    string
+		method  string
+		headers map[string]string
+		body    string
+	}{
+		{
+			name: "create", method: http.MethodPut,
+			headers: map[string]string{api.IfMatchHeader: "*"},
+			body:    `{"window_kind": "unknown"}`,
+		},
+		{name: "delete", method: http.MethodDelete},
+		{name: "delete again", method: http.MethodDelete},
+	}
+	for _, step := range steps {
+		h.invalidator.reset()
+		got := h.do(request{
+			Method: step.method, Path: base, Session: session,
+			Headers: step.headers, Body: step.body,
+		})
+		require.Less(t, got.Status, http.StatusInternalServerError,
+			"%s answered %d: %s", step.name, got.Status, got.Body)
+		require.Len(t, h.invalidator.recorded(), 1,
+			"%s answered %d and pushed nothing; a non-5xx answer means the projection was told",
+			step.name, got.Status)
+	}
+}

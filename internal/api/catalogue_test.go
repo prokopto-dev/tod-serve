@@ -535,3 +535,86 @@ func mustJSON(t *testing.T, s string) string {
 	require.NoError(t, err)
 	return string(raw)
 }
+
+// TestGetRaidTarget_AnUnchangedTarget_Answers304WithNoBody is the revalidation the route
+// advertises, actually performed.
+//
+// Declaring `If-None-Match` and an `ETag` and then always answering 200 is worse than offering
+// neither: a client that implemented conditional requests against this route would pay for a full
+// body on every poll while believing it had not. The board polls — ROADMAP Phase 4 makes that the
+// realtime story rather than a stopgap — so this is on the hot path, not a nicety.
+func TestGetRaidTarget_AnUnchangedTarget_Answers304WithNoBody(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedCatalogue()
+	token, _ := h.catalogueReader()
+	id := h.resolveTargetID(token, "Vulak`Aerr")
+	path := api.BasePath + "/raid-targets/" + id
+
+	first := h.do(request{Method: http.MethodGet, Path: path, Token: token})
+	require.Equal(t, http.StatusOK, first.Status, first.Body)
+	etag := first.Header.Get(api.ETagHeader)
+	require.NotEmpty(t, etag)
+
+	revalidated := h.do(request{
+		Method: http.MethodGet, Path: path, Token: token,
+		Headers: map[string]string{api.IfNoneMatchHeader: etag},
+	})
+	require.Equal(t, http.StatusNotModified, revalidated.Status, revalidated.Body)
+	require.Empty(t, revalidated.Body, "a 304 carried a body")
+	require.Equal(t, etag, revalidated.Header.Get(api.ETagHeader),
+		"a 304 must still carry the tag, or the next revalidation has nothing to send")
+
+	// The wildcard means "any current representation", and the target exists, so it revalidates.
+	wildcard := h.do(request{
+		Method: http.MethodGet, Path: path, Token: token,
+		Headers: map[string]string{api.IfNoneMatchHeader: "*"},
+	})
+	require.Equal(t, http.StatusNotModified, wildcard.Status)
+
+	// A tag the caller never read is not a match, and neither is no header at all.
+	for _, header := range []string{`"not-the-current-tag"`, ""} {
+		got := h.do(request{
+			Method: http.MethodGet, Path: path, Token: token,
+			Headers: map[string]string{api.IfNoneMatchHeader: header},
+		})
+		require.Equal(t, http.StatusOK, got.Status,
+			"If-None-Match %q answered %d; a stale or absent validator needs the body",
+			header, got.Status)
+		require.NotEmpty(t, got.Body)
+	}
+}
+
+// TestGetRaidTarget_AChangedTarget_StopsRevalidating. A tag that kept matching after the resource
+// moved is worse than no tag: the client caches the old window forever.
+func TestGetRaidTarget_AChangedTarget_StopsRevalidating(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedCatalogue()
+	token, _ := h.catalogueReader()
+	id := h.resolveTargetID(token, "Lord Nagafen")
+	path := api.BasePath + "/raid-targets/" + id
+
+	first := h.do(request{Method: http.MethodGet, Path: path, Token: token})
+	require.Equal(t, http.StatusOK, first.Status)
+	etag := first.Header.Get(api.ETagHeader)
+
+	// A timer is part of the target's representation, so writing one moves the tag. Written
+	// through the service because the route is instance-realm and 403s for everybody.
+	_, err := h.catalogue.PutTimer(t.Context(), mustTargetID(t, id), core.ServerBlue,
+		catalogue.WindowRequest{
+			WindowKind:               "variance",
+			WindowOpenOffsetSeconds:  ptrInt64Test(60),
+			WindowCloseOffsetSeconds: ptrInt64Test(120),
+		})
+	require.NoError(t, err)
+
+	after := h.do(request{
+		Method: http.MethodGet, Path: path, Token: token,
+		Headers: map[string]string{api.IfNoneMatchHeader: etag},
+	})
+	require.Equal(t, http.StatusOK, after.Status,
+		"the target's timer changed and the old tag still revalidated; the client would cache "+
+			"the missing window forever")
+	require.NotEqual(t, etag, after.Header.Get(api.ETagHeader))
+}

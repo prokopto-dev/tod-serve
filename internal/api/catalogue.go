@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
@@ -63,8 +64,12 @@ type getRaidTargetInput struct {
 }
 
 type getRaidTargetOutput struct {
-	ETag string `header:"ETag"`
-	Body TargetResponse
+	// Status carries the conditional answer. It is 200 with a body, or 304 with none when the
+	// caller's cached copy is still current — the framework skips the body for a 304, so the
+	// zero-valued Body below never reaches the wire.
+	Status int
+	ETag   string `header:"ETag"`
+	Body   TargetResponse
 }
 
 type resolveRaidTargetInput struct {
@@ -236,8 +241,20 @@ func (s *Server) registerRaidTargets() error {
 				if err != nil {
 					return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 				}
+				// The revalidation the route advertises, actually performed. Declaring
+				// `If-None-Match` and an `ETag` and then always answering 200 is worse than
+				// offering neither: a client that implemented conditional requests against this
+				// route would pay for a full body on every poll while believing it had not, and
+				// the board polls — ROADMAP Phase 4 makes that the realtime story.
+				if MatchesIfNoneMatch(in.IfNoneMatch, etag) {
+					return &getRaidTargetOutput{
+						Status: http.StatusNotModified, ETag: etag,
+					}, nil
+				}
 				view.AsOf = s.cfg.Clock.Now()
-				return &getRaidTargetOutput{ETag: etag, Body: view}, nil
+				return &getRaidTargetOutput{
+					Status: http.StatusOK, ETag: etag, Body: view,
+				}, nil
 			})),
 
 		registerFailure(OpResolveRaidTarget, Register(s.api, OpResolveRaidTarget,
@@ -450,16 +467,34 @@ func (s *Server) registerTimerOverrides() error {
 				// The override as it stood, returned once. After this the circle falls back to the
 				// catalogue timer, or to `no_timer` if there is none — and a DELETE that answered
 				// with nothing would leave the caller unable to tell which.
-				removed, err := s.cfg.Catalogue.DeleteOverride(ctx, circleID, targetID,
+				removed, deleteErr := s.cfg.Catalogue.DeleteOverride(ctx, circleID, targetID,
 					p.MembershipID)
-				if err != nil {
-					return nil, err
+				if deleteErr != nil && !isNotFound(deleteErr) {
+					return nil, deleteErr
 				}
-				// Removing an override moves the window as surely as setting one did: the circle
-				// falls back to the catalogue timer, or to `unknown` if there is none. A board
-				// still serving the deleted override is the same bug as one that never saw it set.
+
+				// **Pushed on BOTH outcomes, including the 404, and that is what makes this
+				// operation retryable.**
+				//
+				// The two PUTs beside it converge on their own: a retry re-writes the same row and
+				// re-pushes. A DELETE does not — the row is gone, so the retry is a 404 that would
+				// return before reaching this line, and a push that failed the first time could
+				// never be attempted again. The board would keep the deleted override until the
+				// nightly verify job noticed, which is up to twenty-four hours of a window an
+				// officer explicitly removed.
+				//
+				// So the invariant this establishes is: **after any non-5xx answer from this
+				// route, the projection has been told.** A caller who sees 500 retries; the retry
+				// takes the not-found branch, pushes again, and answers 404 once the push lands.
+				// The extra recompute a genuinely spurious 404 causes is one target, idempotent,
+				// and far cheaper than the staleness it removes.
 				if err = s.cfg.Invalidator.OnTimerChange(ctx, circleID, targetID); err != nil {
 					return nil, err
+				}
+				if deleteErr != nil {
+					// The override really was already gone. Answered only now, because the answer
+					// is only true once the projection knows it too.
+					return nil, deleteErr
 				}
 				return &deleteCircleTimerOverrideOutput{Body: OverrideResponse{
 					TimerOverride: removed, AsOf: s.cfg.Clock.Now(),
@@ -529,6 +564,16 @@ func (s *Server) targetResponse(
 		return TargetResponse{}, err
 	}
 	return TargetResponse{Target: target, Timers: timers}, nil
+}
+
+// isNotFound reports whether an error is this API's 404.
+//
+// It exists because one handler needs to do work on the not-found path rather than return
+// immediately, and comparing against the closed code enum is the only spelling of that which
+// cannot drift from what the edge will actually render.
+func isNotFound(err error) bool {
+	coded, ok := apierr.From(err)
+	return ok && coded.Code() == apierr.CodeNotFound
 }
 
 // parseTargetID reads a target id out of a path.

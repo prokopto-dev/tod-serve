@@ -23,6 +23,21 @@ import (
 // It is an interface declared HERE, beside the handlers that call it, rather than a dependency on
 // `internal/projection`: this package is the consumer, the consumer owns the port, and the
 // projection satisfies it without knowing the API exists.
+//
+// # What this port does NOT yet give you
+//
+// The push happens AFTER the write has committed, so there is a window — commit succeeds, the
+// process dies before the push — in which the projection is never told and stays stale until the
+// nightly verify job recomputes. Every handler that pushes is retryable, which closes the case a
+// client can see (see the `deleteCircleTimerOverride` handler for the one that needed work to
+// become so), but a retry needs a caller and a crashed process has none.
+//
+// **The fix is the one `audit.Append` already uses: take the writing transaction's query set, so
+// the derived row is written or rolled back with the change that caused it.** Doing that means
+// threading a `*sqlitegen.Queries` through the projection's `recompute`, `storeOrDrop`,
+// `revokedReporters` and `catalogue.ResolveTimer`, which is a refactor of a package this one does
+// not contain. It is named here rather than left implied, and it belongs to whoever wires
+// `internal/projection` — the same edit list [UnprojectedTimers] carries.
 type TimerInvalidator interface {
 	// OnTimerChange recomputes one target for ONE circle and records `timer_change` as the
 	// reason. It is what a circle-scoped override write calls.
