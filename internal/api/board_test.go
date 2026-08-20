@@ -11,6 +11,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/api"
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/catalogue"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/projection"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
@@ -315,4 +316,75 @@ func entryFor(
 	}
 	require.FailNow(t, "target is not on the board", name)
 	return projection.BoardEntry{}
+}
+
+// TestListTargetStates_TheETag_CoversPaginationNotJustItems.
+//
+// `next_cursor` and `has_more` are part of what the response asserts, and a page whose items are
+// unchanged while its pagination has moved is a different answer. Hashing only the items answered
+// `304` to a caller holding `has_more: false` when a second page had appeared — and that caller
+// never asks for it, so the new rows stay invisible until something happens to change an item.
+//
+// The scenario is the day-one one, which is what makes it worth a test: an unseeded instance has no
+// windows, so nothing in an item moves with the clock, and a second ToD is exactly the kind of
+// event that adds a page without touching the first one.
+func TestListTargetStates_TheETag_CoversPaginationNotJustItems(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	circleID := h.seedCircle("Riot")
+	token := h.seedToken(h.seedMember(circleID, authz.RoleMember),
+		authz.ScopeTodReport, authz.ScopeTodRead)
+	// Seeded in this order so the first target's ULID sorts first: with no timers anywhere, the
+	// board falls back to target id, and the assertion below is about the FIRST item staying put.
+	first := h.seedTarget("Aaa Wyrm", "Temple of Veeshan")
+	second := h.seedTarget("Bbb Wyrm", "Temple of Veeshan")
+
+	report := func(target catalogue.Target, key string) {
+		t.Helper()
+		got := h.do(request{
+			Method: http.MethodPost, Path: reportsPath(circleID), Token: token,
+			Headers: map[string]string{api.IdempotencyKeyHeader: key},
+			Body:    reportBody(target, fixtureNow.Add(-time.Hour)),
+		})
+		require.Equal(t, http.StatusOK, got.Status, got.Body)
+	}
+
+	const query = "?status=no_timer&limit=1"
+	report(first, "first")
+	before := h.do(request{
+		Method: http.MethodGet, Path: todsPath(circleID) + query, Token: token,
+	})
+	require.Equal(t, http.StatusOK, before.Status, before.Body)
+	etag := before.Header.Get(api.ETagHeader)
+
+	var page api.Page[projection.BoardEntry]
+	require.NoError(t, json.Unmarshal([]byte(before.Body), &page))
+	require.Len(t, page.Items, 1)
+	require.False(t, page.HasMore)
+	require.Empty(t, page.NextCursor)
+
+	// A second ToD puts a second target into the filtered set. The first page's ONE item is
+	// untouched; only `has_more` and `next_cursor` move.
+	report(second, "second")
+	after := h.do(request{
+		Method: http.MethodGet, Path: todsPath(circleID) + query, Token: token,
+	})
+	require.Equal(t, http.StatusOK, after.Status, after.Body)
+
+	var moved api.Page[projection.BoardEntry]
+	require.NoError(t, json.Unmarshal([]byte(after.Body), &moved))
+	require.True(t, moved.HasMore, "there is a second page now")
+	require.Equal(t, first.ID.String(), moved.NextCursor, "and a cursor that reaches it")
+	require.Equal(t, page.Items, moved.Items,
+		"the items really are identical, which is what makes the tag load-bearing here")
+
+	require.NotEqual(t, etag, after.Header.Get(api.ETagHeader),
+		"the pagination moved, so the representation did")
+
+	conditional := h.do(request{
+		Method: http.MethodGet, Path: todsPath(circleID) + query, Token: token,
+		Headers: map[string]string{api.IfNoneMatchHeader: etag},
+	})
+	require.Equal(t, http.StatusOK, conditional.Status,
+		"a 304 here would leave the client believing there is no second page, forever")
 }

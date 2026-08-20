@@ -9,6 +9,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
+	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 	"github.com/prokopto-dev/tod-serve/internal/tod"
 )
 
@@ -231,4 +232,56 @@ func TestGet_RefreshesTheCacheAsASideEffect(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, derived.Status, row.Status)
 	require.Equal(t, int64(derived.Evidence.ReportCount), row.ReportCount)
+}
+
+// TestGet_ANeverReportedTarget_LeavesNoCacheRowForTheVerifyJobToAlertOn.
+//
+// A cache row exists for exactly the targets with at least one row in `tod_report`. `getTargetState`
+// on a mob nobody has reported is an ordinary thing for a person to do — it is most of the board on
+// a fresh instance — and it used to leave a row behind that `deriveAll` never visits, which the
+// nightly job then deleted as an orphan **and alerted about**. Opening a detail page made
+// `verify-states` fail that night for no reason, which is the cry-wolf failure the design is built
+// against.
+func TestGet_ANeverReportedTarget_LeavesNoCacheRowForTheVerifyJobToAlertOn(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	target := f.seedTarget("Lord Nagafen", "Nagafen's Lair", false)
+
+	derived, err := f.states.Get(t.Context(), f.circle, target.ID, false)
+	require.NoError(t, err)
+	require.Equal(t, schemaenum.TargetStateStatusUnknown, derived.Status)
+	require.Nil(t, derived.DiedAt)
+	require.Nil(t, derived.ComputedAt,
+		"nothing was derived from anything, and claiming an instant would say otherwise")
+
+	_, ok := f.cached(target)
+	require.False(t, ok, "there is nothing to cache, so there is no row")
+
+	report, err := f.states.Verify(t.Context())
+	require.NoError(t, err)
+	require.True(t, report.Healthy(), "reading a detail page is not drift")
+	require.Zero(t, report.Orphans)
+	require.Empty(t, f.log.errorLines())
+}
+
+// TestGet_AStaleRowForANowReportlessTarget_IsDroppedRatherThanRewritten. The same predicate from
+// the other side: a row that should not be there is removed by the read that notices, rather than
+// left for the nightly job to alert about.
+func TestGet_AStaleRowForANowReportlessTarget_IsDroppedRatherThanRewritten(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	target := f.seedTarget("Lady Vox", "Permafrost Keep", false)
+	_, err := f.db.Queries().PutTargetState(t.Context(), sqlitegen.PutTargetStateParams{
+		CircleID: f.circle.String(), TargetID: target.ID.String(),
+		ComputedAt: int64(fixtureNow), Status: schemaenum.TargetStateStatusInWindow,
+		Confidence: schemaenum.TargetStateConfidenceHigh,
+		CreatedAt:  int64(fixtureNow), UpdatedAt: int64(fixtureNow),
+	})
+	require.NoError(t, err)
+
+	_, err = f.states.Get(t.Context(), f.circle, target.ID, false)
+	require.NoError(t, err)
+
+	_, ok := f.cached(target)
+	require.False(t, ok)
 }

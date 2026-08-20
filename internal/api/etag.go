@@ -38,6 +38,23 @@ func ETagOf[T any](v T) (string, error) {
 	return `"` + base64.RawURLEncoding.EncodeToString(sum[:]) + `"`, nil
 }
 
+// ETagOfPage returns a strong entity tag for a collection response: everything the page says
+// EXCEPT `as_of`.
+//
+// The exclusion is one field and no more. `as_of` moves on every request by construction, so a tag
+// covering it would be unique every time and the `304` would be unreachable — but `next_cursor` and
+// `has_more` are part of what the response ASSERTS, and a page whose items are unchanged while its
+// pagination has moved is a different answer. Hashing only the items answers `304` to a caller
+// whose cached copy says `has_more: false` when a second page now exists, and that caller never
+// asks for it: the new rows are invisible until something else happens to change an item.
+//
+// It takes the page by value, so a field added to [Page] later is covered here without anybody
+// remembering to add it.
+func ETagOfPage[T any](p Page[T]) (string, error) {
+	p.AsOf = 0
+	return ETagOf(p)
+}
+
 // MatchesIfNoneMatch reports whether a client's cached copy is still current, so a read can answer
 // 304 instead of a body.
 func MatchesIfNoneMatch(header, etag string) bool {

@@ -44,9 +44,14 @@ type VerifyReport struct {
 	TargetsChecked int `json:"targets_checked"`
 	// Repaired is how many cached rows the recomputation overwrote.
 	Repaired int `json:"repaired"`
-	// Orphans is how many cached rows named a target with no reports left — every one of them
-	// retracted, or a report log that was never there. They are removed: a row the derivation
-	// would not produce is a row nothing will ever correct.
+	// Orphans is how many cached rows named a target with NO rows in `tod_report` at all. They are
+	// removed, and each one alerts.
+	//
+	// No ordinary path produces one: a cache row is written only for a target that has a log — see
+	// [Service.storeOrDrop] — and the log is append-only, so a target that has ever been reported
+	// keeps its rows forever. An orphan is therefore a row something wrote that should not have,
+	// which is worth waking somebody for. A target whose every kill was RETRACTED is not an
+	// orphan: it still has a log, and its row still says what folding that log produces.
 	Orphans int `json:"orphans"`
 	// Discrepancies are the individual field disagreements behind `Repaired`, so a run that
 	// repaired something says what it was rather than only how many.
@@ -124,9 +129,9 @@ func (s *Service) Verify(ctx context.Context) (VerifyReport, error) {
 			}
 		}
 
-		// Whatever is left named a target the derivation produced nothing for: every report for it
-		// was retracted, or the row was written by something that no longer has evidence behind
-		// it. It is removed rather than left, because nothing will ever recompute it again.
+		// Whatever is left named a target with no rows in `tod_report` at all, so `deriveAll` never
+		// visited it and nothing will ever recompute it again. It is removed rather than left to be
+		// believed, and it alerts: no ordinary path writes one.
 		for targetID := range cached {
 			if _, delErr := s.db.Queries().InvalidateTargetState(ctx,
 				sqlitegen.InvalidateTargetStateParams{

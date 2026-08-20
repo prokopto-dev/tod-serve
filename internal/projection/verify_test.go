@@ -10,6 +10,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/projection"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
+	"github.com/prokopto-dev/tod-serve/internal/tod"
 )
 
 // TestVerify_ACorruptedCacheRow_IsRepairedAndAlerted is the load-bearing test for
@@ -199,4 +200,51 @@ func TestRebuildAll_SweepsEveryLiveCircle(t *testing.T) {
 // this test quietly stopped copying.
 func putParamsFrom(row sqlitegen.TargetStateCache) sqlitegen.PutTargetStateParams {
 	return sqlitegen.PutTargetStateParams(row)
+}
+
+// TestVerify_ATargetWhoseKillsAreAllRetracted_KeepsItsRowAndIsNotAnOrphan.
+//
+// This is the case that looks like an orphan and is not. The log is append-only, so a retraction
+// ADDS: the target still has rows, folding them is real work, and the answer — "there is no current
+// ToD" — is a real derivation of them. Caching that is exactly what a cache is for; dropping it
+// would mean re-clustering the log on every board render forever, and it would make an ordinary
+// retraction fire the drift alert.
+//
+// An orphan is a row for a target with NO rows at all, which no ordinary path produces — which is
+// what makes alerting on one honest.
+func TestVerify_ATargetWhoseKillsAreAllRetracted_KeepsItsRowAndIsNotAnOrphan(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	target := f.seedTarget("Vulak`Aerr", "Temple of Veeshan", false)
+	f.seedCatalogueTimer(target, 5*24*time.Hour, 7*24*time.Hour)
+
+	created := f.report(target, fixtureNow.Add(-2*time.Hour), schemaenum.TodReportSourceLogLine)
+	_, err := f.tods.Retract(t.Context(), tod.RetractRequest{
+		CircleID: f.circle, ReportID: created.Report.ID, Actor: f.reporter,
+	})
+	require.NoError(t, err)
+
+	written, err := f.states.Rebuild(t.Context(), f.circle)
+	require.NoError(t, err)
+	require.Equal(t, 1, written, "the target still has a log, so it is still derived")
+
+	row, ok := f.cached(target)
+	require.True(t, ok, "and it still has a row")
+	require.Equal(t, schemaenum.TargetStateStatusUnknown, row.Status,
+		"saying there is no current ToD, which is what folding the retraction produced")
+	require.Zero(t, row.ReportCount)
+	require.Nil(t, row.DiedAt)
+
+	report, err := f.states.Verify(t.Context())
+	require.NoError(t, err)
+	require.True(t, report.Healthy(), "a retraction is not drift")
+	require.Zero(t, report.Orphans, "and the row it left behind is not an orphan")
+	require.Equal(t, 1, report.TargetsChecked)
+	require.Empty(t, f.log.errorLines())
+
+	// The board renders it exactly as the derivation does, so the cached row and an absent one
+	// cannot disagree about what the caller sees.
+	entry := f.entryFor(f.board(), target)
+	require.Equal(t, schemaenum.TargetStateStatusUnknown, entry.Status)
+	require.Nil(t, entry.DiedAt)
 }

@@ -286,9 +286,9 @@ func (s *Server) registerTods() error {
 					next = entries[len(entries)-1].Target.ID.String()
 				}
 				page := NewPage(entries, next, hasMore, s.cfg.Clock.Now())
-				// The tag covers the items and not `as_of`: `as_of` moves on every request by
-				// construction, so hashing it would make every ETag unique and the 304 unreachable.
-				etag, err := ETagOf(page.Items)
+				// Everything the page says except `as_of` — `next_cursor` and `has_more`
+				// included. See [ETagOfPage].
+				etag, err := ETagOfPage(page)
 				if err != nil {
 					return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 				}

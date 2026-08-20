@@ -105,7 +105,7 @@ func (s *Service) Get(
 
 	now := s.clock.Now()
 	state := consensus.Derive(reports, quakes, timer.Timer, now, configOf(circle))
-	stored, err := s.store(ctx, circleID, targetID, state, rows, changeReason(state, rows, ""))
+	stored, err := s.storeOrDrop(ctx, circleID, targetID, state, rows, changeReason(state, rows, ""))
 	if err != nil {
 		return Derived{}, err
 	}
@@ -125,9 +125,14 @@ func (s *Service) Get(
 }
 
 // toDerived renders a state as the wire representation.
+//
+// `row` is nil for a target nothing has ever been reported about, which has no cache row by
+// construction — see [Service.storeOrDrop]. `computed_at` is null there rather than an invented
+// instant: this answer was derived now, from nothing, and saying otherwise would claim a
+// derivation happened that did not.
 func toDerived(
 	target catalogue.Target, server string, timer catalogue.ResolvedTimer,
-	state consensus.State, row sqlitegen.TargetStateCache,
+	state consensus.State, row *sqlitegen.TargetStateCache,
 ) Derived {
 	view := Derived{
 		Target: target, Server: server, Status: string(state.Status),
@@ -138,14 +143,16 @@ func toDerived(
 		AlternativesTotal:    state.AlternativesTotal,
 		Evidence:             state.Evidence,
 		ImplausibleReportIDs: state.ImplausibleReportIDs,
-		ChangeReason:         row.ChangeReason,
 	}
 	if state.ContestReason != nil {
 		reason := string(*state.ContestReason)
 		view.ContestReason = &reason
 	}
-	computed := core.Micros(row.ComputedAt)
-	view.ComputedAt = &computed
+	if row != nil {
+		view.ChangeReason = row.ChangeReason
+		computed := core.Micros(row.ComputedAt)
+		view.ComputedAt = &computed
+	}
 	return view
 }
 
@@ -225,12 +232,43 @@ func (s *Service) recompute(
 		}
 	}
 	state := consensus.Derive(reports, quakes, timer.Timer, s.clock.Now(), configOf(circle))
-	stored, err := s.store(ctx, circleID, targetID, state, rows,
-		changeReason(state, rows, reason))
+	return s.storeOrDrop(ctx, circleID, targetID, state, rows, changeReason(state, rows, reason))
+}
+
+// storeOrDrop writes a derived state, or removes the row when there is nothing to cache.
+//
+// **A cache row exists for exactly the targets with at least one row in `tod_report`, and that
+// single predicate is what makes this subsystem coherent.** The board's read-miss rebuild is driven
+// by `ListTodReportTargets`, `deriveAll` walks the same set, and [Service.Verify] treats anything
+// else it finds as an orphan — so a row written for a target with no log at all is a row the
+// nightly job deletes and ALERTS about. `getTargetState` on a mob nobody has reported is an
+// ordinary thing for a person to do, and before this it left exactly that row behind: opening a
+// detail page on a fresh instance made `verify-states` fail that night for no reason, which is the
+// cry-wolf failure the whole design is built against.
+//
+// A target whose every kill has been RETRACTED keeps its row, and that is not the same case. It
+// still has a log — the retracted kills and the retraction rows — so folding them is real work,
+// the answer is a real derivation, and caching "we read your fifty rows and there is no current
+// ToD" is exactly what a cache is for. Dropping it would mean re-clustering that log on every
+// board render forever, and it would make an ordinary retraction fire the drift alert.
+func (s *Service) storeOrDrop(
+	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID,
+	state consensus.State, rows []sqlitegen.TodReport, reason string,
+) (*sqlitegen.TargetStateCache, error) {
+	if len(rows) == 0 {
+		if _, err := s.db.Queries().InvalidateTargetState(ctx,
+			sqlitegen.InvalidateTargetStateParams{
+				CircleID: circleID.String(), TargetID: targetID.String(),
+			}); err != nil {
+			return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
+		}
+		return nil, nil
+	}
+	row, err := s.store(ctx, circleID, targetID, state, rows, reason)
 	if err != nil {
 		return nil, err
 	}
-	return &stored, nil
+	return &row, nil
 }
 
 // store writes one derived state to the cache.
@@ -495,10 +533,14 @@ type derivedState struct {
 
 // deriveAll recomputes every target the circle has reported anything about.
 //
-// Targets nobody has reported are deliberately absent: they have no cluster, so their answer is a
-// pure function of the timer and the quake log and needs no row. The verify job removes any cache
-// row for one, which is how a target that was reported and then had every report retracted stops
-// occupying the table.
+// Targets nobody has reported are deliberately absent, and that absence is the same predicate
+// [Service.storeOrDrop] writes by: with no rows in `tod_report` there is nothing to fold, so the
+// answer is a pure function of the timer and the quake log and needs no row to hold it. The verify
+// job removes any cache row it finds for one.
+//
+// A target whose every kill has been retracted is NOT one of those. Its rows are still there — the
+// log is append-only, so a retraction adds — so it is derived here like any other, and it keeps a
+// cached row saying there is no current ToD.
 func (s *Service) deriveAll(
 	ctx context.Context, circle sqlitegen.Circle,
 ) ([]derivedState, error) {
