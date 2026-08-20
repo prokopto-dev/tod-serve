@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strings"
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
@@ -64,12 +63,8 @@ type getRaidTargetInput struct {
 }
 
 type getRaidTargetOutput struct {
-	// Status carries the conditional answer. It is 200 with a body, or 304 with none when the
-	// caller's cached copy is still current — the framework skips the body for a 304, so the
-	// zero-valued Body below never reaches the wire.
-	Status int
-	ETag   string `header:"ETag"`
-	Body   TargetResponse
+	ETag string `header:"ETag"`
+	Body TargetResponse
 }
 
 type resolveRaidTargetInput struct {
@@ -241,20 +236,16 @@ func (s *Server) registerRaidTargets() error {
 				if err != nil {
 					return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 				}
-				// The revalidation the route advertises, actually performed. Declaring
-				// `If-None-Match` and an `ETag` and then always answering 200 is worse than
-				// offering neither: a client that implemented conditional requests against this
-				// route would pay for a full body on every poll while believing it had not, and
-				// the board polls — ROADMAP Phase 4 makes that the realtime story.
-				if MatchesIfNoneMatch(in.IfNoneMatch, etag) {
-					return &getRaidTargetOutput{
-						Status: http.StatusNotModified, ETag: etag,
-					}, nil
-				}
+				// The revalidation this route advertises is performed by [withConditionalGet],
+				// which turns this 200 into a 304 when the caller already holds the tag. The
+				// branch used to be here and is gone deliberately: two ways of producing one
+				// status is one too many, and the hand-rolled one described a body it did not
+				// send — huma sets `Content-Type: application/json` on the response whatever the
+				// status, and RFC 9110 §15.4.5 says a 304 carries neither that nor
+				// `Content-Length`. What is left here is what every other conditional read does:
+				// compute the tag, answer 200, and let one place decide.
 				view.AsOf = s.cfg.Clock.Now()
-				return &getRaidTargetOutput{
-					Status: http.StatusOK, ETag: etag, Body: view,
-				}, nil
+				return &getRaidTargetOutput{ETag: etag, Body: view}, nil
 			})),
 
 		registerFailure(OpResolveRaidTarget, Register(s.api, OpResolveRaidTarget,

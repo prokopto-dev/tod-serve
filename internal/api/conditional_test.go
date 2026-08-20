@@ -120,6 +120,21 @@ func TestRouteRegistry_ConditionalRead_MatchesWhatTheRouteActuallyDoes(t *testin
 						"declares a 304 nothing emits, and a client waits for a response that "+
 						"cannot arrive", route.ID, got.Status)
 				require.Empty(t, got.Body, "%s answered 304 with a body", route.ID)
+
+				// ONE SHAPE, for every route. RFC 9110 §15.4.5: a 304 carries the validators and
+				// not the representation headers, because there is no representation to describe.
+				// This is asserted rather than assumed because there used to be two shapes — a
+				// hand-rolled branch in `getRaidTarget` that sent `Content-Type: application/json`
+				// with no body, beside the middleware's. Collapsing them is only worth doing if
+				// something notices them diverging again, and a caching proxy notices before we do.
+				require.Empty(t, got.Header.Get("Content-Type"),
+					"%s answered 304 with a Content-Type, which describes a body it did not send",
+					route.ID)
+				require.Empty(t, got.Header.Get("Content-Length"),
+					"%s answered 304 with a Content-Length", route.ID)
+				require.Equal(t, etag, got.Header.Get(api.ETagHeader),
+					"%s answered 304 without repeating the ETag, so the next revalidation has "+
+						"nothing to send", route.ID)
 				return
 			}
 			require.Equal(t, http.StatusOK, got.Status,
