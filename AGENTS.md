@@ -116,6 +116,12 @@ House Go, not general Go. Inherited from Dragon Kill Party, where each rule has 
   the database; integration tests use real SQLite in `t.TempDir()`.
 - **Banned:** naked returns, package-level mutable state, `any` in domain signatures, a second type
   for the same concept, manual formatting (`gofumpt` + `goimports` win every disagreement).
+- **A type that reaches the OpenAPI document needs a name that is unique across the whole
+  repository.** The schema namer strips the package, so `circle.View` and `membership.View` both
+  want to be `View` — and `Page[circle.View]` and `Page[membership.View]` both want to be
+  `PageView`. The second registration **panics at startup**, which is the good direction for a
+  failure and still an hour if you do not know why. It is why the representations are
+  `circle.Circle`, `membership.Member` and `invite.Invite` rather than three types called `View`.
 
 ## House style for prose
 

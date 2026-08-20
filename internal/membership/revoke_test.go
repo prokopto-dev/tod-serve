@@ -8,6 +8,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/circle"
+	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
@@ -405,4 +406,109 @@ func longString(n int) string {
 		out[i] = 'a'
 	}
 	return string(out)
+}
+
+// **An officer cannot promote anybody — including themselves — to owner.**
+//
+// `member.manage` is held by officers, so without this an officer could set their own role to
+// `owner` and acquire `circle.security.manage`, `circle.delete`, `token.mint` and `token.revoke`.
+// The rest of the design goes to real lengths to make becoming an owner deliberate: `invite`
+// carries `CHECK (role <> 'owner')` precisely so a leaked bot token "can add a visible, revocable
+// member — not seize the circle", and the only other door is a code the CLI prints once on the
+// operator's own terminal. Self-promotion walks past both.
+func TestUpdate_AnOfficer_CannotGrantARoleAboveTheirOwn(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	view := f.localCircle("Riot Blue")
+	owner, err := f.joinLocal(f.ownerGrant(view), "Tankguy")
+	require.NoError(t, err)
+	officer := f.joinAs(view, owner, authz.RoleOfficer, "Sneakco")
+	member := f.joinAs(view, owner, authz.RoleMember, "Tankgal")
+
+	toOwner := string(authz.RoleOwner)
+	tests := []struct {
+		name    string
+		subject core.MembershipID
+	}{
+		{"themselves, which is the escalation", officer.Membership.ID},
+		{"somebody else, which is the same escalation one step removed", member.Membership.ID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := f.members.Update(t.Context(), view.ID, tt.subject,
+				officer.Membership.ID, membership.UpdateRequest{Role: &toOwner})
+			require.True(t, apierr.HasCode(err, apierr.CodeForbidden), "got %v", err)
+		})
+	}
+
+	// The circle still has exactly one owner, so the refusal was not merely a returned error over
+	// a write that happened anyway.
+	members, err := f.members.List(t.Context(), view.ID)
+	require.NoError(t, err)
+	owners := 0
+	for _, m := range members {
+		if m.Role == string(authz.RoleOwner) {
+			owners++
+		}
+	}
+	require.Equal(t, 1, owners)
+}
+
+// The rule is "you may grant what you hold", not "officers may not manage roles". Everything at or
+// below the actor's own role still works, or the guard would have taken away the capability
+// `member.manage` exists to give.
+func TestUpdate_GrantingAtOrBelowYourOwnRole_StillWorks(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	view := f.localCircle("Riot Blue")
+	owner, err := f.joinLocal(f.ownerGrant(view), "Tankguy")
+	require.NoError(t, err)
+	officer := f.joinAs(view, owner, authz.RoleOfficer, "Sneakco")
+	member := f.joinAs(view, owner, authz.RoleMember, "Tankgal")
+
+	for _, role := range []authz.Role{
+		authz.RoleObserver, authz.RoleMember, authz.RoleOfficer,
+	} {
+		granted := string(role)
+		updated, updateErr := f.members.Update(t.Context(), view.ID, member.Membership.ID,
+			officer.Membership.ID, membership.UpdateRequest{Role: &granted})
+		require.NoError(t, updateErr, "an officer could not grant %s", role)
+		require.Equal(t, granted, updated.Role)
+	}
+
+	// And an OWNER may still make another owner, which is how ownership is handed over — the guard
+	// must not have closed the one door that is supposed to be open.
+	toOwner := string(authz.RoleOwner)
+	updated, err := f.members.Update(t.Context(), view.ID, member.Membership.ID,
+		owner.Membership.ID, membership.UpdateRequest{Role: &toOwner})
+	require.NoError(t, err)
+	require.Equal(t, toOwner, updated.Role)
+}
+
+// A display-name change carries no role, so it must not be caught by a guard about roles — an
+// officer renaming a member is the ordinary case `member.manage` exists for.
+func TestUpdate_ADisplayNameChangeByAnOfficer_IsNotRefused(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	view := f.localCircle("Riot Blue")
+	owner, err := f.joinLocal(f.ownerGrant(view), "Tankguy")
+	require.NoError(t, err)
+	officer := f.joinAs(view, owner, authz.RoleOfficer, "Sneakco")
+	member := f.joinAs(view, owner, authz.RoleMember, "Tankgal")
+
+	name := "Tank"
+	updated, err := f.members.Update(t.Context(), view.ID, member.Membership.ID,
+		officer.Membership.ID, membership.UpdateRequest{DisplayName: &name})
+	require.NoError(t, err)
+	require.Equal(t, "Tank", updated.DisplayName)
+	require.Equal(t, string(authz.RoleMember), updated.Role)
+
+	// Including on a member who OUTRANKS them: renaming an owner grants the officer nothing, and
+	// refusing it would be a guard about roles quietly becoming a guard about names.
+	ownerName := "Tankguy the First"
+	renamed, err := f.members.Update(t.Context(), view.ID, owner.Membership.ID,
+		officer.Membership.ID, membership.UpdateRequest{DisplayName: &ownerName})
+	require.NoError(t, err)
+	require.Equal(t, ownerName, renamed.DisplayName)
+	require.Equal(t, string(authz.RoleOwner), renamed.Role)
 }
