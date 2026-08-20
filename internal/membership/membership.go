@@ -355,7 +355,7 @@ func (s *Service) Update(
 		}
 		if txErr = audit.Append(ctx, q, s.ids, now, audit.Entry{
 			CircleID: circleID, Actor: actor, Action: audit.ActionMemberUpdated,
-			EntityType: "membership", EntityID: id.String(),
+			EntityType: audit.EntityMembership, EntityID: id.String(),
 			Detail: map[string]any{
 				"role_before": row.Role, "role_after": updated.Role,
 				"display_name_changed": updated.DisplayName != row.DisplayName,

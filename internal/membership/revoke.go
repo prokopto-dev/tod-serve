@@ -88,7 +88,7 @@ func (s *Service) Revoke(
 			if invitesRevoked > 0 {
 				if txErr = audit.Append(ctx, q, s.ids, now, audit.Entry{
 					CircleID: circleID, Actor: actor, Action: audit.ActionInvitesRevoked,
-					EntityType: "invite", EntityID: "",
+					EntityType: audit.EntityInvite, EntityID: "",
 					Detail: map[string]any{
 						"count": invitesRevoked, "because": "weak_member_revoked",
 						"membership_id": id.String(),
@@ -105,9 +105,9 @@ func (s *Service) Revoke(
 		}
 		return audit.Append(ctx, q, s.ids, now, audit.Entry{
 			CircleID: circleID, Actor: actor, Action: audit.ActionMemberRevoked,
-			EntityType: "membership", EntityID: id.String(),
+			EntityType: audit.EntityMembership, EntityID: id.String(),
 			Detail: map[string]any{
-				"role": view.Role, "revocation_strength": view.RevocationStrength,
+				audit.DetailRole: view.Role, audit.DetailRevocationStrength: view.RevocationStrength,
 				"invites_revoked": invitesRevoked, "reason_given": reason != "",
 			},
 		})
@@ -156,7 +156,7 @@ func (s *Service) Reinstate(
 		}
 		return audit.Append(ctx, q, s.ids, now, audit.Entry{
 			CircleID: circleID, Actor: actor, Action: audit.ActionMemberReinstated,
-			EntityType: "membership", EntityID: id.String(),
+			EntityType: audit.EntityMembership, EntityID: id.String(),
 			Detail: map[string]any{"role": existing.Role},
 		})
 	})

@@ -93,8 +93,8 @@ func Parse(raw string) (Code, error) {
 	var compact strings.Builder
 	compact.Grow(len(Scheme) + PayloadLen)
 	for _, r := range strings.ToUpper(raw) {
-		switch {
-		case r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '-' || r == '_':
+		switch r {
+		case ' ', '\t', '\n', '\r', '-', '_':
 			// Separators and whitespace carry nothing.
 		default:
 			compact.WriteRune(substitute(r))

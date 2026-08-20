@@ -32,6 +32,15 @@ const (
 	flagAcknowledge = "acknowledge-weak-revocation"
 )
 
+// The verbs this file registers. Named because each appears in the command itself, in the message
+// another verb prints to point at it, and in the error a missing flag produces — three copies of
+// one string is exactly the drift this repository gates against elsewhere.
+const (
+	verbInit   = "init"
+	verbCircle = "circle"
+	verbCreate = "create"
+)
+
 // newInitCommand creates the `instance` singleton, and optionally the first circle.
 //
 // **This is how the instance gets its first user.** On a fresh database nobody holds a credential,
@@ -40,7 +49,7 @@ const (
 // prints must be single-use.
 func newInitCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "init",
+		Use:   verbInit,
 		Short: "Create the instance singleton, and optionally the first circle",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -119,8 +128,8 @@ func newInitCommand() *cobra.Command {
 			if circleName == "" {
 				_, err := fmt.Fprintf(out,
 					"\nNo circle yet. Create one, and the owner code to redeem, with:\n"+
-						"  tod-serve circle create --%s \"Your Guild\" --%s blue\n",
-					flagName, flagServer)
+						"  tod-serve %s %s --%s \"Your Guild\" --%s blue\n",
+					verbCircle, verbCreate, flagName, flagServer)
 				if err != nil {
 					return fmt.Errorf("write init result: %w", err)
 				}
@@ -199,12 +208,12 @@ func enableLocalProvider(ctx context.Context, db *store.DB, now core.Micros) err
 // needs is an API operation an owner reaches with the credential this command produces.
 func newCircleCommand() *cobra.Command {
 	group := &cobra.Command{
-		Use:   "circle",
+		Use:   verbCircle,
 		Short: "Circle administration that needs the database rather than a credential",
 	}
 
 	create := &cobra.Command{
-		Use:   "create",
+		Use:   verbCreate,
 		Short: "Create a circle and print its one-time owner code",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {

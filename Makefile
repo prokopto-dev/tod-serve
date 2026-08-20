@@ -95,8 +95,11 @@ test-integration:
 
 ## test-tenancy: cross-circle isolation over the route registry
 # Walks the registry rather than a hand-written list, so a circle-scoped route added without
-# coverage is a red test. It runs vacuously today and SAYS SO — the circle routes have no handlers
-# yet. `-v` is deliberate: the count it logs is the whole point of running it on its own.
+# coverage is a red test. It is PARTIAL: the circles, members and invites handlers are covered and
+# the ToD, quake, audit, event and timer-override ones are not, so the test logs "N of 27" and
+# enumerates the remainder with the milestone that owns each. `-v` is deliberate — that count is
+# the whole point of running this on its own, and a green tick over a partial route set reported as
+# "the tenancy gate passes" is exactly the failure this repository is built against.
 .PHONY: test-tenancy
 test-tenancy:
 	$(GO) test -v -count=1 ./internal/api/ -run 'TestTenancy|TestPublicRoutes|TestInviteOracle'

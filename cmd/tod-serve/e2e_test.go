@@ -165,7 +165,7 @@ func (s *e2eServer) request(
 	if body != "" {
 		reader = strings.NewReader(body)
 	}
-	req := httptest.NewRequest(method, path, reader)
+	req := httptest.NewRequestWithContext(t.Context(), method, path, reader)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}

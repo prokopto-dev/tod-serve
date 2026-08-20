@@ -137,9 +137,9 @@ func (s *Service) CreateService(
 		}
 		if txErr = audit.Append(ctx, q, s.ids, now, audit.Entry{
 			CircleID: req.CircleID, Actor: req.Actor, Action: audit.ActionServiceMemberJoined,
-			EntityType: "membership", EntityID: membershipID.String(),
+			EntityType: audit.EntityMembership, EntityID: membershipID.String(),
 			Detail: map[string]any{
-				"role": string(role), "owner_membership_id": ownerRef,
+				audit.DetailRole: string(role), "owner_membership_id": ownerRef,
 				"token_prefix": token.Prefix, "scopes": token.Scopes,
 			},
 		}); txErr != nil {

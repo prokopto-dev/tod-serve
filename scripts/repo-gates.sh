@@ -101,6 +101,26 @@ else
   vacant PURE002 "internal/consensus imports nothing that reads a clock or does I/O"
 fi
 
+# --- RAND001 — every injected entropy source is crypto/rand.Reader ----------------------------
+# Every constructor that mints a secret takes its randomness and refuses a nil one, which makes a
+# weak source a construction error rather than a review habit — but only makes the choice
+# DELIBERATE at the wiring site. Nothing in the type system forces that site to say `rand.Reader`.
+#
+# This grep is the fast pre-check and it is not the authority: it sees a line that assigns an
+# `Entropy:` field to something other than `rand.Reader`, and it is blind to an aliased import and
+# to a value spread over two lines. The AST analyser in internal/repogate is the authority, run by
+# TestRAND001_ProductionWiring_UsesCryptoRandReader.
+if has_go; then
+  scanned=$(go_files)
+  bad=$(echo "$scanned" | xargs grep -nE '(Entropy|Random):[[:space:]]*' 2>/dev/null \
+        | grep -vE '(Entropy|Random):[[:space:]]*[A-Za-z0-9_]*rand\.Reader' \
+        | grep -vE '(Entropy|Random)[[:space:]]+io\.Reader' || true)
+  if [ -n "$bad" ]; then report RAND001 "an entropy source that is not crypto/rand.Reader:"; echo "$bad"; \
+  else pass RAND001 "every injected entropy source is crypto/rand.Reader ($(count "$scanned") files; the AST analyser in internal/repogate is the authority)"; fi
+else
+  vacant RAND001 "every injected entropy source is crypto/rand.Reader"
+fi
+
 # --- SQL001 — *sql.DB held only by internal/store ---------------------------------------------
 if has_go; then
   scanned=$(go_files | grep -v '^./internal/store/')

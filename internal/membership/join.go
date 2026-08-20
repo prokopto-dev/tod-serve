@@ -193,9 +193,9 @@ func (s *Service) Join(ctx context.Context, req JoinRequest) (Joined, error) {
 		}
 		if txErr = audit.Append(ctx, q, s.ids, now, audit.Entry{
 			CircleID: live.CircleID, Actor: membershipID, Action: action,
-			EntityType: "membership", EntityID: membershipID.String(),
+			EntityType: audit.EntityMembership, EntityID: membershipID.String(),
 			Detail: map[string]any{
-				"role": string(live.Role), "provider": req.ProviderKey,
+				audit.DetailRole: string(live.Role), "provider": req.ProviderKey,
 				"admitted_by": string(live.Kind),
 			},
 		}); txErr != nil {

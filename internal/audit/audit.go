@@ -42,6 +42,20 @@ const (
 	ActionTokenMinted         Action = "token.minted"
 )
 
+// The entity types an entry names. They are constants because an audit log read six months later
+// is only searchable if the same thing is spelled the same way every time it happened.
+const (
+	EntityMembership = "membership"
+	EntityInvite     = "invite"
+	EntityCircle     = "circle"
+)
+
+// The detail keys that appear on more than one action, for the same reason.
+const (
+	DetailRole               = "role"
+	DetailRevocationStrength = "revocation_strength"
+)
+
 // Entry is one thing that happened in one circle.
 type Entry struct {
 	CircleID core.CircleID

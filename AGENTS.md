@@ -20,6 +20,8 @@ than writing it down as though it were enforced.
 | `internal/auth/` | PAT mint and verify, sessions, step-up |
 | `internal/identity/{,discord,oidc,local,outbound}/` | Provider registry, credential dispatch, identity and link resolution, the OAuth flow. **The only packages permitted to make outbound HTTP requests**, and `outbound` is the only one that may construct a client |
 | `internal/circle/`, `membership/`, `catalogue/`, `tod/` | Domain services |
+| `internal/invite/` | Invite codes: minting, the generous parser a hand-typed code needs, **the one hash** `identitysql` is handed, and the single-use owner grant that gives a circle its first owner |
+| `internal/audit/` | The hash-chained append to `audit_log`. Every caller passes a transaction's query set: an audit row that survives a rollback is worse than no row, because it is believed |
 | `internal/schemaenum/` | The enum catalogue — every enumerated column, and the ordering rule for the two that have one |
 | `internal/dbschema/` | Binds each catalogue enum to the column that holds it, and generates `db/enums.hcl`. Enum `CHECK` lists are never hand-written |
 | `internal/consensus/` | **Pure.** Clustering, cluster selection, estimate, confidence, window computation |
@@ -28,7 +30,7 @@ than writing it down as though it were enforced.
 | `internal/core/` | `Micros`, ULID, typed ids, the `Server` enum, `Secret` |
 | `internal/clock/` | The only `time.Now` |
 | `internal/apierr/` | The closed error-code enum and the RFC 9457 problem the edge renders |
-| `internal/repogate/` | The gates that need an AST rather than a grep: `CLOCK001`, `SLEEP001`, `ROUTE001` |
+| `internal/repogate/` | The gates that need an AST rather than a grep: `CLOCK001`, `SLEEP001`, `ROUTE001`, `RAND001` |
 | `internal/canondoc/` | Reads fenced blocks out of the normative documents, so a gate compares code against the document rather than against a copy of it |
 | `db/` | `schema.hcl` is the single schema truth; `enums.hcl` is generated; `queries/*.sql`; `migrations-sqlite/`, forward-only |
 | `test/repo/` | Tests about the repository itself, not the product: they assert the gates below actually fire |
@@ -65,6 +67,12 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    to the database. The triggers are the enforcement; these catch the statement before it ships.
 9. **`db/queries/*.sql` is ASCII.** `SQLC001`. Not style: sqlc rewrites `sqlc.arg()` by byte offset
    while reporting positions in runes, so one em dash silently mangles every query after it.
+10. **Every injected entropy source is `crypto/rand.Reader`.** `RAND001` is an AST analyser: every
+    constructor that mints a secret takes its randomness and refuses a nil one, which makes a weak
+    source a construction error rather than a review habit — but only makes the choice deliberate at
+    the wiring site. The gate requires that site to name `crypto/rand.Reader` itself, not a variable
+    holding it and not a wrapper returning it, because "some non-nil reader" is what a nil check
+    already bought.
 
 ## Non-negotiable invariants
 

@@ -225,6 +225,10 @@ func (h *harness) seedCircle(name string) core.CircleID {
 	return id
 }
 
+// localProviderKey is the wire key the fixture gives the `local` provider, matching what
+// `tod-serve init --local` writes.
+const localProviderKey = "local"
+
 // seedProvider writes the instance's local identity provider, which is the one that needs no third
 // party. It is written once per harness: `identity_provider.kind` is unique, so an instance has at
 // most one provider of each kind.
@@ -236,8 +240,12 @@ func (h *harness) seedProvider() core.IdentityProviderID {
 	id := newID[core.IdentityProvider](h)
 	_, err := h.store.Queries().CreateIdentityProvider(h.t.Context(),
 		sqlitegen.CreateIdentityProviderParams{
-			ID:          id.String(),
-			Key:         "local-" + id.String()[:8],
+			ID: id.String(),
+			// The wire key `listIdentityProviders` publishes and `/join` dispatches on. It is the
+			// plain kind because an instance holds at most one `local` row, so there is nothing
+			// to disambiguate — and a suffixed key would be a key no client could guess from the
+			// public discovery endpoint.
+			Key:         localProviderKey,
 			Kind:        schemaenum.IdentityProviderKindLocal,
 			DisplayName: "Local",
 			Enabled:     1,
