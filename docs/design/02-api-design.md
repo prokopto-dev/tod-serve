@@ -118,7 +118,15 @@ and `bearer_token` remain for clients that have no browser to redirect.
 returns one. **There is no "list all circles on this instance" operation, at any permission level.**
 A circle's existence is part of what it is hiding.
 
-`updateCircle` rejects `server` with `422 field_immutable`. The first circle is created by CLI at
+`updateCircle` rejects `server` with `422 field_immutable`. It additionally requires
+`circle.security.manage` — the owner-only key, not the `circle.manage` the rest of the operation
+needs — for **`revoke_invalidates_invites`**, which decides whether revoking a weakly-revocable
+member also kills the circle's live invites. Canonical §6's test for a security key is whether a
+change "changes its revocation guarantee", and switching that off does exactly that: it leaves a
+revoked leaker a live invite still sitting in Discord scrollback. It is the one per-field
+permission in this API, and the cost is stated where it is paid — the architectural tests walk the
+route registry and are blind to a rule inside a handler, so
+`TestUpdateCircle_RevokeInvalidatesInvites_NeedsTheOwnerSecurityKey` is its gate. The first circle is created by CLI at
 first run — `tod-serve circle create --name … --server blue` — which prints an owner code.
 
 **That code is not an `invite`, and it cannot be.** `invite` carries `CHECK (role <> 'owner')`, so

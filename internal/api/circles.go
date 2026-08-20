@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
+	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 )
@@ -53,7 +54,7 @@ type updateCircleInput struct {
 		Description              *string `json:"description,omitempty" maxLength:"500"`
 		Timezone                 *string `json:"timezone,omitempty"`
 		MinReportersToSupersede  *int    `json:"min_reporters_to_supersede,omitempty" minimum:"1"`
-		RevokeInvalidatesInvites *bool   `json:"revoke_invalidates_invites,omitempty"`
+		RevokeInvalidatesInvites *bool   `json:"revoke_invalidates_invites,omitempty" doc:"Owner only: it decides whether revoking a weakly-revocable member also kills the circle's live invites"`
 		State                    *string `json:"state,omitempty" enum:"active,archived"`
 		// Server is accepted only so that sending it is REFUSED with the code that says why.
 		// Ignoring it would let a client believe a circle had moved server, and ADR-0009 makes
@@ -168,6 +169,9 @@ func (s *Server) registerCircles() error {
 				if err != nil {
 					return nil, err
 				}
+				if err := requireSecurityKeyForInvalidation(ctx, in); err != nil {
+					return nil, err
+				}
 				current, err := s.cfg.Circles.Get(ctx, id)
 				if err != nil {
 					return nil, err
@@ -240,6 +244,39 @@ func (s *Server) registerCircles() error {
 				}, nil
 			})),
 	)
+}
+
+// requireSecurityKeyForInvalidation gates the one field of `updateCircle` that is not a setting.
+//
+// `revoke_invalidates_invites` is the mitigation a weakly-revocable circle leans on: revoking a
+// member who joined through an unverifiable provider also kills every live invite, so the leaker
+// cannot walk back in through one still sitting in Discord scrollback. Canonical §6's test for a
+// security key is whether a change "changes its revocation guarantee" — which is exactly what
+// switching this off does — so it takes `circle.security.manage`, the owner-only key, rather than
+// the `circle.manage` the rest of this operation needs.
+//
+// **It is a per-FIELD check, and that is a real cost.** Every other permission in this API is
+// enumerable data on the route, which is what lets the architectural tests walk the registry and
+// find an operation nobody guarded; this one is a rule inside a handler and those tests are blind
+// to it. The alternatives were worse: a second route for one boolean, or moving it into
+// `setCircleProviders`, which is a PUT that replaces the whole provider set and would make
+// toggling a flag require re-sending a list. The gate that replaces the registry's is
+// TestUpdateCircle_RevokeInvalidatesInvites_NeedsTheOwnerSecurityKey.
+func requireSecurityKeyForInvalidation(ctx context.Context, in *updateCircleInput) error {
+	if in.Body.RevokeInvalidatesInvites == nil {
+		return nil
+	}
+	p, ok := PrincipalFrom(ctx)
+	if !ok {
+		return apierr.New(apierr.CodeUnauthenticated, "no principal on the request")
+	}
+	if !p.Can(authz.PermissionCircleSecurityManage) {
+		return apierr.New(apierr.CodeForbidden,
+			"revoke_invalidates_invites decides whether revoking a weakly-revocable member also "+
+				"kills the circle's live invites, so it is an owner's to change").
+			WithField("body.revoke_invalidates_invites", "needs circle.security.manage")
+	}
+	return nil
 }
 
 // parseCircleID reads the tenant out of the path.

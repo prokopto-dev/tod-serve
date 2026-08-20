@@ -215,3 +215,86 @@ func (h *harness) circleETag(circleID core.CircleID, member core.MembershipID) s
 	require.NotEmpty(h.t, etag)
 	return etag
 }
+
+// `revoke_invalidates_invites` is the mitigation a weakly-revocable circle leans on: revoking a
+// member who joined through an unverifiable provider also kills every live invite, so the leaker
+// cannot walk back in through one still sitting in Discord scrollback.
+//
+// Canonical §6's test for a security key is whether a change "changes its revocation guarantee",
+// which is exactly what switching this off does — so it takes the owner-only
+// `circle.security.manage` rather than the `circle.manage` the rest of `updateCircle` needs.
+//
+// This test IS the gate. Every other permission in this API is enumerable data on the route and the
+// architectural tests walk the registry to find an unguarded one; a per-field rule is invisible to
+// them, so it has a named test instead.
+func TestUpdateCircle_RevokeInvalidatesInvites_NeedsTheOwnerSecurityKey(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	mine := h.seedCircle("Mine")
+	officer := h.seedMember(mine, authz.RoleOfficer)
+	owner := h.seedMember(mine, authz.RoleOwner)
+
+	// An officer holds `circle.manage` and reaches the operation — everything else on it works.
+	renamed := h.do(request{
+		Method: http.MethodPatch, Path: circlePath(mine), Session: h.session(officer, true),
+		Headers: map[string]string{api.IfMatchHeader: h.circleETag(mine, officer)},
+		Body:    `{"name":"Renamed By An Officer"}`,
+	})
+	require.Equal(t, http.StatusOK, renamed.Status, renamed.Body)
+
+	// The one field they do not hold the key for is refused, and says which key.
+	refused := h.do(request{
+		Method: http.MethodPatch, Path: circlePath(mine), Session: h.session(officer, true),
+		Headers: map[string]string{api.IfMatchHeader: h.circleETag(mine, officer)},
+		Body:    `{"revoke_invalidates_invites":false}`,
+	})
+	h.requireProblem(refused, apierr.CodeForbidden)
+	require.NotEmpty(t, refused.Problem.Errors)
+	require.Equal(t, "body.revoke_invalidates_invites", refused.Problem.Errors[0].Location)
+
+	// Refused before anything was written: the mitigation is still on.
+	unchanged := h.do(request{
+		Method: http.MethodGet, Path: circlePath(mine),
+		Token: h.seedToken(officer, authz.ScopeCircleRead),
+	})
+	var view api.CircleResponse
+	require.NoError(t, json.Unmarshal([]byte(unchanged.Body), &view))
+	require.True(t, view.RevokeInvalidatesInvites)
+
+	// An owner holds the security key and may turn it off.
+	allowed := h.do(request{
+		Method: http.MethodPatch, Path: circlePath(mine), Session: h.session(owner, true),
+		Headers: map[string]string{api.IfMatchHeader: h.circleETag(mine, owner)},
+		Body:    `{"revoke_invalidates_invites":false}`,
+	})
+	require.Equal(t, http.StatusOK, allowed.Status, allowed.Body)
+	var updated api.CircleResponse
+	require.NoError(t, json.Unmarshal([]byte(allowed.Body), &updated))
+	require.False(t, updated.RevokeInvalidatesInvites)
+
+	// The catalogue is what makes the split true, so it is asserted rather than assumed: an
+	// officer holds the manage key and not the security one, and an owner holds both.
+	require.True(t, authz.RolePermissions(authz.RoleOfficer).Has(authz.PermissionCircleManage))
+	require.False(t,
+		authz.RolePermissions(authz.RoleOfficer).Has(authz.PermissionCircleSecurityManage))
+	require.True(t,
+		authz.RolePermissions(authz.RoleOwner).Has(authz.PermissionCircleSecurityManage))
+}
+
+// Sending the field with the value it already has is still a change of the field, and is still
+// refused. A check that only fired when the value moved would let an officer discover the current
+// setting by watching which requests succeed, and would read as "you may set it to what it is",
+// which is not a rule anybody would predict.
+func TestUpdateCircle_RevokeInvalidatesInvites_IsRefusedEvenWhenItChangesNothing(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	mine := h.seedCircle("Mine")
+	officer := h.seedMember(mine, authz.RoleOfficer)
+
+	got := h.do(request{
+		Method: http.MethodPatch, Path: circlePath(mine), Session: h.session(officer, true),
+		Headers: map[string]string{api.IfMatchHeader: h.circleETag(mine, officer)},
+		Body:    `{"revoke_invalidates_invites":true}`,
+	})
+	h.requireProblem(got, apierr.CodeForbidden)
+}
