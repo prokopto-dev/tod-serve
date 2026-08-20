@@ -592,3 +592,50 @@ func TestAuthenticate_ANonMember_StillGets404_EvenWhenTheProviderIsAlsoWrong(t *
 	require.True(t, apierr.HasCode(err, apierr.CodeNotFound),
 		"the provider error leaked a circle's existence to a stranger; got %v", err)
 }
+
+// A deleted circle answers `/sessions` exactly as a circle this identity is not in does, and the
+// check is deliberate rather than a side effect of rendering the response.
+//
+// It does fall out of rendering today — `finish` reads the circle, that read carries
+// `deleted_at IS NULL`, and the transaction rolls back — but a refactor that stopped rendering the
+// circle would silently start minting tokens for circles that no longer exist. Those tokens would
+// be refused on their next request by `internal/auth`, so the damage would be a client handed a
+// 200 and a credential that does not work, which is the confident mistake rather than an outage.
+func TestAuthenticate_IntoADeletedCircle_IsNotFoundAndMintsNothing(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	view, providerID := f.discordCircle("Riot Blue", "", nil)
+	owner, err := f.members.Join(t.Context(), membership.JoinRequest{
+		Code: string(f.ownerGrant(view)), ProviderKey: "discord",
+		Credential: identity.Credential{
+			Kind:   identity.CredentialProviderTicket,
+			Ticket: f.ticket(providerID, "snowflake-1", "Tankguy", discord.GuildFacts{}),
+		},
+		IdempotencyKey: "join",
+	})
+	require.NoError(t, err)
+
+	before, err := f.store.Queries().ListAPITokensForMembership(
+		t.Context(), owner.Membership.ID.String())
+	require.NoError(t, err)
+
+	_, err = f.circles.Delete(t.Context(), view.ID, owner.Membership.ID)
+	require.NoError(t, err)
+
+	_, err = f.members.Authenticate(t.Context(), membership.AuthenticateRequest{
+		CircleID: view.ID, ProviderKey: "discord",
+		Credential: identity.Credential{
+			Kind:   identity.CredentialProviderTicket,
+			Ticket: f.ticket(providerID, "snowflake-1", "Tankguy", discord.GuildFacts{}),
+		},
+		IdempotencyKey: "sessions",
+	})
+	require.True(t, apierr.HasCode(err, apierr.CodeNotFound), "got %v", err)
+
+	// And nothing was minted. A rolled-back transaction is the difference between a refusal and a
+	// credential nobody can use, and it is worth asserting rather than assuming.
+	after, err := f.store.Queries().ListAPITokensForMembership(
+		t.Context(), owner.Membership.ID.String())
+	require.NoError(t, err)
+	require.Len(t, after, len(before), "a token was minted for a deleted circle")
+}
