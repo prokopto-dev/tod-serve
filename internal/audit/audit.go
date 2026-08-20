@@ -41,6 +41,10 @@ const (
 	ActionInvitesRevoked      Action = "invite.revoked_in_bulk"
 	ActionOwnerGrantRedeemed  Action = "owner_grant.redeemed"
 	ActionTokenMinted         Action = "token.minted"
+	// A circle overriding a respawn window changes every board in that circle and every ToD
+	// derived after it, so it is a thing that happened to the circle and not a preference.
+	ActionTimerOverrideSet     Action = "timer_override.set"
+	ActionTimerOverrideCleared Action = "timer_override.cleared"
 )
 
 // The entity types an entry names. They are constants because an audit log read six months later
@@ -49,6 +53,10 @@ const (
 	EntityMembership = "membership"
 	EntityInvite     = "invite"
 	EntityCircle     = "circle"
+	// EntityRaidTarget names the target an override is about. The target itself is instance-wide
+	// and cannot be audited here — `audit_log.circle_id` is NOT NULL — so the entry describes the
+	// circle's decision about the target, which is the part a circle owns.
+	EntityRaidTarget = "raid_target"
 )
 
 // The detail keys that appear on more than one action, for the same reason.

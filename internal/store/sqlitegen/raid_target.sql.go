@@ -115,6 +115,49 @@ func (q *Queries) GetRaidTargetByNameNorm(ctx context.Context, nameNorm string) 
 	return i, err
 }
 
+const listAllRaidTargets = `-- name: ListAllRaidTargets :many
+SELECT id, name, name_norm, zone, zone_norm, expansion, category, is_quake_target, state, created_at, updated_at FROM raid_target ORDER BY name_norm
+`
+
+// Every target, retired ones included. The resolve ladder needs the retired rows so a backdated
+// report can still name a target by its exact name, and the catalogue is tens of rows, not tens of
+// thousands, so it is read whole rather than matched with a LIKE that would be a second
+// normalisation path beside core.Normalise.
+func (q *Queries) ListAllRaidTargets(ctx context.Context) ([]RaidTarget, error) {
+	rows, err := q.db.QueryContext(ctx, listAllRaidTargets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RaidTarget{}
+	for rows.Next() {
+		var i RaidTarget
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.NameNorm,
+			&i.Zone,
+			&i.ZoneNorm,
+			&i.Expansion,
+			&i.Category,
+			&i.IsQuakeTarget,
+			&i.State,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRaidTargets = `-- name: ListRaidTargets :many
 SELECT id, name, name_norm, zone, zone_norm, expansion, category, is_quake_target, state, created_at, updated_at FROM raid_target WHERE state = ?1 ORDER BY name_norm
 `
