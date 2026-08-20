@@ -457,3 +457,10 @@ func (r *sliceReader) Read(p []byte) (int, error) {
 
 // advance moves the fixture clock, for the tests that need time to pass.
 func (h *harness) advance(d time.Duration) { h.clock.Advance(d) }
+
+// seedMemberIn writes a membership in a circle the fixture did not create, for the tests that build
+// a circle through the real service rather than through seedCircle.
+func (h *harness) seedMemberIn(circleID core.CircleID, role authz.Role) core.MembershipID {
+	h.t.Helper()
+	return h.seedMember(circleID, role)
+}

@@ -12,8 +12,10 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/api"
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
+	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 )
 
 func invitesPath(id core.CircleID) string { return circlePath(id) + "/invites" }
@@ -279,4 +281,63 @@ func TestRevokeInvite_NeedsASteppedUpSession(t *testing.T) {
 		Body: `{"code":"` + string(minted.Code) + `"}`,
 	})
 	h.requireProblem(preview, apierr.CodeInviteRevoked)
+}
+
+// The `local` one-use ceiling, exercised through the EDGE rather than through the service.
+//
+// `internal/invite` is told whether the circle accepts an unverifiable provider; it does not look.
+// So the service-level test passes that flag itself and cannot catch a handler that stops setting
+// it — the ceiling would silently stop applying while every invite test stayed green. This is the
+// test that fails when the one line computing it goes away.
+//
+// The ceiling exists because a `local` identity has no credential to re-present: `POST /sessions`
+// cannot work for one, so every lost token becomes a new invite, and invite hygiene degrades until
+// somebody leaves a 30-day 50-use invite lying around — the same hole weak revocation opens, from
+// the other side.
+func TestCreateInvite_IntoACircleAcceptingLocal_IsClampedToOneUseByTheHandler(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	// A circle that accepts `local`, built the way `tod-serve circle create --accept-local` builds
+	// one — an owner reaching for the weak provider deliberately.
+	view, err := h.circles.Create(h.t.Context(), circle.CreateRequest{
+		Name: "Weak", Server: core.Server(schemaenum.ServerBlue),
+	})
+	require.NoError(t, err)
+	_, err = h.circles.SetProviders(h.t.Context(), view.ID, circle.SetProvidersRequest{
+		Providers:                 []circle.AcceptedProvider{{Key: h.seedProviderKey()}},
+		AcknowledgeWeakRevocation: true,
+	})
+	require.NoError(t, err)
+
+	officer := h.seedMemberIn(view.ID, authz.RoleOfficer)
+	got := h.do(request{
+		Method: http.MethodPost, Path: invitesPath(view.ID), Session: h.session(officer, true),
+		Headers: map[string]string{api.IdempotencyKeyHeader: "mint"},
+		Body:    `{"max_uses":25}`,
+	})
+	require.Equal(t, http.StatusOK, got.Status, got.Body)
+
+	var minted api.MintedInviteResponse
+	require.NoError(t, json.Unmarshal([]byte(got.Body), &minted))
+	require.Equal(t, 1, minted.MaxUses,
+		"the local ceiling did not reach the mint; the handler is not computing it")
+	require.Equal(t, invite.CappedByWeakProvider, minted.CappedBy,
+		"a clamped request must say which rule narrowed it")
+
+	// And a circle that accepts nothing weak is NOT clamped, so the test above is failing for the
+	// right reason rather than because everything is clamped.
+	durable := h.seedCircle("Durable")
+	durableOfficer := h.seedMemberIn(durable, authz.RoleOfficer)
+	unclamped := h.do(request{
+		Method: http.MethodPost, Path: invitesPath(durable),
+		Session: h.session(durableOfficer, true),
+		Headers: map[string]string{api.IdempotencyKeyHeader: "mint"},
+		Body:    `{"max_uses":25}`,
+	})
+	require.Equal(t, http.StatusOK, unclamped.Status, unclamped.Body)
+	var other api.MintedInviteResponse
+	require.NoError(t, json.Unmarshal([]byte(unclamped.Body), &other))
+	require.Equal(t, 25, other.MaxUses)
+	require.Empty(t, other.CappedBy)
 }
