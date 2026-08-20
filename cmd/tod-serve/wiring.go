@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/prokopto-dev/tod-serve/internal/auth"
+	"github.com/prokopto-dev/tod-serve/internal/catalogue"
 	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
@@ -23,17 +24,18 @@ import (
 // services is everything the binary wires. It exists so that the wiring is one function a test can
 // call, rather than a sequence repeated in every verb.
 type services struct {
-	store    *store.DB
-	clock    clock.Clock
-	ids      *core.Generator
-	log      *slog.Logger
-	minter   *auth.Minter
-	codec    *auth.SessionCodec
-	authn    *auth.Authenticator
-	identity *identity.Service
-	circles  *circle.Service
-	invites  *invite.Service
-	members  *membership.Service
+	store     *store.DB
+	clock     clock.Clock
+	ids       *core.Generator
+	log       *slog.Logger
+	minter    *auth.Minter
+	codec     *auth.SessionCodec
+	authn     *auth.Authenticator
+	identity  *identity.Service
+	circles   *circle.Service
+	invites   *invite.Service
+	members   *membership.Service
+	catalogue *catalogue.Service
 }
 
 // identityConfig builds the configuration `identity.New` is given.
@@ -72,19 +74,25 @@ func identityConfig(
 // dataServices wires the half of the domain that needs no credential material: circles, invites,
 // and the store under them. `init`, `circle create` and `doctor` use it.
 func dataServices(db *store.DB, clk clock.Clock, ids *core.Generator, log *slog.Logger) (
-	*circle.Service, *invite.Service, error,
+	*circle.Service, *invite.Service, *catalogue.Service, error,
 ) {
 	circles, err := circle.New(circle.Config{Store: db, Clock: clk, IDs: ids, Log: log})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	invites, err := invite.New(invite.Config{
 		Store: db, Clock: clk, IDs: ids, Entropy: rand.Reader, Log: log,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return circles, invites, nil
+	// The catalogue takes no entropy source: it mints ULIDs through the shared generator and holds
+	// no secret of its own. A raid target's id is not a credential.
+	catalogues, err := catalogue.New(catalogue.Config{Store: db, Clock: clk, IDs: ids, Log: log})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return circles, invites, catalogues, nil
 }
 
 // wire builds every service the API needs.
@@ -132,7 +140,7 @@ func wire(
 		return nil, err
 	}
 
-	circles, invites, err := dataServices(db, clk, ids, log)
+	circles, invites, catalogues, err := dataServices(db, clk, ids, log)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +154,8 @@ func wire(
 
 	return &services{
 		store: db, clock: clk, ids: ids, log: log, minter: minter, codec: codec,
-		authn: authn, identity: identities, circles: circles, invites: invites, members: members,
+		authn: authn, identity: identities, circles: circles, invites: invites,
+		members: members, catalogue: catalogues,
 	}, nil
 }
 

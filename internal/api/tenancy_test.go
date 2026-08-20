@@ -18,8 +18,8 @@ import (
 //
 // **It is PARTIALLY load-bearing, and the honest statement of that is [uncoveredCircleRoutes].**
 // It walks the route registry rather than a hand-written list, so a circle-scoped route added
-// without coverage is a red test the moment its handler lands. The circles, members and invites
-// handlers are here; the ToD, quake, audit, event and timer-override handlers are not, and every
+// without coverage is a red test the moment its handler lands. The circles, members, invites and
+// timer-override handlers are here; the ToD, quake, audit and event handlers are not, and every
 // one of them is named below with the milestone that owns it. A green tick over a partial route
 // set, reported as "the tenancy gate passes", is exactly the failure this repository is built
 // against — so the count is logged and the remainder is enumerated in BOTH directions.
@@ -110,10 +110,9 @@ func uncoveredCircleRoutes() coverageGap {
 		api.OpListQuakes:       "Phase 2 (internal/tod)",
 		api.OpListCircleAudit:  "Phase 2 — the rows are already written; this is the read side",
 
-		// Phase 3 — the raid-target catalogue and its per-circle overrides.
-		api.OpListCircleTimerOverrides:  "Phase 3 (catalogue)",
-		api.OpPutCircleTimerOverride:    "Phase 3 (catalogue)",
-		api.OpDeleteCircleTimerOverride: "Phase 3 (catalogue)",
+		// Phase 3's three timer-override operations were here and are now DRIVEN: internal/catalogue
+		// landed their handlers, and the loop above picked them up without anybody adding them to a
+		// list. That is the property this test is built for.
 
 		// Phase 6 — realtime, moved out of Phase 4 deliberately (see ROADMAP.md).
 		api.OpSubscribeCircleEvent: "Phase 6 (internal/events)",

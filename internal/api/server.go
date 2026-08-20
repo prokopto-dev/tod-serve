@@ -12,6 +12,7 @@ import (
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/auth"
+	"github.com/prokopto-dev/tod-serve/internal/catalogue"
 	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
@@ -60,6 +61,8 @@ type Config struct {
 	Members    *membership.Service
 	Invites    *invite.Service
 	Identities *identity.Service
+	// Catalogue owns raid-target identity, the per-server timers and the per-circle overrides.
+	Catalogue *catalogue.Service
 	// Clock is the only reader of the wall clock.
 	Clock clock.Clock
 	// Log is where problems go. Nothing secret is ever written to it.
@@ -92,6 +95,8 @@ func (c Config) validate() error {
 		return errors.New("api config: invite service is nil")
 	case c.Identities == nil:
 		return errors.New("api config: identity service is nil")
+	case c.Catalogue == nil:
+		return errors.New("api config: catalogue service is nil")
 	case c.Clock == nil:
 		return errors.New("api config: clock is nil")
 	case c.Log == nil:
@@ -278,6 +283,7 @@ func (s *Server) registerAll() error {
 		s.registerCircles(),
 		s.registerMembers(),
 		s.registerInvites(),
+		s.registerCatalogue(),
 		s.registerJoin(),
 		s.registerHealth(),
 		s.registerMetrics(),

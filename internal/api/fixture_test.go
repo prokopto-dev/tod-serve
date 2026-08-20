@@ -18,6 +18,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/auth"
 	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/catalogue"
 	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
@@ -47,18 +48,19 @@ const (
 // keyed on `(membership, key)` — are rules about rows, and a mock would let every one of them pass
 // while the schema said otherwise.
 type harness struct {
-	t        *testing.T
-	server   *api.Server
-	store    *store.DB
-	clock    *clock.Test
-	ids      *core.Generator
-	minter   *auth.Minter
-	codec    *auth.SessionCodec
-	handler  http.Handler
-	provider core.IdentityProviderID
-	circles  *circle.Service
-	invites  *invite.Service
-	members  *membership.Service
+	t         *testing.T
+	server    *api.Server
+	store     *store.DB
+	clock     *clock.Test
+	ids       *core.Generator
+	minter    *auth.Minter
+	codec     *auth.SessionCodec
+	handler   http.Handler
+	provider  core.IdentityProviderID
+	circles   *circle.Service
+	invites   *invite.Service
+	members   *membership.Service
+	catalogue *catalogue.Service
 }
 
 func newHarness(t *testing.T) *harness {
@@ -89,6 +91,7 @@ func newHarness(t *testing.T) *harness {
 		Members:    svc.members,
 		Invites:    svc.invites,
 		Identities: svc.identities,
+		Catalogue:  svc.catalogue,
 		Clock:      clk,
 		Log:        log,
 		IDs:        ids,
@@ -104,6 +107,7 @@ func newHarness(t *testing.T) *harness {
 		t: t, server: server, store: db, clock: clk, ids: ids,
 		minter: minter, codec: codec, handler: server.Handler(),
 		circles: svc.circles, invites: svc.invites, members: svc.members,
+		catalogue: svc.catalogue,
 	}
 }
 
@@ -115,6 +119,7 @@ type wiredServices struct {
 	invites    *invite.Service
 	members    *membership.Service
 	identities *identity.Service
+	catalogue  *catalogue.Service
 }
 
 func newServices(
@@ -144,8 +149,16 @@ func newServices(
 		Log: log, Entropy: rand.Reader,
 	})
 	require.NoError(t, err)
+
+	// The catalogue is wired and left EMPTY. That is the default state of this whole suite on
+	// purpose: an instance with no targets and no timers is what an operator's VPS is on day one,
+	// so every test that does not deliberately seed one is exercising it.
+	catalogues, err := catalogue.New(catalogue.Config{Store: db, Clock: clk, IDs: ids, Log: log})
+	require.NoError(t, err)
+
 	return wiredServices{
 		circles: circles, invites: invites, members: members, identities: identities,
+		catalogue: catalogues,
 	}
 }
 
@@ -168,6 +181,7 @@ func newHarnessWithoutMetrics(t *testing.T) *harness {
 		Members:             svc.members,
 		Invites:             svc.invites,
 		Identities:          svc.identities,
+		Catalogue:           svc.catalogue,
 		Clock:               h.clock,
 		Log:                 log,
 		IDs:                 h.ids,

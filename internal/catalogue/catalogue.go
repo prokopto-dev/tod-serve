@@ -116,15 +116,22 @@ type TargetTimer struct {
 	UpdatedAt core.Micros `json:"updated_at"`
 }
 
-// CatalogueEntry is one row of `listRaidTargets`: a target, and the timer for the server the
-// caller asked about.
+// CatalogueEntry is one row of `listRaidTargets`: a target, and the INSTANCE-WIDE timer for the
+// server the caller asked about.
 //
-// Timer is null when the caller named no server AND when the instance holds no timer for that
-// target on that server — which is every row on an instance nobody has seeded, and is the honest
-// answer rather than an invented window.
+// The field is called CatalogueTimer and not Timer on purpose, and this is the sharpest edge in
+// this package. It is the catalogue's number with no circle override applied, so handing it to
+// [consensus.Derive] would silently ignore every override a circle has set and produce a board
+// that is confidently wrong. The type is [TargetTimer] rather than [consensus.Timer] so that
+// mistake does not compile, and the name says why before anybody reaches for a conversion.
+// [Service.ResolveTimer] is the one that answers "what window does THIS circle use".
+//
+// It is null when the caller named no server, and when the instance holds no timer for that target
+// on that server — which is every row on an instance nobody has seeded, and is the honest answer
+// rather than an invented window.
 type CatalogueEntry struct {
 	Target
-	Timer *TargetTimer `json:"timer"`
+	CatalogueTimer *TargetTimer `json:"catalogue_timer" doc:"The instance-wide timer for the requested server. NOT the circle's effective timer: a circle override sits above it"`
 }
 
 // ListFilter narrows a page of the catalogue.
@@ -267,7 +274,7 @@ func (s *Service) List(ctx context.Context, filter ListFilter) (Listing, error) 
 	for _, t := range matched {
 		entry := CatalogueEntry{Target: t}
 		if timer, ok := timers[t.ID.String()]; ok {
-			entry.Timer = &timer
+			entry.CatalogueTimer = &timer
 		}
 		page.Entries = append(page.Entries, entry)
 	}

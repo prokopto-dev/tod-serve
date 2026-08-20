@@ -39,6 +39,110 @@
         ],
         "type": "object"
       },
+      "CatalogueEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "description": "Every spelling that resolves to this target",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "catalogue_timer": {
+            "$ref": "#/components/schemas/TargetTimer",
+            "description": "The instance-wide timer for the requested server. NOT the circle's effective timer: a circle override sits above it"
+          },
+          "category": {
+            "enum": [
+              "open_world",
+              "zone_boss",
+              "planar",
+              "ntov",
+              "sleeper",
+              "key_holder"
+            ],
+            "type": "string"
+          },
+          "created_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "expansion": {
+            "enum": [
+              "classic",
+              "kunark",
+              "velious"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "description": "A ULID: 26 characters of Crockford base32, lexicographically time-ordered.",
+            "examples": [
+              "01K3TGT8N9M4X0Q7R2VB6C5D1E"
+            ],
+            "maxLength": 26,
+            "minLength": 26,
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "type": "string"
+          },
+          "is_quake_target": {
+            "description": "Whether a server-wide repop resets this target",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The canonical spelling, punctuation included",
+            "type": "string"
+          },
+          "name_norm": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "active",
+              "retired"
+            ],
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "zone": {
+            "type": "string"
+          },
+          "zone_norm": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "catalogue_timer",
+          "id",
+          "name",
+          "name_norm",
+          "zone",
+          "zone_norm",
+          "expansion",
+          "category",
+          "is_quake_target",
+          "state",
+          "aliases",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "Circle": {
         "additionalProperties": false,
         "properties": {
@@ -347,6 +451,60 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "CreateRaidTargetInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "description": "Short forms raiders type. Every one must be unique across the whole catalogue",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "category": {
+            "enum": [
+              "open_world",
+              "zone_boss",
+              "planar",
+              "ntov",
+              "sleeper",
+              "key_holder"
+            ],
+            "type": "string"
+          },
+          "expansion": {
+            "enum": [
+              "classic",
+              "kunark",
+              "velious"
+            ],
+            "type": "string"
+          },
+          "is_quake_target": {
+            "description": "Whether a server-wide repop resets this target",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The canonical spelling, punctuation included",
+            "maxLength": 120,
+            "type": "string"
+          },
+          "zone": {
+            "maxLength": 120,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "zone",
+          "expansion",
+          "category"
+        ],
         "type": "object"
       },
       "CreateServiceMemberInputBody": {
@@ -1202,6 +1360,145 @@
         ],
         "type": "object"
       },
+      "OverrideResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "cluster_epsilon_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by_membership_id": {
+            "description": "A ULID: 26 characters of Crockford base32, lexicographically time-ordered.",
+            "examples": [
+              "01K3TGT8N9M4X0Q7R2VB6C5D1E"
+            ],
+            "maxLength": 26,
+            "minLength": 26,
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "type": "string"
+          },
+          "fixed_grace_seconds": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          },
+          "target_id": {
+            "description": "A ULID: 26 characters of Crockford base32, lexicographically time-ordered.",
+            "examples": [
+              "01K3TGT8N9M4X0Q7R2VB6C5D1E"
+            ],
+            "maxLength": 26,
+            "minLength": 26,
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "type": "string"
+          },
+          "target_name": {
+            "description": "The target's canonical name, so a list of overrides is readable",
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "window_close_offset_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "window_kind": {
+            "enum": [
+              "fixed",
+              "variance",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "window_open_offset_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "as_of",
+          "target_id",
+          "target_name",
+          "window_kind",
+          "window_open_offset_seconds",
+          "window_close_offset_seconds",
+          "fixed_grace_seconds",
+          "cluster_epsilon_seconds",
+          "note",
+          "created_by_membership_id",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "PageCatalogueEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogueEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "has_more",
+          "as_of"
+        ],
+        "type": "object"
+      },
       "PageCircle": {
         "additionalProperties": false,
         "properties": {
@@ -1289,6 +1586,41 @@
           "items": {
             "items": {
               "$ref": "#/components/schemas/Member"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "has_more",
+          "as_of"
+        ],
+        "type": "object"
+      },
+      "PageTimerOverride": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TimerOverride"
             },
             "type": [
               "array",
@@ -1609,6 +1941,99 @@
         ],
         "type": "object"
       },
+      "PutCircleTimerOverrideInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "cluster_epsilon_seconds": {
+            "description": "Per-target clustering window. Null derives it",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fixed_grace_seconds": {
+            "description": "How long a fixed spawn stays in_window. Defaults to 900",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "note": {
+            "description": "Why these numbers, and who disputes them",
+            "maxLength": 500,
+            "type": "string"
+          },
+          "window_close_offset_seconds": {
+            "description": "Seconds from the ToD to the latest possible spawn. Equal to the open offset iff window_kind is fixed",
+            "format": "int64",
+            "type": "integer"
+          },
+          "window_kind": {
+            "enum": [
+              "fixed",
+              "variance",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "window_open_offset_seconds": {
+            "description": "Seconds from the ToD to the earliest possible spawn. Null iff window_kind is unknown",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "window_kind"
+        ],
+        "type": "object"
+      },
+      "PutRaidTargetTimerInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "cluster_epsilon_seconds": {
+            "description": "Per-target clustering window. Null derives it",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fixed_grace_seconds": {
+            "description": "How long a fixed spawn stays in_window. Defaults to 900",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "note": {
+            "description": "Why these numbers, and who disputes them",
+            "maxLength": 500,
+            "type": "string"
+          },
+          "source": {
+            "description": "Where these numbers came from. They are not ours and they are disputed",
+            "maxLength": 200,
+            "type": "string"
+          },
+          "window_close_offset_seconds": {
+            "description": "Seconds from the ToD to the latest possible spawn. Equal to the open offset iff window_kind is fixed",
+            "format": "int64",
+            "type": "integer"
+          },
+          "window_kind": {
+            "enum": [
+              "fixed",
+              "variance",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "window_open_offset_seconds": {
+            "description": "Seconds from the ToD to the earliest possible spawn. Null iff window_kind is unknown",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "window_kind"
+        ],
+        "type": "object"
+      },
       "RedeemInviteInputBody": {
         "additionalProperties": false,
         "properties": {
@@ -1646,6 +2071,55 @@
           "invite_code",
           "provider",
           "credential"
+        ],
+        "type": "object"
+      },
+      "ResolutionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/Target"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "match_kind": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          }
+        },
+        "required": [
+          "as_of",
+          "target",
+          "match_kind",
+          "candidates"
+        ],
+        "type": "object"
+      },
+      "ResolveRaidTargetInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "A name as somebody typed it: wrong case, missing backtick and stray whitespace are all fine",
+            "maxLength": 200,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
         ],
         "type": "object"
       },
@@ -1892,6 +2366,500 @@
         },
         "required": [
           "providers"
+        ],
+        "type": "object"
+      },
+      "Target": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "description": "Every spelling that resolves to this target",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "category": {
+            "enum": [
+              "open_world",
+              "zone_boss",
+              "planar",
+              "ntov",
+              "sleeper",
+              "key_holder"
+            ],
+            "type": "string"
+          },
+          "created_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "expansion": {
+            "enum": [
+              "classic",
+              "kunark",
+              "velious"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "description": "A ULID: 26 characters of Crockford base32, lexicographically time-ordered.",
+            "examples": [
+              "01K3TGT8N9M4X0Q7R2VB6C5D1E"
+            ],
+            "maxLength": 26,
+            "minLength": 26,
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "type": "string"
+          },
+          "is_quake_target": {
+            "description": "Whether a server-wide repop resets this target",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The canonical spelling, punctuation included",
+            "type": "string"
+          },
+          "name_norm": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "active",
+              "retired"
+            ],
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "zone": {
+            "type": "string"
+          },
+          "zone_norm": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "name_norm",
+          "zone",
+          "zone_norm",
+          "expansion",
+          "category",
+          "is_quake_target",
+          "state",
+          "aliases",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "TargetResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "description": "Every spelling that resolves to this target",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "open_world",
+              "zone_boss",
+              "planar",
+              "ntov",
+              "sleeper",
+              "key_holder"
+            ],
+            "type": "string"
+          },
+          "created_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "expansion": {
+            "enum": [
+              "classic",
+              "kunark",
+              "velious"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "description": "A ULID: 26 characters of Crockford base32, lexicographically time-ordered.",
+            "examples": [
+              "01K3TGT8N9M4X0Q7R2VB6C5D1E"
+            ],
+            "maxLength": 26,
+            "minLength": 26,
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "type": "string"
+          },
+          "is_quake_target": {
+            "description": "Whether a server-wide repop resets this target",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The canonical spelling, punctuation included",
+            "type": "string"
+          },
+          "name_norm": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "active",
+              "retired"
+            ],
+            "type": "string"
+          },
+          "timers": {
+            "items": {
+              "$ref": "#/components/schemas/TargetTimer"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "zone": {
+            "type": "string"
+          },
+          "zone_norm": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "timers",
+          "as_of",
+          "id",
+          "name",
+          "name_norm",
+          "zone",
+          "zone_norm",
+          "expansion",
+          "category",
+          "is_quake_target",
+          "state",
+          "aliases",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "TargetTimer": {
+        "additionalProperties": false,
+        "properties": {
+          "cluster_epsilon_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "fixed_grace_seconds": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          },
+          "server": {
+            "enum": [
+              "blue",
+              "green",
+              "red"
+            ],
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "window_close_offset_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "window_kind": {
+            "enum": [
+              "fixed",
+              "variance",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "window_open_offset_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "server",
+          "window_kind",
+          "window_open_offset_seconds",
+          "window_close_offset_seconds",
+          "fixed_grace_seconds",
+          "cluster_epsilon_seconds",
+          "source",
+          "note",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "TimerOverride": {
+        "additionalProperties": false,
+        "properties": {
+          "cluster_epsilon_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by_membership_id": {
+            "description": "A ULID: 26 characters of Crockford base32, lexicographically time-ordered.",
+            "examples": [
+              "01K3TGT8N9M4X0Q7R2VB6C5D1E"
+            ],
+            "maxLength": 26,
+            "minLength": 26,
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "type": "string"
+          },
+          "fixed_grace_seconds": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          },
+          "target_id": {
+            "description": "A ULID: 26 characters of Crockford base32, lexicographically time-ordered.",
+            "examples": [
+              "01K3TGT8N9M4X0Q7R2VB6C5D1E"
+            ],
+            "maxLength": 26,
+            "minLength": 26,
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "type": "string"
+          },
+          "target_name": {
+            "description": "The target's canonical name, so a list of overrides is readable",
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "window_close_offset_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "window_kind": {
+            "enum": [
+              "fixed",
+              "variance",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "window_open_offset_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "target_id",
+          "target_name",
+          "window_kind",
+          "window_open_offset_seconds",
+          "window_close_offset_seconds",
+          "fixed_grace_seconds",
+          "cluster_epsilon_seconds",
+          "note",
+          "created_by_membership_id",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "TimerResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "cluster_epsilon_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "fixed_grace_seconds": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          },
+          "server": {
+            "enum": [
+              "blue",
+              "green",
+              "red"
+            ],
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "target_id": {
+            "description": "A ULID: 26 characters of Crockford base32, lexicographically time-ordered.",
+            "examples": [
+              "01K3TGT8N9M4X0Q7R2VB6C5D1E"
+            ],
+            "maxLength": 26,
+            "minLength": 26,
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "window_close_offset_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "window_kind": {
+            "enum": [
+              "fixed",
+              "variance",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "window_open_offset_seconds": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "target_id",
+          "as_of",
+          "server",
+          "window_kind",
+          "window_open_offset_seconds",
+          "window_close_offset_seconds",
+          "fixed_grace_seconds",
+          "cluster_epsilon_seconds",
+          "source",
+          "note",
+          "created_at",
+          "updated_at"
         ],
         "type": "object"
       },
@@ -2160,6 +3128,56 @@
               "member",
               "observer"
             ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "UpdateRaidTargetInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "description": "REPLACES the alias set. Sending [] removes every alias",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "category": {
+            "enum": [
+              "open_world",
+              "zone_boss",
+              "planar",
+              "ntov",
+              "sleeper",
+              "key_holder"
+            ],
+            "type": "string"
+          },
+          "expansion": {
+            "enum": [
+              "classic",
+              "kunark",
+              "velious"
+            ],
+            "type": "string"
+          },
+          "is_quake_target": {
+            "type": "boolean"
+          },
+          "name": {
+            "maxLength": 120,
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "active",
+              "retired"
+            ],
+            "type": "string"
+          },
+          "zone": {
+            "maxLength": 120,
             "type": "string"
           }
         },
@@ -4366,6 +5384,430 @@
         "x-tod-session-only": true
       }
     },
+    "/api/v1/circles/{circle_id}/timer-overrides": {
+      "get": {
+        "operationId": "listCircleTimerOverrides",
+        "parameters": [
+          {
+            "description": "The circle",
+            "in": "path",
+            "name": "circle_id",
+            "required": true,
+            "schema": {
+              "description": "The circle",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageTimerOverride"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "The circle's timer overrides",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": true,
+        "x-tod-creates-state": false,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "circle.manage",
+              "realm": "circle",
+              "requires_step_up": true,
+              "roles": [
+                "officer",
+                "owner"
+              ],
+              "scopes": [],
+              "summary": "Rename the circle, change its settings, and set its timer overrides"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      }
+    },
+    "/api/v1/circles/{circle_id}/timer-overrides/{target_id}": {
+      "delete": {
+        "operationId": "deleteCircleTimerOverride",
+        "parameters": [
+          {
+            "description": "The circle",
+            "in": "path",
+            "name": "circle_id",
+            "required": true,
+            "schema": {
+              "description": "The circle",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The raid target",
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "description": "The raid target",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverrideResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Remove a circle's timer override",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": true,
+        "x-tod-creates-state": false,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "circle.manage",
+              "realm": "circle",
+              "requires_step_up": true,
+              "roles": [
+                "officer",
+                "owner"
+              ],
+              "scopes": [],
+              "summary": "Rename the circle, change its settings, and set its timer overrides"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      },
+      "put": {
+        "operationId": "putCircleTimerOverride",
+        "parameters": [
+          {
+            "description": "The circle",
+            "in": "path",
+            "name": "circle_id",
+            "required": true,
+            "schema": {
+              "description": "The circle",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The raid target this circle disagrees about",
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "description": "The raid target this circle disagrees about",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The ETag a previous read returned, or * to write an override that does not exist yet",
+            "in": "header",
+            "name": "If-Match",
+            "schema": {
+              "description": "The ETag a previous read returned, or * to write an override that does not exist yet",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutCircleTimerOverrideInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverrideResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition Failed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition Required"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Override one target's timer for this circle",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": true,
+        "x-tod-creates-state": false,
+        "x-tod-etag": true,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": true,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "circle.manage",
+              "realm": "circle",
+              "requires_step_up": true,
+              "roles": [
+                "officer",
+                "owner"
+              ],
+              "scopes": [],
+              "summary": "Rename the circle, change its settings, and set its timer overrides"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      }
+    },
     "/api/v1/invites/preview": {
       "post": {
         "operationId": "previewInvite",
@@ -4671,6 +6113,916 @@
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false
+      }
+    },
+    "/api/v1/raid-targets": {
+      "get": {
+        "operationId": "listRaidTargets",
+        "parameters": [
+          {
+            "description": "Fold this server's timer into each row",
+            "explode": false,
+            "in": "query",
+            "name": "server",
+            "schema": {
+              "description": "Fold this server's timer into each row",
+              "enum": [
+                "blue",
+                "green",
+                "red"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "expansion",
+            "schema": {
+              "enum": [
+                "classic",
+                "kunark",
+                "velious"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Matched case- and punctuation-insensitively",
+            "explode": false,
+            "in": "query",
+            "name": "zone",
+            "schema": {
+              "description": "Matched case- and punctuation-insensitively",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Substring of a target's name or one of its aliases",
+            "explode": false,
+            "in": "query",
+            "name": "q",
+            "schema": {
+              "description": "Substring of a target's name or one of its aliases",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Include targets the server no longer spawns",
+            "explode": false,
+            "in": "query",
+            "name": "include_retired",
+            "schema": {
+              "description": "Include targets the server no longer spawns",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Opaque cursor from a previous page's next_cursor",
+            "explode": false,
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "description": "Opaque cursor from a previous page's next_cursor",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, 1-200",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "description": "Page size, 1-200",
+              "format": "int64",
+              "maximum": 200,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageCatalogueEntry"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "patBearer": [
+              "catalogue:read"
+            ]
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "The raid-target catalogue. Instance-wide: a mob's existence is a game fact",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "catalogue.read",
+              "realm": "circle",
+              "requires_step_up": false,
+              "roles": [
+                "observer",
+                "member",
+                "officer",
+                "owner"
+              ],
+              "scopes": [
+                "catalogue:read"
+              ],
+              "summary": "Read the raid-target catalogue and resolve a target name"
+            }
+          ],
+          "requires_step_up": false
+        },
+        "x-tod-scopes": [
+          "catalogue:read"
+        ],
+        "x-tod-session-only": false
+      },
+      "post": {
+        "operationId": "createRaidTarget",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRaidTargetInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Add a raid target, for every circle on the instance",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": true,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "handler",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "catalogue.manage",
+              "realm": "instance",
+              "requires_step_up": true,
+              "roles": [],
+              "scopes": [],
+              "summary": "Add or change raid targets and their per-server timers, for every circle on the instance"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      }
+    },
+    "/api/v1/raid-targets/resolve": {
+      "post": {
+        "operationId": "resolveRaidTarget",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveRaidTargetInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolutionResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "patBearer": [
+              "catalogue:read"
+            ]
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Resolve a target name through the ladder: exact, normalised, alias, prefix, substring",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "catalogue.read",
+              "realm": "circle",
+              "requires_step_up": false,
+              "roles": [
+                "observer",
+                "member",
+                "officer",
+                "owner"
+              ],
+              "scopes": [
+                "catalogue:read"
+              ],
+              "summary": "Read the raid-target catalogue and resolve a target name"
+            }
+          ],
+          "requires_step_up": false
+        },
+        "x-tod-scopes": [
+          "catalogue:read"
+        ],
+        "x-tod-session-only": false
+      }
+    },
+    "/api/v1/raid-targets/{target_id}": {
+      "get": {
+        "operationId": "getRaidTarget",
+        "parameters": [
+          {
+            "description": "The raid target",
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "description": "The raid target",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Revalidate a cached copy",
+            "in": "header",
+            "name": "If-None-Match",
+            "schema": {
+              "description": "Revalidate a cached copy",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "patBearer": [
+              "catalogue:read"
+            ]
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "One raid target",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": true,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "catalogue.read",
+              "realm": "circle",
+              "requires_step_up": false,
+              "roles": [
+                "observer",
+                "member",
+                "officer",
+                "owner"
+              ],
+              "scopes": [
+                "catalogue:read"
+              ],
+              "summary": "Read the raid-target catalogue and resolve a target name"
+            }
+          ],
+          "requires_step_up": false
+        },
+        "x-tod-scopes": [
+          "catalogue:read"
+        ],
+        "x-tod-session-only": false
+      },
+      "patch": {
+        "operationId": "updateRaidTarget",
+        "parameters": [
+          {
+            "description": "The raid target",
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "description": "The raid target",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The ETag a previous read returned",
+            "in": "header",
+            "name": "If-Match",
+            "schema": {
+              "description": "The ETag a previous read returned",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRaidTargetInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition Failed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition Required"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Change a raid target",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": true,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": true,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "catalogue.manage",
+              "realm": "instance",
+              "requires_step_up": true,
+              "roles": [],
+              "scopes": [],
+              "summary": "Add or change raid targets and their per-server timers, for every circle on the instance"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      }
+    },
+    "/api/v1/raid-targets/{target_id}/timers/{server}": {
+      "put": {
+        "operationId": "putRaidTargetTimer",
+        "parameters": [
+          {
+            "description": "The raid target",
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "description": "The raid target",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The server this window is for",
+            "in": "path",
+            "name": "server",
+            "required": true,
+            "schema": {
+              "description": "The server this window is for",
+              "enum": [
+                "blue",
+                "green",
+                "red"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "The ETag a previous read returned, or * to write a timer that does not exist yet",
+            "in": "header",
+            "name": "If-Match",
+            "schema": {
+              "description": "The ETag a previous read returned, or * to write a timer that does not exist yet",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutRaidTargetTimerInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimerResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition Failed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition Required"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Set a target's respawn timer for one server",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": true,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": true,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "catalogue.manage",
+              "realm": "instance",
+              "requires_step_up": true,
+              "roles": [],
+              "scopes": [],
+              "summary": "Add or change raid targets and their per-server timers, for every circle on the instance"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
       }
     },
     "/api/v1/sessions": {

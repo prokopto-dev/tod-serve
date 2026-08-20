@@ -83,6 +83,7 @@ func newServeCommand() *cobra.Command {
 				Members:    svc.members,
 				Invites:    svc.invites,
 				Identities: svc.identity,
+				Catalogue:  svc.catalogue,
 				Clock:      svc.clock,
 				Log:        log,
 				IDs:        svc.ids,
