@@ -35,9 +35,19 @@ import (
 // **The fix is the one `audit.Append` already uses: take the writing transaction's query set, so
 // the derived row is written or rolled back with the change that caused it.** Doing that means
 // threading a `*sqlitegen.Queries` through the projection's `recompute`, `storeOrDrop`,
-// `revokedReporters` and `catalogue.ResolveTimer`, which is a refactor of a package this one does
-// not contain. It is named here rather than left implied, and it belongs to whoever wires
-// `internal/projection` — the same edit list [UnprojectedTimers] carries.
+// `revokedReporters` and `catalogue.ResolveTimer`.
+//
+// **It is still open, deliberately, and it is not a small edit.** The catalogue's write methods own
+// their own transactions — `PutOverride` opens one and appends the audit row inside it — so
+// threading the invalidation into that transaction means either the catalogue calling the
+// projection, which inverts a dependency that currently runs one way and which this port exists to
+// avoid, or the handler owning the transaction and passing it down through both packages, which is
+// a restructure of every catalogue write. Neither is a review-time change.
+//
+// What is closed: every push is idempotent and its FAILURE fails the request, so a retry converges
+// and no caller is told success over a stale board. What is left is the crashed process, whose
+// backstop is the nightly verify job — bounded, recorded as `TimerPushIsNotTransactional` in
+// docs/concepts/invariants.md, and owned rather than implied.
 type TimerInvalidator interface {
 	// OnTimerChange recomputes one target for ONE circle and records `timer_change` as the
 	// reason. It is what a circle-scoped override write calls.

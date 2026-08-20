@@ -159,8 +159,15 @@ func newSeedTimersCommand() *cobra.Command {
 			}
 			// The timers are already written and the failure is reported rather than swallowed: a
 			// seed that half-invalidated must be LOUD, because the alternative is a run that says
-			// "61 timers written" while some boards go on serving the old window. Both writes are
-			// idempotent, so re-running the same seed converges.
+			// "61 timers written" while some boards go on serving the old window.
+			//
+			// The invariant is the one the timer ROUTES hold: after a zero exit, the projection has
+			// been told about every window this run moved. It is deliberately not "a retry
+			// converges" — that reasoning is true here, because a seed is an upsert and a re-run
+			// does reach the push, and it was false for `deleteCircleTimerOverride`, where the row
+			// is gone and the retry answers before it pushes. A remedy that happens to work is not
+			// the same as an invariant, so this reports the gap and names the command that closes
+			// it outright.
 			return err
 		},
 	}
@@ -238,8 +245,8 @@ func invalidateSeededTimers(
 	}
 	if len(failures) > 0 {
 		return refreshed, fmt.Errorf(
-			"seed timers wrote every window, but %d of %d could not be recomputed; "+
-				"re-run the same seed to converge: %w",
+			"seed timers wrote every window, but %d of %d could not be recomputed, so those "+
+				"boards are serving the old window; run `tod-serve rebuild-states` to fix it: %w",
 			len(failures), len(changed), errors.Join(failures...))
 	}
 	return refreshed, nil

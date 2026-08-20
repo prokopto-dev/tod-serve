@@ -245,7 +245,8 @@ func TestSeedTimers_RecomputesEveryBoardTheWindowsMoved(t *testing.T) {
 	_, err := captureCLI(t, "seed", "targets", "--db", db.Path())
 	require.NoError(t, err)
 
-	circleID, targetID, died := seedACircleWithAToD(t, db, "Naggy")
+	circleID, targets, died := seedACircleWithAToD(t, db, "Naggy", "Vox")
+	targetID := targets[0]
 
 	// Before the seed there is no timer anywhere, so the cached board says `no_timer`.
 	before, err := db.Queries().GetTargetState(t.Context(), sqlitegen.GetTargetStateParams{
@@ -261,15 +262,29 @@ func TestSeedTimers_RecomputesEveryBoardTheWindowsMoved(t *testing.T) {
 	  "source": "`+testSeedSource+`",
 	  "timers": [
 	    {"target": "Naggy", "server": "blue", "window_kind": "variance",
+	     "window_open_offset_seconds": 14400, "window_close_offset_seconds": 28800},
+	    {"target": "Vox", "server": "blue", "window_kind": "variance",
 	     "window_open_offset_seconds": 14400, "window_close_offset_seconds": 28800}
 	  ]
 	}`)
 
 	out, err := captureCLI(t, "seed", "timers", "--db", db.Path(), "--file", path)
 	require.NoError(t, err)
-	require.Contains(t, out, "1 timers written")
-	require.Contains(t, out, "1 of 1 moved windows recomputed",
+	require.Contains(t, out, "2 timers written")
+	// EVERY window this run moved, not merely one of them. The invariant the timer routes hold is
+	// "after a non-5xx answer the projection has been told", and the zero exit above is this
+	// command's version of that answer — so a run that recomputed 1 of 2 must not reach it.
+	require.Contains(t, out, "2 of 2 moved windows recomputed",
 		"a seed that wrote windows and invalidated nothing leaves every board on that server stale")
+
+	for _, id := range targets {
+		row, stateErr := db.Queries().GetTargetState(t.Context(), sqlitegen.GetTargetStateParams{
+			CircleID: circleID, TargetID: id,
+		})
+		require.NoError(t, stateErr)
+		require.NotEqual(t, schemaenum.TargetStateStatusNoTimer, row.Status,
+			"every board the seed moved was recomputed, not just the first")
+	}
 
 	after, err := db.Queries().GetTargetState(t.Context(), sqlitegen.GetTargetStateParams{
 		CircleID: circleID, TargetID: targetID,
@@ -287,10 +302,12 @@ func TestSeedTimers_RecomputesEveryBoardTheWindowsMoved(t *testing.T) {
 		"and says why, because nothing was reported")
 }
 
-// seedACircleWithAToD builds one circle with one member and one kill report about `targetName`,
-// then derives its board once so there is a cached row for the seed to move. It returns the
-// circle id, the target id and the `died_at` the window is measured from.
-func seedACircleWithAToD(t *testing.T, db *store.DB, targetName string) (string, string, int64) {
+// seedACircleWithAToD builds one circle with one member and a kill report about each of
+// `targetNames`, then derives its board once so there are cached rows for the seed to move. It
+// returns the circle id, the target ids and the `died_at` the windows are measured from.
+func seedACircleWithAToD(
+	t *testing.T, db *store.DB, targetNames ...string,
+) (string, []string, int64) {
 	t.Helper()
 	ctx := t.Context()
 	q := db.Queries()
@@ -327,19 +344,26 @@ func seedACircleWithAToD(t *testing.T, db *store.DB, targetName string) (string,
 	})
 	require.NoError(t, err)
 
-	target, err := q.GetRaidTargetByAliasNorm(ctx, core.Normalise(targetName))
-	require.NoError(t, err)
-	_, err = q.CreateTodReport(ctx, sqlitegen.CreateTodReportParams{
-		ID: reportID, CircleID: circleID, TargetID: target.ID,
-		Kind: schemaenum.TodReportKindKill, DiedAt: died, ReportedAt: at,
-		ReporterMembershipID: memberID, Source: schemaenum.TodReportSourceLogLine,
-		SelfConfidence: schemaenum.TodReportSelfConfidenceCertain,
-	})
-	require.NoError(t, err)
+	targetIDs := make([]string, 0, len(targetNames))
+	for i, name := range targetNames {
+		target, lookupErr := q.GetRaidTargetByAliasNorm(ctx, core.Normalise(name))
+		require.NoError(t, lookupErr)
+		// The report ids differ only in their last character, which is enough for a fixture and
+		// keeps them readable beside each other in a failure.
+		_, err = q.CreateTodReport(ctx, sqlitegen.CreateTodReportParams{
+			ID:       reportID[:len(reportID)-1] + string(rune('A'+i)),
+			CircleID: circleID, TargetID: target.ID,
+			Kind: schemaenum.TodReportKindKill, DiedAt: died, ReportedAt: at,
+			ReporterMembershipID: memberID, Source: schemaenum.TodReportSourceLogLine,
+			SelfConfidence: schemaenum.TodReportSelfConfidenceCertain,
+		})
+		require.NoError(t, err)
+		targetIDs = append(targetIDs, target.ID)
+	}
 
-	// Derive once, so the seed has a cached row to move rather than an empty table that would
-	// make this test pass for the wrong reason.
+	// Derive once, so the seed has cached rows to move rather than an empty table that would make
+	// this test pass for the wrong reason.
 	_, err = captureCLI(t, "rebuild-states", "--db", db.Path())
 	require.NoError(t, err)
-	return circleID, target.ID, died
+	return circleID, targetIDs, died
 }
