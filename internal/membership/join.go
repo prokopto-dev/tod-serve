@@ -124,8 +124,21 @@ func (s *Service) Join(ctx context.Context, req JoinRequest) (Joined, error) {
 			// checking is trusting a value read before a network round trip.
 			return apierr.New(apierr.CodeInviteInvalid, "no such invite")
 		}
-		if _, txErr = circle.Accepted(ctx, q, live.CircleID, req.ProviderKey); txErr != nil {
+		// Re-read under the write lock and re-evaluate the gate against THAT row. The gate
+		// checked before verification is a snapshot, and an officer can add or tighten one while
+		// a credential is being verified — a window of one provider round trip on the
+		// `bearer_token` path. A 120-second-old snapshot must never outrank the live row, which
+		// is the same reason `target_state_cache` is not authority.
+		//
+		// It fails closed, and that is the point: the facts are frozen on the ticket, so a gate
+		// tightened mid-flow finds no member object for its guild and an absent fact rejects.
+		liveProvider, txErr := circle.Accepted(ctx, q, live.CircleID, req.ProviderKey)
+		if txErr != nil {
 			return txErr
+		}
+		if txErr = identity.EvaluateGuildGate(
+			liveProvider.Gate(), verified.GuildFacts); txErr != nil {
+			return fromIdentity(txErr)
 		}
 
 		identityID, txErr := s.upsertIdentity(ctx, q, verified, now)
@@ -290,6 +303,17 @@ func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (Jo
 		// be the confident mistake, and it is the one this ordering exists to prevent.
 		if acceptErr != nil {
 			return acceptErr
+		}
+		// The same re-read as `/join`, for the same reason: the gate evaluated before the
+		// credential verified is a snapshot, and this one is the live row. Re-authenticating on a
+		// new device is exactly the moment a gate tightened yesterday has to bite.
+		liveProvider, txErr := circle.Accepted(ctx, q, req.CircleID, req.ProviderKey)
+		if txErr != nil {
+			return txErr
+		}
+		if txErr = identity.EvaluateGuildGate(
+			liveProvider.Gate(), verified.GuildFacts); txErr != nil {
+			return fromIdentity(txErr)
 		}
 
 		membershipID, txErr := core.ParseID[core.Membership](existing.ID)
