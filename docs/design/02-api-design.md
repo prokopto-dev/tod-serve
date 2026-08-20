@@ -287,6 +287,16 @@ rung of the ladder above, over names **and** aliases, so a search box and a plug
 about what a name matches. `getRaidTarget` returns `timers[]` — every per-server window the
 instance holds, which is `[]` on an unseeded one.
 
+`putCircleTimerOverride` both creates and replaces, and the two need different preconditions. A
+create has no prior tag to send, so `If-Match: *` is borrowed as "and it must NOT exist"; a replace
+has one, so nothing but that tag will do and `*` is refused with `412`. Honouring the wildcard in
+both directions would let an officer overwrite another officer's update having read nothing.
+
+Every operation that moves a respawn window — `putRaidTargetTimer`, `putCircleTimerOverride`,
+`deleteCircleTimerOverride`, deletion included, because falling back to the catalogue moves the
+window too — pushes the change at the projection. It is the one `change_reason` the report log
+cannot show: nothing is appended when a timer moves.
+
 The catalogue timer folded into a `listRaidTargets?server=` row is the **instance-wide** one, named
 `catalogue_timer` rather than `timer` deliberately: a circle override sits above it, and only the
 board's own resolution applies that. Feeding this field to the derivation would ignore every

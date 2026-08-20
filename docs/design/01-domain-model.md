@@ -179,6 +179,13 @@ because these numbers are community-derived and genuinely disputed, and "our gui
 two years and the wiki is wrong" is a real thing an officer will say. Resolution order: circle
 override → catalogue timer → `unknown`.
 
+Names and aliases share **one namespace**: a spelling belongs to one target, whether it is that
+target's name or an alias of it. Neither unique index can say so — SQLite has no constraint that
+spans two tables — so `000005_raid_target_name_namespace.sql` enforces it with triggers. Without
+it an alias can be hung on a different target, and the resolve ladder answers that spelling with
+the canonical-name target because `name_norm` is rung two and `alias_norm` is rung four; the alias
+resolves to somebody else's mob and its owner is never told.
+
 `unknown` is a first-class answer, not a missing one. An instance that has never been handed a seed
 resolves every target to it, reports `status: no_timer`, and records times of death exactly as it
 otherwise would — canonical §15. The resolved timer still carries `is_quake_target`, so a quake

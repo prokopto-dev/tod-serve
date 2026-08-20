@@ -63,6 +63,11 @@ type Config struct {
 	Identities *identity.Service
 	// Catalogue owns raid-target identity, the per-server timers and the per-circle overrides.
 	Catalogue *catalogue.Service
+	// Invalidator is told when a route moved a respawn window. Required, and nil is a
+	// construction error like every other dependency here: an API that started with a missing
+	// invalidator would serve a board that silently stopped tracking timer edits, which is worse
+	// than not starting.
+	Invalidator TimerInvalidator
 	// Clock is the only reader of the wall clock.
 	Clock clock.Clock
 	// Log is where problems go. Nothing secret is ever written to it.
@@ -97,6 +102,8 @@ func (c Config) validate() error {
 		return errors.New("api config: identity service is nil")
 	case c.Catalogue == nil:
 		return errors.New("api config: catalogue service is nil")
+	case c.Invalidator == nil:
+		return errors.New("api config: timer invalidator is nil")
 	case c.Clock == nil:
 		return errors.New("api config: clock is nil")
 	case c.Log == nil:

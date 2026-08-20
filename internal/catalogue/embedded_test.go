@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/catalogue"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
@@ -213,4 +214,173 @@ func lookupEnum(t *testing.T, name string) []string {
 	e, ok := schemaenum.Lookup(name)
 	require.True(t, ok, "%s is not in the enum catalogue", name)
 	return slices.Clone(e.Values)
+}
+
+// TestNamespace_ANameAndAnAlias_CannotBeTheSameSpelling is the rule neither unique index can state.
+//
+// `ux_raid_target_name_norm` makes names unique among names; `ux_raid_target_alias_norm` makes
+// aliases unique among aliases. Neither says anything about the other table. Without the check
+// this asserts, an alias `lordnagafen` could be hung on a different target — and the ladder would
+// answer that spelling with the canonical-name target, because `name_norm` is rung two and
+// `alias_norm` is rung four. The alias would resolve to somebody else's mob and its owner would
+// never be told.
+func TestNamespace_ANameAndAnAlias_CannotBeTheSameSpelling(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		attempt func(*testing.T, *fixture) error
+		code    apierr.Code
+	}{
+		{
+			name: "an alias that is another target's name",
+			attempt: func(t *testing.T, f *fixture) error {
+				t.Helper()
+				f.target("Aaryonar", "Temple of Veeshan")
+				_, err := f.svc.Create(t.Context(), catalogue.CreateRequest{
+					Name: "Cekenar", Zone: "Temple of Veeshan",
+					Expansion: schemaenum.RaidTargetExpansionVelious,
+					Category:  schemaenum.RaidTargetCategoryNToV,
+					Aliases:   []string{"Aaryonar"},
+				})
+				return err
+			},
+			code: apierr.CodeConflict,
+		},
+		{
+			name: "an alias that is another target's name, typed differently",
+			attempt: func(t *testing.T, f *fixture) error {
+				t.Helper()
+				f.target("Vulak`Aerr", "Temple of Veeshan")
+				_, err := f.svc.Create(t.Context(), catalogue.CreateRequest{
+					Name: "Cekenar", Zone: "Temple of Veeshan",
+					Expansion: schemaenum.RaidTargetExpansionVelious,
+					Category:  schemaenum.RaidTargetCategoryNToV,
+					// Normalises to the same string, which is the only comparison that matters.
+					Aliases: []string{"vulak aerr"},
+				})
+				return err
+			},
+			code: apierr.CodeConflict,
+		},
+		{
+			name: "a new target named after an existing alias",
+			attempt: func(t *testing.T, f *fixture) error {
+				t.Helper()
+				f.target("Lord Nagafen", "Nagafen's Lair", "Naggy")
+				_, err := f.svc.Create(t.Context(), catalogue.CreateRequest{
+					Name: "Naggy", Zone: "Somewhere",
+					Expansion: schemaenum.RaidTargetExpansionClassic,
+					Category:  schemaenum.RaidTargetCategoryZoneBoss,
+				})
+				return err
+			},
+			code: apierr.CodeConflict,
+		},
+		{
+			name: "renaming a target onto another target's alias",
+			attempt: func(t *testing.T, f *fixture) error {
+				t.Helper()
+				f.target("Lord Nagafen", "Nagafen's Lair", "Naggy")
+				other := f.target("Lady Vox", "Permafrost Caverns")
+				_, err := f.svc.Update(t.Context(), other.ID, catalogue.UpdateRequest{
+					Name: ptr("Naggy"),
+				})
+				return err
+			},
+			code: apierr.CodeConflict,
+		},
+		{
+			name: "an alias identical to the target's own name",
+			attempt: func(t *testing.T, f *fixture) error {
+				t.Helper()
+				_, err := f.svc.Create(t.Context(), catalogue.CreateRequest{
+					Name: "Trakanon", Zone: "Old Sebilis",
+					Expansion: schemaenum.RaidTargetExpansionKunark,
+					Category:  schemaenum.RaidTargetCategoryZoneBoss,
+					// The name rung outranks the alias rung, so this alias could never be the
+					// thing that matched. Refused rather than stored as decoration.
+					Aliases: []string{"trakanon"},
+				})
+				return err
+			},
+			code: apierr.CodeValidationFailed,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			err := tt.attempt(t, f)
+			require.Error(t, err, "the collision was accepted")
+			coded, ok := apierr.From(err)
+			require.True(t, ok, "not a coded problem, so the edge renders a 500: %v", err)
+			require.Equal(t, tt.code, coded.Code())
+			require.NotEmpty(t, coded.Problem().Errors,
+				"the rejection names no field, so a caller cannot tell what to change")
+		})
+	}
+}
+
+// TestNamespace_ReplacingATargetsOwnAliases_IsNotACollisionWithItself. The update path replaces the
+// whole alias set, so every alias the target already owns is about to be rewritten; treating those
+// as collisions would make an unchanged PATCH fail.
+func TestNamespace_ReplacingATargetsOwnAliases_IsNotACollisionWithItself(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	target := f.target("Lord Nagafen", "Nagafen's Lair", "Naggy", "Nagafen")
+
+	got, err := f.svc.Update(t.Context(), target.ID, catalogue.UpdateRequest{
+		Aliases: &[]string{"Naggy", "Nagafen", "Nag"},
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"Naggy", "Nagafen", "Nag"}, got.Aliases)
+
+	// And re-sending the identical set, which is what a client that PATCHes a read does.
+	same, err := f.svc.Update(t.Context(), target.ID, catalogue.UpdateRequest{
+		Aliases: &[]string{"Naggy", "Nagafen", "Nag"},
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, got.Aliases, same.Aliases)
+}
+
+// TestNamespace_TheEmbeddedCatalogue_HasNoAliasThatIsAName. The shipped list has to satisfy the
+// rule it is loaded under, or the first `tod-serve seed targets` on a fresh install aborts.
+func TestNamespace_TheEmbeddedCatalogue_HasNoAliasThatIsAName(t *testing.T) {
+	t.Parallel()
+	names := map[string]string{}
+	for _, target := range catalogue.Embedded() {
+		names[core.Normalise(target.Name)] = target.Name
+	}
+	for _, target := range catalogue.Embedded() {
+		for _, alias := range target.Aliases {
+			owner, taken := names[core.Normalise(alias)]
+			require.False(t, taken,
+				"alias %q on %q is how %q is spelled; it would resolve to that target instead",
+				alias, target.Name, owner)
+		}
+	}
+}
+
+// TestSeedTargets_ATargetWhoseNameAnOperatorUsedAsAnAlias_IsSkippedAndCounted.
+//
+// The instance wins, as it does for a claimed alias. What must NOT happen is the seed writing it
+// anyway: the triggers would abort the whole transaction, and an operator would lose all
+// fifty-odd targets because of one alias they added months ago.
+func TestSeedTargets_ATargetWhoseNameAnOperatorUsedAsAnAlias_IsSkippedAndCounted(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+
+	// `Trakanon` is a shipped target. Here it is already an alias of something else.
+	mine := f.target("Trakanon the Elder", "Old Sebilis", "Trakanon")
+
+	report := f.seedEmbedded()
+	require.Positive(t, report.NamesTaken,
+		"the collision was neither skipped-and-counted nor reported")
+	require.Equal(t, len(catalogue.Embedded())-report.NamesTaken, report.TargetsAdded)
+
+	// Their alias still means what they said it means.
+	got, err := f.svc.Resolve(t.Context(), catalogue.Ref{Name: "Trakanon"})
+	require.NoError(t, err)
+	require.Equal(t, mine.ID, got.Target.ID)
 }

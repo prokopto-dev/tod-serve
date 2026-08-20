@@ -6877,11 +6877,11 @@
             }
           },
           {
-            "description": "The ETag a previous read returned, or * to write a timer that does not exist yet",
+            "description": "The ETag getRaidTarget returned. The tag is the TARGET's, because a timer has no read of its own",
             "in": "header",
             "name": "If-Match",
             "schema": {
-              "description": "The ETag a previous read returned, or * to write a timer that does not exist yet",
+              "description": "The ETag getRaidTarget returned. The tag is the TARGET's, because a timer has no read of its own",
               "type": "string"
             }
           }

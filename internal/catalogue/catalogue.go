@@ -327,6 +327,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (Target, error)
 	}
 
 	err = s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
+		if txErr := checkNamespace(ctx, q, id, fields.nameNorm, aliases); txErr != nil {
+			return txErr
+		}
 		_, txErr := q.CreateRaidTarget(ctx, sqlitegen.CreateRaidTargetParams{
 			ID: id.String(), Name: fields.name, NameNorm: fields.nameNorm,
 			Zone: fields.zone, ZoneNorm: fields.zoneNorm,
@@ -415,6 +418,9 @@ func (s *Service) Update(
 
 	now := s.clock.Now()
 	err = s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
+		if txErr := checkNamespace(ctx, q, id, fields.nameNorm, aliases); txErr != nil {
+			return txErr
+		}
 		_, txErr := q.UpdateRaidTarget(ctx, sqlitegen.UpdateRaidTargetParams{
 			Name: fields.name, NameNorm: fields.nameNorm,
 			Zone: fields.zone, ZoneNorm: fields.zoneNorm,
@@ -457,6 +463,72 @@ func (s *Service) writeAliases(
 		}); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// checkNamespace enforces the one rule neither unique index can state: a spelling belongs to ONE
+// target, whether it is that target's name or one of its aliases.
+//
+// `ux_raid_target_name_norm` makes names unique among names and `ux_raid_target_alias_norm` makes
+// aliases unique among aliases. Neither says anything about the other table, so without this an
+// alias `lordnagafen` could be hung on a different target — and the ladder would answer that
+// spelling with the canonical-name target, because `name_norm` is rung two and `alias_norm` is
+// rung four. The alias would resolve to somebody else's mob and its owner would never be told,
+// which is the quiet version of the exact failure the ladder exists to prevent.
+//
+// The triggers in 000005_raid_target_name_namespace.sql are the enforcement, and they cover the
+// paths this function cannot see — `tod-serve seed`, an importer, a hand-run `sqlite3`. This runs
+// inside the write transaction so the API can answer `409` naming the collision instead of
+// surfacing a constraint abort as a 500.
+func checkNamespace(
+	ctx context.Context, q *sqlitegen.Queries,
+	self core.RaidTargetID, nameNorm string, aliases []string,
+) error {
+	targets, err := q.ListAllRaidTargets(ctx)
+	if err != nil {
+		return err
+	}
+	aliasRows, err := q.ListAllRaidTargetAliases(ctx)
+	if err != nil {
+		return err
+	}
+
+	claimed := make(map[string]string, len(targets)+len(aliasRows))
+	for _, row := range targets {
+		if row.ID != self.String() {
+			claimed[row.NameNorm] = row.Name
+		}
+	}
+	for _, row := range aliasRows {
+		// An alias this target already owns is not a collision with itself: the update path
+		// replaces the whole alias set, so every one of them is about to be rewritten.
+		if row.TargetID != self.String() {
+			claimed[row.AliasNorm] = row.Alias
+		}
+	}
+
+	if owner, taken := claimed[nameNorm]; taken {
+		return apierr.Newf(apierr.CodeConflict,
+			"that name is already how %q is spelled; one spelling belongs to one target", owner).
+			WithField("body.name", "already claimed by another target")
+	}
+	for i, alias := range aliases {
+		norm := core.Normalise(alias)
+		if owner, taken := claimed[norm]; taken {
+			return apierr.Newf(apierr.CodeConflict,
+				"the alias %q is already how %q is spelled; it would resolve to that target "+
+					"instead of this one", alias, owner).
+				WithField(fmt.Sprintf("body.aliases[%d]", i), "already claimed by another target")
+		}
+		if norm == nameNorm {
+			// Not a collision with another row, but the same mistake: the name rung outranks the
+			// alias rung, so this alias could never be the thing that matched.
+			return apierr.Newf(apierr.CodeValidationFailed,
+				"the alias %q is the target's own name; it would never be the rung that matched",
+				alias).WithField(fmt.Sprintf("body.aliases[%d]", i), "same as the name")
+		}
+		claimed[norm] = alias
 	}
 	return nil
 }

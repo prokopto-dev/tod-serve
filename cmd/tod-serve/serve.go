@@ -84,9 +84,14 @@ func newServeCommand() *cobra.Command {
 				Invites:    svc.invites,
 				Identities: svc.identity,
 				Catalogue:  svc.catalogue,
-				Clock:      svc.clock,
-				Log:        log,
-				IDs:        svc.ids,
+				// See api.UnprojectedTimers: this binary has no projection yet, so there is no
+				// derived state a moved window could make stale. It is asserted rather than
+				// assumed by TestWiring_TimerInvalidation_IsStillTheStub, which says what to do
+				// the day that stops being true.
+				Invalidator: api.UnprojectedTimers{},
+				Clock:       svc.clock,
+				Log:         log,
+				IDs:         svc.ids,
 				Metrics: api.MetricsConfig{
 					Enabled: os.Getenv(envMetricsEnabled) == "true",
 					Token:   core.Secret(os.Getenv(envMetricsToken)),

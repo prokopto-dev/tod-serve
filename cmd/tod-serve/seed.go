@@ -72,8 +72,10 @@ func newSeedTargetsCommand() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			if _, err = fmt.Fprintf(out,
-				"targets: %d added, %d already present\naliases: %d added, %d already claimed by another target\n",
-				report.TargetsAdded, report.TargetsPresent,
+				"targets: %d added, %d already present, %d skipped because the name is already "+
+					"how something else here is spelled\n"+
+					"aliases: %d added, %d already claimed by another target\n",
+				report.TargetsAdded, report.TargetsPresent, report.NamesTaken,
 				report.AliasesAdded, report.AliasesTaken); err != nil {
 				return fmt.Errorf("write seed result: %w", err)
 			}

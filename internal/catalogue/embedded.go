@@ -389,6 +389,12 @@ type TargetSeedReport struct {
 	// target. It is counted rather than silently dropped: it means our list and this instance
 	// disagree about what a short name means, and the instance wins.
 	AliasesTaken int
+	// NamesTaken were whole targets skipped because their name is already how something else on
+	// this instance is spelled — an operator's own target, or an alias they added. One namespace
+	// covers names and aliases (see 000005_raid_target_name_namespace.sql), so this is the same
+	// disagreement as AliasesTaken and costs more: a target we ship is missing from their
+	// catalogue, and they need to be told which.
+	NamesTaken int
 }
 
 // SeedTargets writes the embedded identity into the catalogue.
@@ -416,9 +422,16 @@ func (s *Service) SeedTargets(ctx context.Context) (TargetSeedReport, error) {
 		if txErr != nil {
 			return txErr
 		}
-		aliasOwner := make(map[string]string, len(aliasRows))
+		// One namespace, so the map holds names as well as aliases. A shipped alias that collides
+		// with a target an operator added would otherwise be written and then resolve to their
+		// target instead of ours — and the triggers in 000005 would abort the whole seed rather
+		// than let it, which is the right outcome and a terrible way to find out.
+		aliasOwner := make(map[string]string, len(aliasRows)+len(existing))
 		for _, row := range aliasRows {
 			aliasOwner[row.AliasNorm] = row.TargetID
+		}
+		for _, row := range existing {
+			aliasOwner[row.NameNorm] = row.ID
 		}
 
 		for _, want := range Embedded() {
@@ -435,6 +448,15 @@ func (s *Service) SeedTargets(ctx context.Context) (TargetSeedReport, error) {
 				report.TargetsPresent++
 				targetID = row.ID
 			} else {
+				if _, taken := aliasOwner[fields.nameNorm]; taken {
+					// A target we ship whose name an operator has already used as an alias for
+					// something else. Their instance wins, the same way it does for a claimed
+					// alias, and it is counted rather than dropped silently — otherwise the seed
+					// would trip the 000005 triggers and abort wholesale, which is the right
+					// outcome reached in the worst possible way.
+					report.NamesTaken++
+					continue
+				}
 				id, idErr := core.NewID[core.RaidTarget](s.ids, now)
 				if idErr != nil {
 					return idErr
@@ -451,6 +473,7 @@ func (s *Service) SeedTargets(ctx context.Context) (TargetSeedReport, error) {
 				}
 				report.TargetsAdded++
 				targetID = id.String()
+				aliasOwner[fields.nameNorm] = targetID
 			}
 
 			for _, alias := range want.Aliases {
@@ -493,6 +516,7 @@ func (s *Service) SeedTargets(ctx context.Context) (TargetSeedReport, error) {
 		slog.Int("targets_added", report.TargetsAdded),
 		slog.Int("targets_present", report.TargetsPresent),
 		slog.Int("aliases_added", report.AliasesAdded),
-		slog.Int("aliases_taken", report.AliasesTaken))
+		slog.Int("aliases_taken", report.AliasesTaken),
+		slog.Int("names_taken", report.NamesTaken))
 	return report, nil
 }

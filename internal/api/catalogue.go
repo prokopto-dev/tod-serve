@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/catalogue"
@@ -136,7 +138,7 @@ func (w TimerWindow) request(source string) catalogue.WindowRequest {
 type putRaidTargetTimerInput struct {
 	TargetID string `path:"target_id" doc:"The raid target"`
 	Server   string `path:"server" doc:"The server this window is for" enum:"blue,green,red"`
-	IfMatch  string `header:"If-Match" doc:"The ETag a previous read returned, or * to write a timer that does not exist yet"`
+	IfMatch  string `header:"If-Match" doc:"The ETag getRaidTarget returned. The tag is the TARGET's, because a timer has no read of its own"`
 	Body     struct {
 		TimerWindow
 		Source string `json:"source,omitempty" doc:"Where these numbers came from. They are not ours and they are disputed" maxLength:"200"`
@@ -260,8 +262,16 @@ func (s *Server) registerRaidTargets() error {
 					return nil, apierr.New(apierr.CodeUnauthenticated, "no principal on the request")
 				}
 				key, _ := IdempotencyKeyFrom(ctx)
-				hash := hashBody("createRaidTarget", in.Body.Name, in.Body.Zone,
-					in.Body.Expansion, in.Body.Category)
+				// EVERY field of the body, not the memorable ones. The hash is what turns a
+				// replayed key carrying a different request into `idempotency_key_reused` rather
+				// than a silent replay of the first one, and a field left out of it is a field a
+				// client can change without being told their second request did nothing.
+				// Marshalling the whole struct is the encoding that cannot fall behind the struct.
+				body, marshalErr := json.Marshal(in.Body)
+				if marshalErr != nil {
+					return nil, apierr.Wrap(apierr.CodeInternalError, marshalErr, "")
+				}
+				hash := hashBody("createRaidTarget", string(body))
 
 				out, _, err := runIdempotentHandler(ctx, s.api, p, key, hash,
 					func(ctx context.Context) (TargetResponse, error) {
@@ -346,6 +356,12 @@ func (s *Server) registerRaidTargets() error {
 				if err != nil {
 					return nil, err
 				}
+				// A catalogue timer is instance-wide and per-server, so this moved the window for
+				// every circle on that server that has not overridden it. Nothing was appended
+				// anywhere, so the projection is told rather than left to notice.
+				if err = s.cfg.Invalidator.OnCatalogueTimerChange(ctx, server, id); err != nil {
+					return nil, err
+				}
 				after, err := s.targetResponse(ctx, id)
 				if err != nil {
 					return nil, err
@@ -403,6 +419,11 @@ func (s *Server) registerTimerOverrides() error {
 				if err != nil {
 					return nil, err
 				}
+				// The override now outranks the catalogue for this circle, and no row was appended
+				// to say so. Pushed rather than inferred — see [TimerInvalidator].
+				if err = s.cfg.Invalidator.OnTimerChange(ctx, circleID, targetID); err != nil {
+					return nil, err
+				}
 				etag, err := ETagOf(view)
 				if err != nil {
 					return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
@@ -434,6 +455,12 @@ func (s *Server) registerTimerOverrides() error {
 				if err != nil {
 					return nil, err
 				}
+				// Removing an override moves the window as surely as setting one did: the circle
+				// falls back to the catalogue timer, or to `unknown` if there is none. A board
+				// still serving the deleted override is the same bug as one that never saw it set.
+				if err = s.cfg.Invalidator.OnTimerChange(ctx, circleID, targetID); err != nil {
+					return nil, err
+				}
 				return &deleteCircleTimerOverrideOutput{Body: OverrideResponse{
 					TimerOverride: removed, AsOf: s.cfg.Clock.Now(),
 				}}, nil
@@ -443,10 +470,16 @@ func (s *Server) registerTimerOverrides() error {
 
 // requireOverrideIfMatch enforces the concurrency rule on an override that may not exist yet.
 //
-// `If-Match: *` means "the resource must exist" everywhere else in this API, and a PUT that
-// CREATES has no prior tag for a caller to send. So a missing override accepts `*` and nothing
-// else: a caller who read a tag and sends it must still be told when it is stale, and a caller
-// creating one has a legal thing to send rather than a 428 they cannot satisfy.
+// This PUT both creates and replaces, and the two need different preconditions. A create has no
+// prior tag for a caller to send, so `If-Match: *` is borrowed as "and it must NOT exist"; a
+// replace has one, so nothing but that tag will do.
+//
+// **The wildcard is therefore refused on an existing override, and that is the whole point of this
+// helper rather than a bare [RequireIfMatch] call.** `RequireIfMatch` treats `*` as matching every
+// current representation — correct RFC 9110 semantics, and correct everywhere else in this API —
+// which would let an officer overwrite another officer's update having read nothing. Borrowing the
+// wildcard for creation while still honouring it for replacement is the concurrency rule inverted:
+// the one caller who can prove they have seen nothing gets to overwrite anything.
 func (s *Server) requireOverrideIfMatch(
 	ctx context.Context, header string, circleID core.CircleID, targetID core.RaidTargetID,
 ) error {
@@ -456,12 +489,25 @@ func (s *Server) requireOverrideIfMatch(
 		if !ok || coded.Code() != apierr.CodeNotFound {
 			return err
 		}
-		if header != "*" {
+		if strings.TrimSpace(header) != anyETag {
 			return apierr.New(apierr.CodePreconditionRequired,
 				"this circle has no override for that target yet; send If-Match: * to create one").
 				WithField("header.If-Match", "must be * when the override does not exist")
 		}
 		return nil
+	}
+	if strings.TrimSpace(header) == anyETag {
+		// Not a 428: the caller sent a precondition, it was syntactically fine, and it is refused
+		// because the resource is already there. 412 is the answer that tells them to re-read,
+		// and it carries the current representation so the retry costs no extra request.
+		body, marshalErr := json.Marshal(current)
+		if marshalErr != nil {
+			return apierr.Wrap(apierr.CodeInternalError, marshalErr, "")
+		}
+		return apierr.New(apierr.CodePreconditionFailed,
+			"this circle already has an override for that target; If-Match: * creates one, so "+
+				"send the ETag you read instead of overwriting an update you have not seen").
+			WithCurrent(body)
 	}
 	return RequireIfMatch(header, current)
 }
