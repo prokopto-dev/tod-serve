@@ -113,6 +113,7 @@ The ones that exist because the fastest route to a green build is to change the 
 | Tests are not skipped or weakened to land a change | Review, plus a coverage floor per package |
 | No test sleeps | `SLEEP001` in `internal/repogate`, run by `TestSLEEP001_Tests_DoNotSleep`; time-dependent tests use `testing/synctest` |
 | No goroutine leaks in the event package | `goleak.VerifyTestMain` in `TestMain` |
+| A gate's two sides do not share a derivation | Review, and the check is mechanical: **mutate one side and watch it fail.** A comparison in both directions proves nothing when both directions read from one source, and it looks *more* rigorous than a one-way check rather than less. The worked example is `Route.ConditionalRead`: the first gate over it compared the flag against the documented `304` in both directions and was green — while the document's `304` was generated **from** the flag, so both sides were one derivation wearing two hats. Setting the flag on a route that does not revalidate left them agreeing. The fix was to make the second side the BEHAVIOUR: `TestRouteRegistry_ConditionalRead_MatchesWhatTheRouteActuallyDoes` drives each route and requires the flag to predict what it answers. `scripts/repo-gates.sh` already refuses a gate that reports success over an empty search space; this is the same family with a full one |
 
 ## Operational invariants
 
