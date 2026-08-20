@@ -19,7 +19,8 @@ than writing it down as though it were enforced.
 | `internal/authz/` | **The** catalogue — permissions, scopes, roles, capability floor. Generates the DDL seed, the OpenAPI extensions, the scope enum and the docs page |
 | `internal/auth/` | PAT mint and verify, sessions, step-up |
 | `internal/identity/{,discord,oidc,local,outbound}/` | Provider registry, credential dispatch, identity and link resolution, the OAuth flow. **The only packages permitted to make outbound HTTP requests**, and `outbound` is the only one that may construct a client |
-| `internal/circle/`, `membership/`, `catalogue/`, `tod/` | Domain services |
+| `internal/circle/`, `membership/`, `tod/` | Domain services |
+| `internal/catalogue/` | Raid-target identity, the per-server timers, the per-circle overrides. **The one resolve ladder** and the one `name_norm` matcher; target identity ships embedded here, timer data ships from nowhere |
 | `internal/invite/` | Invite codes: minting, the generous parser a hand-typed code needs, **the one hash** `identitysql` is handed, and the single-use owner grant that gives a circle its first owner |
 | `internal/audit/` | The hash-chained append to `audit_log`. Every caller passes a transaction's query set: an audit row that survives a rollback is worse than no row, because it is believed |
 | `internal/schemaenum/` | The enum catalogue — every enumerated column, and the ordering rule for the two that have one |
@@ -154,6 +155,8 @@ make gen          # regenerate the enum catalogue, the migration, the sqlc bindi
 make gen-openapi  # just openapi/openapi.json, which needs neither Atlas nor sqlc
 make spec-diff    # the spec breaks no client against the base branch, renames included
 make test-tenancy # cross-circle isolation over the route registry
+make seed         # load the embedded raid-target identity. Timers are NOT bundled:
+                  # `tod-serve seed timers --file` reads tod-serve-p99-seed
 ```
 
 Commits are signed off (`git commit -s`, DCO). Conventional Commits are enforced on the **PR title

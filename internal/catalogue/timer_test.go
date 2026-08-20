@@ -2,6 +2,7 @@ package catalogue_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -359,4 +360,82 @@ func TestOverride_Writes_AreAudited(t *testing.T) {
 	}
 	require.Contains(t, actions, "timer_override.set")
 	require.Contains(t, actions, "timer_override.cleared")
+}
+
+// TestUnseededInstance_DerivesNoTimerAndStillCountsEveryReport is the second half of the milestone's
+// acceptance criterion, and the half that is easy to assume.
+//
+// "Reports `no_timer` everywhere AND still records ToDs correctly" is two claims. The first is
+// about the window; the second is about everything else — the reports still cluster, the evidence
+// still counts them, the estimate is still a real instant, and a quake still clears the board. An
+// instance with no timer data must be DEGRADED, not broken, and the difference is measurable right
+// here, at the seam between this package and internal/consensus.
+//
+// It drives the real derivation rather than asserting on the resolved timer alone, because the
+// resolved timer being shaped correctly and the derivation doing the right thing with it are
+// different facts.
+func TestUnseededInstance_DerivesNoTimerAndStillCountsEveryReport(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.seedEmbedded()
+	circleID := f.circle("Riot")
+
+	vulak, err := f.svc.Resolve(t.Context(), catalogue.Ref{Name: "Vulak`Aerr"})
+	require.NoError(t, err)
+	resolved, err := f.svc.ResolveTimer(t.Context(), circleID, vulak.Target.ID, core.ServerBlue)
+	require.NoError(t, err)
+	require.Equal(t, catalogue.TimerSourceNone, resolved.Source)
+
+	diedAt := fixtureNow.Add(-2 * time.Hour)
+	reports := []consensus.Report{
+		newReport(t, f, diedAt, consensus.SourceLogLine),
+		newReport(t, f, diedAt.Add(30*time.Second), consensus.SourceManual),
+		newReport(t, f, diedAt.Add(45*time.Second), consensus.SourceManual),
+	}
+
+	state := consensus.Derive(reports, nil, resolved.Timer, fixtureNow,
+		consensus.CircleConfig{MinReportersToSupersede: 1})
+
+	// The window is silent, and says so with the status that means "we have a ToD and no window to
+	// hang on it" rather than the one that means "we have no ToD".
+	require.Equal(t, consensus.StatusNoTimer, state.Status)
+	require.Equal(t, consensus.WindowUnknown, state.Window.Kind)
+	require.Nil(t, state.Window.OpenAt)
+	require.Nil(t, state.Window.CloseAt)
+	require.Nil(t, state.Window.ProgressBP)
+
+	// Everything else is intact. This is the "still records ToDs correctly" half: an officer with
+	// no seed still gets a time of death, the evidence behind it, and who reported it.
+	require.NotNil(t, state.DiedAt, "an unseeded instance lost the time of death itself")
+	require.Equal(t, 3, state.Evidence.ReportCount)
+	require.Equal(t, 3, state.Evidence.DistinctReporterCount)
+	require.Equal(t, 1, state.Evidence.LogLineCount)
+	require.Len(t, state.Evidence.ReportIDs, 3)
+	require.NotEqual(t, consensus.ConfidenceUnknown, state.Confidence,
+		"an unseeded instance refused to say how good its evidence was, which is a separate "+
+			"question from whether it knows the window")
+
+	// And a quake still clears it. The quake flag survives timer resolution precisely so that the
+	// instances that know least about windows do not also stop noticing server-wide repops.
+	quaked := consensus.Derive(reports,
+		[]consensus.Quake{{OccurredAt: fixtureNow.Add(-1 * time.Hour)}},
+		resolved.Timer, fixtureNow, consensus.CircleConfig{MinReportersToSupersede: 1})
+	require.Equal(t, consensus.StatusUp, quaked.Status,
+		"a quake did not clear the board on an unseeded instance")
+}
+
+// newReport builds one kill report from a distinct reporter, which is what makes
+// DistinctReporterCount meaningful above.
+func newReport(
+	t *testing.T, f *fixture, diedAt core.Micros, source consensus.Source,
+) consensus.Report {
+	t.Helper()
+	id, err := core.NewID[core.TodReport](f.ids, diedAt)
+	require.NoError(t, err)
+	reporter, err := core.NewID[core.Membership](f.ids, diedAt)
+	require.NoError(t, err)
+	return consensus.Report{
+		ID: id, Kind: consensus.KindKill, DiedAt: diedAt, ReportedAt: fixtureNow,
+		ReporterMembershipID: reporter, Source: source,
+	}
 }

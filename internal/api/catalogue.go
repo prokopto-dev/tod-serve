@@ -51,7 +51,9 @@ type listRaidTargetsInput struct {
 	Limit          int    `query:"limit" doc:"Page size, 1-200" minimum:"0" maximum:"200"`
 }
 
-type listRaidTargetsOutput struct{ Body Page[catalogue.CatalogueEntry] }
+type listRaidTargetsOutput struct {
+	Body Page[catalogue.CatalogueEntry]
+}
 
 type getRaidTargetInput struct {
 	TargetID    string `path:"target_id" doc:"The raid target"`
@@ -340,7 +342,7 @@ func (s *Server) registerRaidTargets() error {
 				}
 
 				timer, err := s.cfg.Catalogue.PutTimer(ctx, id, server,
-					in.Body.TimerWindow.request(in.Body.Source))
+					in.Body.request(in.Body.Source))
 				if err != nil {
 					return nil, err
 				}
@@ -397,7 +399,7 @@ func (s *Server) registerTimerOverrides() error {
 				}
 
 				view, err := s.cfg.Catalogue.PutOverride(ctx, circleID, targetID, p.MembershipID,
-					in.Body.TimerWindow.request(""))
+					in.Body.request(""))
 				if err != nil {
 					return nil, err
 				}
