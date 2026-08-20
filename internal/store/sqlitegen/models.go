@@ -55,6 +55,7 @@ type Circle struct {
 	MinReportersToSupersede  int64
 	RevokeInvalidatesInvites int64
 	State                    string
+	DeletedAt                *int64
 	CreatedAt                int64
 	UpdatedAt                int64
 }

@@ -24,7 +24,15 @@ SELECT * FROM membership WHERE circle_id = sqlc.arg(circle_id) AND id = sqlc.arg
 -- what RESOLVES the caller's circle -- so it cannot also filter by one. A PAT carries a membership
 -- id and nothing else (ADR-0005); every circle-scoped query downstream of this one is filtered by
 -- the circle_id this row returns, which is the only reading of the tenancy rule that terminates.
-SELECT * FROM membership WHERE id = sqlc.arg(id);
+--
+-- It carries the circle's deleted_at because this is the one read on EVERY request. Membership
+-- state is checked here rather than by cascading at revocation time, and a deleted circle is the
+-- same kind of fact: without it, the members of a deleted circle would keep acting in it until
+-- their tokens expired, which is the cascade-and-forget failure ADR-0005 exists to avoid.
+SELECT m.*, c.deleted_at AS circle_deleted_at
+FROM membership m
+JOIN circle c ON c.id = m.circle_id
+WHERE m.id = sqlc.arg(id);
 
 -- name: GetMembershipByIdentity :one
 SELECT * FROM membership

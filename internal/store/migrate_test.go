@@ -162,7 +162,8 @@ func TestMigrate_PopulatedDatabaseAtVersionTwo_UpgradesWithItsReferencingRows(t 
 
 	version, err = db.SchemaVersion(ctx)
 	require.NoError(t, err)
-	require.Equal(t, int64(3), version)
+	require.Equal(t, latestMigration(t, db), version,
+		"the upgrade stopped short of the newest migration")
 
 	// Every row survived, still pointing at the provider it pointed at.
 	for _, q := range []struct {
@@ -289,4 +290,125 @@ func TestMigrate_VersionTwoRowThatCannotBeCarriedForward_FailsAtomically(t *test
 		VALUES (?, ?, ?, 'officer_asserted', ?, ?)`,
 		id.next(t), verifiableIdent, localIdent, id.next(t), int64(now)),
 		"a failed migration must not leave identity_link unguarded")
+}
+
+// latestMigration is the highest embedded migration version.
+//
+// It is read from the sources rather than written down, because a literal here has to be edited by
+// whoever adds the next migration — and the one thing worse than a test that needs editing is one
+// that silently keeps passing while asserting a version two behind the binary.
+func latestMigration(t *testing.T, db *DB) int64 {
+	t.Helper()
+	provider, err := db.provider()
+	require.NoError(t, err)
+	sources := provider.ListSources()
+	require.NotEmpty(t, sources)
+	return sources[len(sources)-1].Version
+}
+
+// **The `circle` rebuild, on a database that has rows referencing it.**
+//
+// 000004 adds `circle.deleted_at`, which SQLite can only do by rebuilding the table — and `circle`
+// is the one nearly every circle-scoped table has a foreign key to, three of which are APPEND-ONLY
+// and cannot be deleted from at all. That combination is what makes the rebuild's implicit
+// `DELETE FROM` impossible rather than merely unwanted, and it only bites a populated database:
+// every other migration test in this package starts from an empty one, which is the single shape
+// this cannot fail in.
+//
+// It is the same trap 000003 hit for `identity_provider`, on a bigger table, so it gets the same
+// test rather than a comment saying it was thought about.
+func TestMigrate_APopulatedDatabase_SurvivesTheCircleRebuild(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	db := openEmpty(t)
+
+	provider, err := db.provider()
+	require.NoError(t, err)
+	// Every migration except the last, so the rows below are written against the schema an
+	// upgrading operator actually has.
+	latest := latestMigration(t, db)
+	_, err = provider.UpTo(ctx, latest-1)
+	require.NoError(t, err)
+
+	id := newIDs(rand.Reader)
+	circleID, providerID, identityID := id.next(t), id.next(t), id.next(t)
+	memberID, inviteID, targetID := id.next(t), id.next(t), id.next(t)
+
+	mustExec(t, ctx, db, `
+		INSERT INTO circle (id, name, name_norm, description, server, timezone,
+			min_reporters_to_supersede, revoke_invalidates_invites, state, created_at, updated_at)
+		VALUES (?, 'Riot Blue', 'riotblue', '', 'blue', 'UTC', 1, 1, 'active', ?, ?)`,
+		circleID, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO identity_provider (id, key, kind, display_name, enabled, verifiable_subject,
+			created_at, updated_at)
+		VALUES (?, 'local', 'local', 'This server', 1, 0, ?, ?)`,
+		providerID, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO identity (id, provider_id, subject, display_name, created_at, updated_at)
+		VALUES (?, ?, 'subject-1', 'Tankguy', ?, ?)`,
+		identityID, providerID, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO membership (id, circle_id, identity_id, kind, display_name, display_name_norm,
+			role, joined_at, created_at, updated_at)
+		VALUES (?, ?, ?, 'human', 'Tankguy', 'tankguy', 'owner', ?, ?, ?)`,
+		memberID, circleID, identityID, int64(now), int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO invite (id, circle_id, code_hash, code_prefix, role, max_uses, uses,
+			expires_at, created_by_membership_id, minted_by_kind, note, created_at, updated_at)
+		VALUES (?, ?, X'00', '4KQ7M', 'member', 1, 0, ?, ?, 'session', '', ?, ?)`,
+		inviteID, circleID, int64(now)+600_000_000, memberID, int64(now), int64(now))
+	mustExec(t, ctx, db, `
+		INSERT INTO raid_target (id, name, name_norm, zone, zone_norm, expansion, category,
+			is_quake_target, state, created_at, updated_at)
+		VALUES (?, 'Vulak', 'vulak', 'Temple of Veeshan', 'tov', 'velious', 'ntov', 1, 'active', ?, ?)`,
+		targetID, int64(now), int64(now))
+
+	// The two APPEND-ONLY rows. A rebuild that dropped `circle` with foreign keys enforced would
+	// have to delete these to succeed, and a trigger refuses to let it.
+	mustExec(t, ctx, db, `
+		INSERT INTO tod_report (id, circle_id, target_id, kind, died_at, reported_at,
+			reporter_membership_id, source, self_confidence)
+		VALUES (?, ?, ?, 'kill', ?, ?, ?, 'manual', 'certain')`,
+		id.next(t), circleID, targetID, int64(now), int64(now), memberID)
+	mustExec(t, ctx, db, `
+		INSERT INTO audit_log (id, circle_id, actor_membership_id, action, entity_type,
+			detail_json, hash, created_at)
+		VALUES (?, ?, ?, 'circle.created', 'circle', '{}', X'01', ?)`,
+		id.next(t), circleID, memberID, int64(now))
+
+	// The upgrade an operator runs.
+	require.NoError(t, db.Migrate(ctx), "the upgrade failed on a POPULATED database")
+
+	version, err := db.SchemaVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, latest, version)
+
+	for _, table := range []string{
+		"circle", "membership", "invite", "tod_report", "audit_log",
+	} {
+		var count int
+		// The table name is a literal from the list above, never caller input.
+		row := db.sql.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table)
+		require.NoError(t, row.Scan(&count))
+		require.Equal(t, 1, count, "the %s row did not survive the rebuild", table)
+	}
+
+	require.NoError(t, db.ForeignKeyCheck(ctx))
+	require.NoError(t, db.IntegrityCheck(ctx))
+
+	// The new column is there and every existing circle is LIVE. A rebuild that defaulted it to
+	// anything else would delete every circle on the instance at upgrade time, silently.
+	var live int
+	require.NoError(t, db.sql.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM circle WHERE deleted_at IS NULL`).Scan(&live))
+	require.Equal(t, 1, live)
+
+	// And the trigger the rebuild had to drop is back and FIRING. Asserting that it aborts rather
+	// than that it appears in `sqlite_master` is the point: a rebuild leaves the catalogue looking
+	// right. Without it `circle.server` would be immutable only for callers who came through the
+	// API, which is the half of ADR-0009 that is not a `WHERE` clause someone forgets.
+	require.Error(t, exec(t, ctx, db,
+		`UPDATE circle SET server = 'green' WHERE id = ?`, circleID),
+		"trg_circle_server_is_immutable must have survived the table rebuild")
 }

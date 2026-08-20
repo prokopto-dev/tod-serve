@@ -198,3 +198,60 @@ func longName() string {
 	}
 	return out
 }
+
+// `deleteCircle` writes a TOMBSTONE. It cannot remove rows: `tod_report`, `quake_event`,
+// `invite_redemption` and `audit_log` are append-only by trigger, and with `foreign_keys` ON a
+// circle holding any of them cannot be deleted at all. The evidence outliving the circle is the
+// report log's whole trust argument, not a compromise.
+func TestDelete_TombstonesTheCircle_AndLeavesTheEvidence(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.provider("discord", schemaenum.IdentityProviderKindDiscord, true)
+	view := f.create("Riot Blue", schemaenum.ServerBlue)
+	actor := f.seedMember(view.ID)
+
+	deleted, err := f.service.Delete(t.Context(), view.ID, actor)
+	require.NoError(t, err)
+	require.Equal(t, "Riot Blue", deleted.Name, "the representation of what went is returned once")
+
+	// It stops existing to every reader.
+	_, err = f.service.Get(t.Context(), view.ID)
+	require.True(t, apierr.HasCode(err, apierr.CodeNotFound), "got %v", err)
+
+	// The audit trail is still there and still resolves to the circle. `audit_log.circle_id`
+	// references `circle`, so reading this back at all is the assertion that the row survived: a
+	// real delete would have had to take these append-only rows with it, and a trigger refuses.
+	head, err := f.store.Queries().GetLatestAuditLogEntry(t.Context(), view.ID.String())
+	require.NoError(t, err, "the audit trail went with the circle")
+	require.Equal(t, "circle.deleted", head.Action)
+	require.Equal(t, view.ID.String(), head.CircleID)
+
+	// Deleting twice is 404 rather than moving the timestamp: the moment a circle stopped existing
+	// is the first one.
+	_, err = f.service.Delete(t.Context(), view.ID, actor)
+	require.True(t, apierr.HasCode(err, apierr.CodeNotFound), "got %v", err)
+}
+
+// A deleted circle releases its name. An operator who deleted "Riot Blue" by mistake has to be
+// able to make it again, and a unique index over dead rows would tell them the name is taken by
+// something they cannot see.
+func TestDelete_ReleasesTheName_SoItCanBeCreatedAgain(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	first := f.create("Riot Blue", schemaenum.ServerBlue)
+	actor := f.seedMember(first.ID)
+
+	_, err := f.service.Create(t.Context(), circle.CreateRequest{
+		Name: "Riot Blue", Server: core.Server(schemaenum.ServerBlue),
+	})
+	require.True(t, apierr.HasCode(err, apierr.CodeConflict), "the name is taken while it is live")
+
+	_, err = f.service.Delete(t.Context(), first.ID, actor)
+	require.NoError(t, err)
+
+	second, err := f.service.Create(t.Context(), circle.CreateRequest{
+		Name: "Riot Blue", Server: core.Server(schemaenum.ServerBlue),
+	})
+	require.NoError(t, err, "the deleted circle is still holding its name")
+	require.NotEqual(t, first.ID, second.ID)
+}

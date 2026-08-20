@@ -19,7 +19,7 @@ INSERT INTO circle (
   ?5, ?6, ?7,
   ?8, ?9, ?10, ?11
 )
-RETURNING id, name, name_norm, description, server, timezone, min_reporters_to_supersede, revoke_invalidates_invites, state, created_at, updated_at
+RETURNING id, name, name_norm, description, server, timezone, min_reporters_to_supersede, revoke_invalidates_invites, state, deleted_at, created_at, updated_at
 `
 
 type CreateCircleParams struct {
@@ -68,6 +68,7 @@ func (q *Queries) CreateCircle(ctx context.Context, arg CreateCircleParams) (Cir
 		&i.MinReportersToSupersede,
 		&i.RevokeInvalidatesInvites,
 		&i.State,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -75,9 +76,12 @@ func (q *Queries) CreateCircle(ctx context.Context, arg CreateCircleParams) (Cir
 }
 
 const getCircle = `-- name: GetCircle :one
-SELECT id, name, name_norm, description, server, timezone, min_reporters_to_supersede, revoke_invalidates_invites, state, created_at, updated_at FROM circle WHERE id = ?1
+SELECT id, name, name_norm, description, server, timezone, min_reporters_to_supersede, revoke_invalidates_invites, state, deleted_at, created_at, updated_at FROM circle WHERE id = ?1 AND deleted_at IS NULL
 `
 
+// A tombstoned circle does not exist to a reader. deleteCircle cannot remove the row -- the
+// append-only tables referencing it forbid that -- so "deleted" is a predicate every read carries
+// rather than an absence the database enforces.
 func (q *Queries) GetCircle(ctx context.Context, circleID string) (Circle, error) {
 	row := q.db.QueryRowContext(ctx, getCircle, circleID)
 	var i Circle
@@ -91,6 +95,7 @@ func (q *Queries) GetCircle(ctx context.Context, circleID string) (Circle, error
 		&i.MinReportersToSupersede,
 		&i.RevokeInvalidatesInvites,
 		&i.State,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -98,9 +103,9 @@ func (q *Queries) GetCircle(ctx context.Context, circleID string) (Circle, error
 }
 
 const listCirclesForIdentity = `-- name: ListCirclesForIdentity :many
-SELECT c.id, c.name, c.name_norm, c.description, c.server, c.timezone, c.min_reporters_to_supersede, c.revoke_invalidates_invites, c.state, c.created_at, c.updated_at FROM circle c
+SELECT c.id, c.name, c.name_norm, c.description, c.server, c.timezone, c.min_reporters_to_supersede, c.revoke_invalidates_invites, c.state, c.deleted_at, c.created_at, c.updated_at FROM circle c
 JOIN membership m ON m.circle_id = c.id
-WHERE m.identity_id = ?1 AND m.revoked_at IS NULL
+WHERE m.identity_id = ?1 AND m.revoked_at IS NULL AND c.deleted_at IS NULL
 ORDER BY c.id
 `
 
@@ -126,6 +131,7 @@ func (q *Queries) ListCirclesForIdentity(ctx context.Context, identityID *string
 			&i.MinReportersToSupersede,
 			&i.RevokeInvalidatesInvites,
 			&i.State,
+			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -142,6 +148,41 @@ func (q *Queries) ListCirclesForIdentity(ctx context.Context, identityID *string
 	return items, nil
 }
 
+const softDeleteCircle = `-- name: SoftDeleteCircle :one
+UPDATE circle
+SET deleted_at = ?1, updated_at = ?2
+WHERE id = ?3 AND deleted_at IS NULL
+RETURNING id, name, name_norm, description, server, timezone, min_reporters_to_supersede, revoke_invalidates_invites, state, deleted_at, created_at, updated_at
+`
+
+type SoftDeleteCircleParams struct {
+	DeletedAt *int64
+	UpdatedAt int64
+	CircleID  string
+}
+
+// The tombstone deleteCircle writes. `deleted_at IS NULL` makes a second delete return no row
+// rather than moving the timestamp, so the moment a circle stopped existing is the first one.
+func (q *Queries) SoftDeleteCircle(ctx context.Context, arg SoftDeleteCircleParams) (Circle, error) {
+	row := q.db.QueryRowContext(ctx, softDeleteCircle, arg.DeletedAt, arg.UpdatedAt, arg.CircleID)
+	var i Circle
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.NameNorm,
+		&i.Description,
+		&i.Server,
+		&i.Timezone,
+		&i.MinReportersToSupersede,
+		&i.RevokeInvalidatesInvites,
+		&i.State,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateCircle = `-- name: UpdateCircle :one
 UPDATE circle
 SET name = ?1, name_norm = ?2, description = ?3,
@@ -150,7 +191,7 @@ SET name = ?1, name_norm = ?2, description = ?3,
     revoke_invalidates_invites = ?6,
     state = ?7, updated_at = ?8
 WHERE id = ?9
-RETURNING id, name, name_norm, description, server, timezone, min_reporters_to_supersede, revoke_invalidates_invites, state, created_at, updated_at
+RETURNING id, name, name_norm, description, server, timezone, min_reporters_to_supersede, revoke_invalidates_invites, state, deleted_at, created_at, updated_at
 `
 
 type UpdateCircleParams struct {
@@ -188,6 +229,7 @@ func (q *Queries) UpdateCircle(ctx context.Context, arg UpdateCircleParams) (Cir
 		&i.MinReportersToSupersede,
 		&i.RevokeInvalidatesInvites,
 		&i.State,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

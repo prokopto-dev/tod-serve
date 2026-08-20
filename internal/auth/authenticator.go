@@ -261,6 +261,19 @@ func (a *Authenticator) membership(ctx context.Context, id string) (resolvedMemb
 		return resolvedMembership{}, apierr.New(apierr.CodeMembershipRevoked,
 			"this membership has been revoked")
 	}
+	if row.CircleDeletedAt != nil {
+		// A credential bound to a membership in a circle that no longer exists is not a
+		// credential, and it is refused HERE for the same reason a revocation is: this read
+		// happens on every request, so a deleted circle stops its members acting on their very
+		// next call rather than when their tokens happen to expire.
+		//
+		// `token_invalid` rather than `not_found`, matching the line above that answers for a
+		// membership row which has gone: the fix is a new credential, not a retry. Saying the
+		// circle was deleted would also tell a former member something about a circle they can no
+		// longer see.
+		return resolvedMembership{}, apierr.New(apierr.CodeTokenInvalid,
+			"the credential is not valid")
+	}
 
 	membershipID, err := core.ParseID[core.Membership](row.ID)
 	if err != nil {

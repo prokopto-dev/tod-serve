@@ -301,6 +301,15 @@ func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (Jo
 		// the circle stopped taking this way in and another one may still work, while a 404 means
 		// go and get invited. Answering 404 to a member whose circle merely dropped Discord would
 		// be the confident mistake, and it is the one this ordering exists to prevent.
+		// A DELETED circle answers exactly what a circle this identity is not in answers, and it is
+		// checked HERE rather than left to fall out of building the response. It does fall out
+		// today — `finish` reads the circle to render it, that read carries `deleted_at IS NULL`,
+		// and the transaction rolls back — but a refactor that stopped rendering the circle would
+		// silently start minting tokens for circles that no longer exist. A rule that holds
+		// because of what a later function happens to do is not a rule.
+		if _, txErr := circle.Read(ctx, q, req.CircleID, now); txErr != nil {
+			return notFoundMembership()
+		}
 		if acceptErr != nil {
 			return acceptErr
 		}

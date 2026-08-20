@@ -81,19 +81,24 @@ type setCircleProvidersInput struct {
 	}
 }
 
+type deleteCircleInput struct {
+	CircleID string `path:"circle_id" doc:"The circle"`
+}
+
+type deleteCircleOutput struct{ Body CircleResponse }
+
 type setCircleProvidersOutput struct {
 	ETag string `header:"ETag"`
 	Body CircleResponse
 }
 
-// registerCircles attaches the circle operations this milestone owns.
+// registerCircles attaches the circle operations.
 //
-// `deleteCircle` is deliberately absent, and the reason is a conflict rather than an omission: the
-// API design says it deletes "the circle and every report in it", and `tod_report`, `quake_event`,
-// `invite_redemption` and `audit_log` are append-only by trigger — with `foreign_keys` ON, a
-// circle with any of those rows cannot be deleted at all. AGENTS.md says the invariant wins and
-// the conflict is worth reporting rather than resolving quietly, so the route stays unserved and
-// the PR says so.
+// `deleteCircle` writes a TOMBSTONE rather than removing rows, and that is the resolution of a
+// conflict rather than a shortcut: the API design said it deletes "the circle and every report in
+// it", and `tod_report`, `quake_event`, `invite_redemption` and `audit_log` are append-only by
+// trigger — with `foreign_keys` ON, a circle with any of those rows cannot be deleted at all. The
+// invariant wins. See [circle.Service.Delete].
 func (s *Server) registerCircles() error {
 	return errors.Join(
 		registerFailure(OpListCircles, Register(s.api, OpListCircles,
@@ -198,6 +203,29 @@ func (s *Server) registerCircles() error {
 				return &updateCircleOutput{
 					ETag: etag,
 					Body: CircleResponse{Circle: view, AsOf: s.cfg.Clock.Now()},
+				}, nil
+			})),
+
+		registerFailure(OpDeleteCircle, Register(s.api, OpDeleteCircle,
+			func(ctx context.Context, in *deleteCircleInput) (*deleteCircleOutput, error) {
+				id, err := parseCircleID(in.CircleID)
+				if err != nil {
+					return nil, err
+				}
+				p, ok := PrincipalFrom(ctx)
+				if !ok {
+					return nil, apierr.New(apierr.CodeUnauthenticated, "no principal on the request")
+				}
+				// The representation of what was deleted, returned once. After this the circle
+				// answers 404 to every read, including to the owner who just deleted it, and their
+				// own credential stops working on the next request — a membership in a circle that
+				// no longer exists is not a membership.
+				deleted, err := s.cfg.Circles.Delete(ctx, id, p.MembershipID)
+				if err != nil {
+					return nil, err
+				}
+				return &deleteCircleOutput{
+					Body: CircleResponse{Circle: deleted, AsOf: s.cfg.Clock.Now()},
 				}, nil
 			})),
 

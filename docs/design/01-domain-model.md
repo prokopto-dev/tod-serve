@@ -81,6 +81,15 @@ Every row carries `circle_id NOT NULL REFERENCES circle(id)`.
 | `min_reporters_to_supersede` | INTEGER | default 1 — see [consensus §4](03-consensus.md) |
 | `revoke_invalidates_invites` | INTEGER | 0/1, defaults on for weakly-revocable circles |
 | `state` | TEXT | `active \| archived` |
+| `deleted_at` | INTEGER | Micros, NULL while live. A **tombstone**: `deleteCircle` cannot remove the row, because the append-only tables referencing it forbid it |
+
+**`state` and `deleted_at` are different questions, and neither is the other.** `archived` is a
+circle that is still there and still readable — a guild that has stopped raiding Velious and wants
+its board out of the way — and it is set through `updateCircle` like any other setting. `deleted_at`
+is a circle that has stopped existing: every read carries `deleted_at IS NULL`, it releases its
+name, its invites resolve to nothing, and its members' credentials stop working on the next request.
+Implementing `deleteCircle` as an archive would be the confident mistake — the officers would
+believe the circle was gone while every member could still read the board.
 
 `revocation_strength` is **derived, never stored** — `durable` iff every accepted, instance-enabled
 provider has `verifiable_subject = 1`, else `weak`. Storing it would let it drift the moment a

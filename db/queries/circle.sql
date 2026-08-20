@@ -18,7 +18,18 @@ INSERT INTO circle (
 RETURNING *;
 
 -- name: GetCircle :one
-SELECT * FROM circle WHERE id = sqlc.arg(circle_id);
+-- A tombstoned circle does not exist to a reader. deleteCircle cannot remove the row -- the
+-- append-only tables referencing it forbid that -- so "deleted" is a predicate every read carries
+-- rather than an absence the database enforces.
+SELECT * FROM circle WHERE id = sqlc.arg(circle_id) AND deleted_at IS NULL;
+
+-- name: SoftDeleteCircle :one
+-- The tombstone deleteCircle writes. `deleted_at IS NULL` makes a second delete return no row
+-- rather than moving the timestamp, so the moment a circle stopped existing is the first one.
+UPDATE circle
+SET deleted_at = sqlc.arg(deleted_at), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(circle_id) AND deleted_at IS NULL
+RETURNING *;
 
 -- name: ListCirclesForIdentity :many
 -- tenancy: keyed on a VERIFIED identity's own memberships, never on a caller-supplied circle id.
@@ -26,7 +37,7 @@ SELECT * FROM circle WHERE id = sqlc.arg(circle_id);
 -- the identity from something the caller proved, so there is no id here to enumerate.
 SELECT c.* FROM circle c
 JOIN membership m ON m.circle_id = c.id
-WHERE m.identity_id = sqlc.arg(identity_id) AND m.revoked_at IS NULL
+WHERE m.identity_id = sqlc.arg(identity_id) AND m.revoked_at IS NULL AND c.deleted_at IS NULL
 ORDER BY c.id;
 
 -- name: UpdateCircle :one

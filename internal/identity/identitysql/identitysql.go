@@ -259,6 +259,23 @@ func (s *Store) InviteByCodeHash(ctx context.Context, hash []byte) (identity.Inv
 		return identity.Invite{}, fmt.Errorf("read invite: %w", err)
 	}
 
+	// The circle has to still exist, and this is checked BEFORE the liveness switch below rather
+	// than as another dead-code case. A tombstoned circle is not a dead invite — it is a code that
+	// names nothing — so it answers what an unissued code answers, which is what `previewInvite`
+	// and `/join` already answer for it.
+	//
+	// `GetCircle` carries `deleted_at IS NULL`, so this is the same predicate those two paths use
+	// rather than a second spelling of it. Without it `createAuthorizationURL` would resolve the
+	// code, write an `auth_flow` row and hand back an OAuth URL for a circle that no longer
+	// exists, while `previewInvite` called it invalid — two public routes disagreeing about one
+	// code, and a row stored for a circle nobody can join.
+	if _, err := s.q.GetCircle(ctx, row.CircleID); err != nil {
+		if store.IsNotFound(err) {
+			return identity.Invite{}, fmt.Errorf("invite circle: %w", identity.ErrNotFound)
+		}
+		return identity.Invite{}, fmt.Errorf("read invite circle: %w", err)
+	}
+
 	out := identity.Invite{ID: row.ID, CircleID: row.CircleID, CodeHash: row.CodeHash, Live: true}
 	// Ordered most-specific first: a revoked invite that has also expired is revoked, because
 	// that is the fact an officer acted on and the one they will look for.

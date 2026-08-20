@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
+	"github.com/prokopto-dev/tod-serve/internal/audit"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
@@ -285,6 +286,70 @@ func (s *Service) Update(
 		return Circle{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
 	return s.Get(ctx, id)
+}
+
+// Delete tombstones a circle.
+//
+// **It does not remove a single row, and cannot.** `tod_report`, `quake_event`,
+// `invite_redemption` and `audit_log` are append-only by trigger, and with `foreign_keys` ON a
+// circle with any of them cannot be deleted at all — every circle acquires an audit row on its
+// first membership change. The report log outliving the circle is not a compromise here: it is the
+// whole trust argument for deriving state rather than storing it, and canonical §11 says ToD
+// reports are never pruned.
+//
+// So the circle stops existing to the API and the evidence stays where it is. Every read carries
+// `deleted_at IS NULL`, the unique index on the name is partial so the name is released, and
+// `internal/auth` refuses a credential bound to a membership in a deleted circle on its very next
+// request — the same "checked on every request" rule revocation uses, for the same reason.
+//
+// What this is NOT is a way to make data go away for somebody who asks. That is a different
+// operation with a different name, and it is not this one.
+func (s *Service) Delete(
+	ctx context.Context, id core.CircleID, actor core.MembershipID,
+) (Circle, error) {
+	now := s.clock.Now()
+	var deleted Circle
+	err := s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
+		current, txErr := get(ctx, q, id, now)
+		if txErr != nil {
+			return txErr
+		}
+		// The audit row goes in BEFORE the tombstone. `audit_log.circle_id` references `circle`,
+		// and appending after the row is tombstoned would still work — the row is there — but the
+		// order that reads correctly is the one where the last thing recorded about a circle is
+		// its deletion.
+		if txErr = audit.Append(ctx, q, s.ids, now, audit.Entry{
+			CircleID: id, Actor: actor, Action: audit.ActionCircleDeleted,
+			EntityType: audit.EntityCircle, EntityID: id.String(),
+			Detail: map[string]any{"name": current.Name, "server": current.Server},
+		}); txErr != nil {
+			return txErr
+		}
+
+		at := int64(now)
+		_, txErr = q.SoftDeleteCircle(ctx, sqlitegen.SoftDeleteCircleParams{
+			DeletedAt: &at, UpdatedAt: at, CircleID: id.String(),
+		})
+		if store.IsNotFound(txErr) {
+			// Somebody else deleted it between the read and the write. One deletion is enough.
+			return apierr.New(apierr.CodeNotFound, "no such circle")
+		}
+		if txErr != nil {
+			return txErr
+		}
+		deleted = current
+		return nil
+	})
+	if err != nil {
+		if _, coded := apierr.From(err); coded {
+			return Circle{}, err
+		}
+		return Circle{}, apierr.Wrap(apierr.CodeInternalError, err, "")
+	}
+
+	s.log.InfoContext(ctx, "circle deleted",
+		slog.String("circle_id", id.String()), slog.String("server", deleted.Server))
+	return deleted, nil
 }
 
 func validName(raw string) (string, error) {

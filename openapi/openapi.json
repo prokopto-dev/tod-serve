@@ -2397,6 +2397,123 @@
       }
     },
     "/api/v1/circles/{circle_id}": {
+      "delete": {
+        "operationId": "deleteCircle",
+        "parameters": [
+          {
+            "description": "The circle",
+            "in": "path",
+            "name": "circle_id",
+            "required": true,
+            "schema": {
+              "description": "The circle",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CircleResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Delete the circle and every report in it",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": true,
+        "x-tod-creates-state": false,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "circle.delete",
+              "realm": "circle",
+              "requires_step_up": true,
+              "roles": [
+                "owner"
+              ],
+              "scopes": [],
+              "summary": "Delete the circle and every report in it"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      },
       "get": {
         "operationId": "getCircle",
         "parameters": [

@@ -112,16 +112,43 @@ func (q *Queries) GetMembership(ctx context.Context, arg GetMembershipParams) (M
 }
 
 const getMembershipByID = `-- name: GetMembershipByID :one
-SELECT id, circle_id, identity_id, kind, owner_membership_id, display_name, display_name_norm, role, admitted_by_invite_id, joined_at, revoked_at, revoked_by_membership_id, revoke_reason, created_at, updated_at FROM membership WHERE id = ?1
+SELECT m.id, m.circle_id, m.identity_id, m.kind, m.owner_membership_id, m.display_name, m.display_name_norm, m.role, m.admitted_by_invite_id, m.joined_at, m.revoked_at, m.revoked_by_membership_id, m.revoke_reason, m.created_at, m.updated_at, c.deleted_at AS circle_deleted_at
+FROM membership m
+JOIN circle c ON c.id = m.circle_id
+WHERE m.id = ?1
 `
+
+type GetMembershipByIDRow struct {
+	ID                    string
+	CircleID              string
+	IdentityID            *string
+	Kind                  string
+	OwnerMembershipID     *string
+	DisplayName           string
+	DisplayNameNorm       string
+	Role                  string
+	AdmittedByInviteID    *string
+	JoinedAt              int64
+	RevokedAt             *int64
+	RevokedByMembershipID *string
+	RevokeReason          *string
+	CreatedAt             int64
+	UpdatedAt             int64
+	CircleDeletedAt       *int64
+}
 
 // tenancy: keyed on the membership a verified credential is already bound to, and this lookup is
 // what RESOLVES the caller's circle -- so it cannot also filter by one. A PAT carries a membership
 // id and nothing else (ADR-0005); every circle-scoped query downstream of this one is filtered by
 // the circle_id this row returns, which is the only reading of the tenancy rule that terminates.
-func (q *Queries) GetMembershipByID(ctx context.Context, id string) (Membership, error) {
+//
+// It carries the circle's deleted_at because this is the one read on EVERY request. Membership
+// state is checked here rather than by cascading at revocation time, and a deleted circle is the
+// same kind of fact: without it, the members of a deleted circle would keep acting in it until
+// their tokens expired, which is the cascade-and-forget failure ADR-0005 exists to avoid.
+func (q *Queries) GetMembershipByID(ctx context.Context, id string) (GetMembershipByIDRow, error) {
 	row := q.db.QueryRowContext(ctx, getMembershipByID, id)
-	var i Membership
+	var i GetMembershipByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.CircleID,
@@ -138,6 +165,7 @@ func (q *Queries) GetMembershipByID(ctx context.Context, id string) (Membership,
 		&i.RevokeReason,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CircleDeletedAt,
 	)
 	return i, err
 }

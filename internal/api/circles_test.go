@@ -298,3 +298,91 @@ func TestUpdateCircle_RevokeInvalidatesInvites_IsRefusedEvenWhenItChangesNothing
 	})
 	h.requireProblem(got, apierr.CodeForbidden)
 }
+
+// Deleting a circle is a TOMBSTONE, and the consequences reach further than the circle row: every
+// read 404s, and the credential of anybody who was in it stops working on their very next request.
+// That last part is the same "checked on every request" rule revocation uses — without it, the
+// members of a deleted circle would keep acting in it until their tokens expired, which is the
+// cascade-and-forget failure ADR-0005 exists to avoid.
+func TestDeleteCircle_EndsTheCircleAndEveryCredentialInIt(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	mine := h.seedCircle("Mine")
+	owner := h.seedMember(mine, authz.RoleOwner)
+	member := h.seedMember(mine, authz.RoleMember)
+	memberToken := h.seedToken(member, allScopes()...)
+
+	// Before: an ordinary member reads the circle.
+	before := h.do(request{Method: http.MethodGet, Path: circlePath(mine), Token: memberToken})
+	require.Equal(t, http.StatusOK, before.Status, before.Body)
+
+	// `circle.delete` is owner-only and in the capability floor, so no token reaches it.
+	byToken := h.do(request{
+		Method: http.MethodDelete, Path: circlePath(mine),
+		Token: h.seedToken(owner, allScopes()...),
+	})
+	h.requireProblem(byToken, apierr.CodeSessionRequired)
+
+	got := h.do(request{
+		Method: http.MethodDelete, Path: circlePath(mine), Session: h.session(owner, true),
+	})
+	require.Equal(t, http.StatusOK, got.Status, got.Body)
+	var deleted api.CircleResponse
+	require.NoError(t, json.Unmarshal([]byte(got.Body), &deleted))
+	require.Equal(t, "Mine", deleted.Name, "the representation of what went is returned once")
+
+	// After: the member's credential no longer resolves, on the next request, everywhere.
+	after := h.do(request{Method: http.MethodGet, Path: circlePath(mine), Token: memberToken})
+	h.requireProblem(after, apierr.CodeTokenInvalid)
+
+	// Including on routes that are not circle-scoped: the membership behind the credential is in a
+	// circle that no longer exists, so there is no principal to be.
+	me := h.do(request{Method: http.MethodGet, Path: mePath, Token: memberToken})
+	h.requireProblem(me, apierr.CodeTokenInvalid)
+
+	// And the owner's own session goes the same way. A delete that left its author able to act in
+	// the circle would be a delete only other people could see.
+	ownerAfter := h.do(request{
+		Method: http.MethodGet, Path: circlePath(mine), Session: h.session(owner, true),
+	})
+	h.requireProblem(ownerAfter, apierr.CodeTokenInvalid)
+}
+
+// A live invite into a deleted circle resolves to nothing, and says exactly what an unissued code
+// says. A former member's code must not become a way to confirm what happened to a circle they can
+// no longer see.
+func TestDeleteCircle_ItsInvites_StopResolving(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	mine := h.seedCircle("Mine")
+	owner := h.seedMember(mine, authz.RoleOwner)
+
+	created := h.do(request{
+		Method: http.MethodPost, Path: invitesPath(mine),
+		Token:   h.seedToken(owner, authz.ScopeInviteCreate),
+		Headers: map[string]string{api.IdempotencyKeyHeader: "mint"},
+		Body:    `{}`,
+	})
+	require.Equal(t, http.StatusOK, created.Status, created.Body)
+	var minted api.MintedInviteResponse
+	require.NoError(t, json.Unmarshal([]byte(created.Body), &minted))
+
+	preview := h.do(request{
+		Method: http.MethodPost, Path: api.BasePath + "/invites/preview",
+		Body: `{"code":"` + string(minted.Code) + `"}`,
+	})
+	require.Equal(t, http.StatusOK, preview.Status, preview.Body)
+
+	deleted := h.do(request{
+		Method: http.MethodDelete, Path: circlePath(mine), Session: h.session(owner, true),
+	})
+	require.Equal(t, http.StatusOK, deleted.Status, deleted.Body)
+
+	// The same answer an unissued code gets, not one that says the circle was once there.
+	after := h.do(request{
+		Method: http.MethodPost, Path: api.BasePath + "/invites/preview",
+		Body: `{"code":"` + string(minted.Code) + `"}`,
+	})
+	h.requireProblem(after, apierr.CodeInviteInvalid)
+	require.Equal(t, after.Problem.Detail, "no such invite")
+}

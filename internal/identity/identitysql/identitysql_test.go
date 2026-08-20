@@ -392,3 +392,46 @@ func TestIdentityBySubject_ReportsTheInstanceBlock(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{circleID}, circles)
 }
+
+// An invite naming a DELETED circle resolves to nothing, on THIS path as well as through
+// `invite.Resolve`.
+//
+// `createAuthorizationURL` resolves a code through here, not through `internal/invite`. Without the
+// live-circle predicate it would hand back an OAuth URL and write an `auth_flow` row for a circle
+// that no longer exists, while `previewInvite` called the same code invalid — two public routes
+// disagreeing about one code, and a stored row for a circle nobody can join.
+//
+// It is `ErrNotFound` rather than a dead-code reason: a tombstoned circle is not a dead invite, it
+// is a code that names nothing, and that is the same answer an unissued code gets. Saying more
+// would let a former member confirm what happened to a circle they can no longer see.
+func TestInvite_ForADeletedCircle_ResolvesToNothing(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	circleID, membershipID := f.seedCircle(t)
+
+	const code = "TODI-GONE0-00001"
+	_, err := f.queries.CreateInvite(f.ctx, sqlitegen.CreateInviteParams{
+		ID: f.newID(t), CircleID: circleID, CodeHash: hashCode(code), CodePrefix: code[:9],
+		Role: "member", MaxUses: 5, ExpiresAt: int64(now.Add(time.Hour)),
+		CreatedByMembershipID: membershipID, MintedByKind: "session", Note: "",
+		CreatedAt: int64(now), UpdatedAt: int64(now),
+	})
+	require.NoError(t, err)
+
+	live, err := f.store.InviteByCode(f.ctx, code)
+	require.NoError(t, err)
+	require.True(t, live.Live)
+
+	deletedAt := int64(now)
+	_, err = f.queries.SoftDeleteCircle(f.ctx, sqlitegen.SoftDeleteCircleParams{
+		DeletedAt: &deletedAt, UpdatedAt: deletedAt, CircleID: circleID,
+	})
+	require.NoError(t, err)
+
+	// Both lookups, because the callback holds the hash and never the code.
+	_, err = f.store.InviteByCode(f.ctx, code)
+	require.ErrorIs(t, err, identity.ErrNotFound)
+	_, err = f.store.InviteByCodeHash(f.ctx, hashCode(code))
+	require.ErrorIs(t, err, identity.ErrNotFound)
+}

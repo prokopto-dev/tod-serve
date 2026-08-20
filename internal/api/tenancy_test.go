@@ -118,14 +118,6 @@ func uncoveredCircleRoutes() coverageGap {
 		// Phase 6 — realtime, moved out of Phase 4 deliberately (see ROADMAP.md).
 		api.OpSubscribeCircleEvent: "Phase 6 (internal/events)",
 		api.OpReplayCircleEvents:   "Phase 6 (internal/events)",
-
-		// Not a milestone: a conflict between two normative rules, reported rather than resolved
-		// quietly. docs/design/02-api-design.md says `deleteCircle` deletes "the circle and every
-		// report in it", and canonical §10 makes `tod_report`, `quake_event`, `invite_redemption`
-		// and `audit_log` append-only by trigger — so with `foreign_keys` ON a circle that has any
-		// of those rows cannot be deleted at all. AGENTS.md: the invariant wins, and the conflict
-		// is a bug worth reporting.
-		api.OpDeleteCircle: "BLOCKED — deleting a circle requires deleting append-only rows",
 	}
 }
 

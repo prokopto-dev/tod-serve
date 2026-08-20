@@ -11,7 +11,9 @@ import (
 
 const anyCircleGatesOnAGuild = `-- name: AnyCircleGatesOnAGuild :one
 SELECT EXISTS (
-  SELECT 1 FROM circle_provider WHERE discord_guild_id IS NOT NULL
+  SELECT 1 FROM circle_provider cp
+  JOIN circle c ON c.id = cp.circle_id
+  WHERE cp.discord_guild_id IS NOT NULL AND c.deleted_at IS NULL
 ) AS gated
 `
 
@@ -21,6 +23,11 @@ SELECT EXISTS (
 // any circle on this instance gate on a guild at all". The answer is one bit about the instance
 // and identifies nothing. Adding a circle_id here would require the public caller to supply one,
 // which is the whole thing this query exists to avoid.
+// A tombstoned circle's gate does not count. This bit decides whether createAuthorizationURL asks
+// for guilds.members.read when there is no invite, and a deleted circle keeping it set would put a
+// permission on every consent screen that nothing left on this instance uses -- which is exactly
+// what "the authorization request asks for every scope the callback then uses, and no more" is
+// there to prevent.
 func (q *Queries) AnyCircleGatesOnAGuild(ctx context.Context) (bool, error) {
 	row := q.db.QueryRowContext(ctx, anyCircleGatesOnAGuild)
 	var gated bool

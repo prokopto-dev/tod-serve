@@ -347,3 +347,56 @@ func TestAccepted_AStoredGateWithRolesAndNoGuild_IsRefusedOnRead(t *testing.T) {
 	_, err = f.service.Get(t.Context(), view.ID)
 	require.Error(t, err)
 }
+
+// A tombstoned circle's `circle_provider` rows outlive it — nothing deletes them, because nothing
+// deletes anything here — so a lookup that starts from them would answer for a circle that no
+// longer exists. Every caller today resolves the circle first; this makes it a mechanism rather
+// than a habit.
+func TestAccepted_AfterTheCircleIsDeleted_IsNotFound(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.provider("discord", schemaenum.IdentityProviderKindDiscord, true)
+	view := f.create("Riot Blue", schemaenum.ServerBlue)
+	actor := f.seedMember(view.ID)
+
+	_, err := circle.Accepted(t.Context(), f.store.Queries(), view.ID, "discord")
+	require.NoError(t, err)
+
+	_, err = f.service.Delete(t.Context(), view.ID, actor)
+	require.NoError(t, err)
+
+	_, err = circle.Accepted(t.Context(), f.store.Queries(), view.ID, "discord")
+	require.True(t, apierr.HasCode(err, apierr.CodeNotFound), "got %v", err)
+}
+
+// The instance-level bit that decides whether `createAuthorizationURL` asks for
+// `guilds.members.read` when there is no invite to resolve a circle from.
+//
+// A deleted circle keeping it set would put a permission on every consent screen that nothing left
+// on this instance uses — which is what the invariant "the authorization request asks for every
+// scope the callback then uses, and no more" exists to prevent. Over-permissioning every user to
+// account for a circle nobody can join is the wrong direction.
+func TestAnyCircleGatesOnAGuild_IgnoresADeletedCircle(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.provider("discord", schemaenum.IdentityProviderKindDiscord, true)
+	view := f.create("Riot Blue", schemaenum.ServerBlue)
+	actor := f.seedMember(view.ID)
+
+	_, err := f.service.SetProviders(t.Context(), view.ID, circle.SetProvidersRequest{
+		Providers: []circle.AcceptedProvider{{Key: "discord", DiscordGuildID: "guild-1"}},
+	})
+	require.NoError(t, err)
+
+	gated, err := f.store.Queries().AnyCircleGatesOnAGuild(t.Context())
+	require.NoError(t, err)
+	require.True(t, gated, "a live gated circle sets the bit")
+
+	_, err = f.service.Delete(t.Context(), view.ID, actor)
+	require.NoError(t, err)
+
+	gated, err = f.store.Queries().AnyCircleGatesOnAGuild(t.Context())
+	require.NoError(t, err)
+	require.False(t, gated,
+		"a deleted circle is still asking every user for guilds.members.read")
+}

@@ -63,7 +63,11 @@ func Resolve(
 	row, err := q.GetInviteByCodeHash(ctx, Hash(code))
 	switch {
 	case err == nil:
-		return resolvedInvite(row, code, now)
+		resolved, resolveErr := resolvedInvite(row, code, now)
+		if resolveErr != nil {
+			return Resolved{}, resolveErr
+		}
+		return resolved, requireLiveCircle(ctx, q, resolved.CircleID)
 	case !store.IsNotFound(err):
 		return Resolved{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
@@ -75,7 +79,27 @@ func Resolve(
 	if err != nil {
 		return Resolved{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	return resolvedGrant(grant, code, now)
+	resolved, err := resolvedGrant(grant, code, now)
+	if err != nil {
+		return Resolved{}, err
+	}
+	return resolved, requireLiveCircle(ctx, q, resolved.CircleID)
+}
+
+// requireLiveCircle refuses a code whose circle has been deleted.
+//
+// `invite_invalid`, the same answer an unissued code gets, rather than anything that says the
+// circle was once there: a former member's code should not become a way to confirm what happened
+// to a circle they can no longer see. The invite row itself is left alone — it references the
+// circle, and deleting rows is what a tombstone exists to avoid.
+func requireLiveCircle(ctx context.Context, q *sqlitegen.Queries, id core.CircleID) error {
+	if _, err := q.GetCircle(ctx, id.String()); err != nil {
+		if store.IsNotFound(err) {
+			return apierr.New(apierr.CodeInviteInvalid, "no such invite")
+		}
+		return apierr.Wrap(apierr.CodeInternalError, err, "")
+	}
+	return nil
 }
 
 func resolvedInvite(row sqlitegen.Invite, code Code, now core.Micros) (Resolved, error) {
