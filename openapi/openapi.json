@@ -2126,6 +2126,7 @@
             "type": "string"
           },
           "revoke_invalidates_invites": {
+            "description": "Owner only: it decides whether revoking a weakly-revocable member also kills the circle's live invites",
             "type": "boolean"
           },
           "server": {
