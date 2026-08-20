@@ -1022,6 +1022,15 @@ table "circle" {
     type    = text
     default = "active"
   }
+  // A TOMBSTONE, not a delete. deleteCircle cannot remove the rows: tod_report, quake_event,
+  // invite_redemption and audit_log are append-only by trigger, and with foreign_keys ON a circle
+  // that has any of them cannot be deleted at all. The evidence outlives the circle, which is the
+  // report log's whole trust argument -- so the circle stops existing to the API and the rows stay
+  // exactly where they are.
+  column "deleted_at" {
+    null = true
+    type = integer
+  }
   column "created_at" {
     null = false
     type = integer
@@ -1034,9 +1043,14 @@ table "circle" {
     columns = [column.id]
   }
   // Per server, not per instance: one guild's Blue circle and Green circle share a name by design.
+  //
+  // PARTIAL, so a tombstoned circle stops holding its name. An operator who deleted "Riot Blue" by
+  // mistake has to be able to make it again, and a unique index over dead rows would tell them the
+  // name is taken by something they cannot see.
   index "ux_circle_name_norm_server" {
     unique  = true
     columns = [column.name_norm, column.server]
+    where   = "deleted_at IS NULL"
   }
   check "ck_circle_server" {
     expr = local.check_circle_server

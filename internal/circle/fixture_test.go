@@ -100,3 +100,39 @@ func boolToInt(b bool) int64 {
 	}
 	return 0
 }
+
+// seedMember writes a membership, so a deletion has an actor to attribute to — `audit_log`'s
+// foreign key wants a real one.
+func (f *fixture) seedMember(circleID core.CircleID) core.MembershipID {
+	f.t.Helper()
+	providerID := f.providerOnce()
+	identityID, err := core.NewID[core.Identity](f.ids, f.clock.Now())
+	require.NoError(f.t, err)
+	_, err = f.store.Queries().CreateIdentity(f.t.Context(), sqlitegen.CreateIdentityParams{
+		ID: identityID.String(), ProviderID: providerID, Subject: identityID.String(),
+		DisplayName: "Tankguy", CreatedAt: int64(fixtureNow), UpdatedAt: int64(fixtureNow),
+	})
+	require.NoError(f.t, err)
+
+	id, err := core.NewID[core.Membership](f.ids, f.clock.Now())
+	require.NoError(f.t, err)
+	subject := identityID.String()
+	_, err = f.store.Queries().CreateMembership(f.t.Context(), sqlitegen.CreateMembershipParams{
+		ID: id.String(), CircleID: circleID.String(), IdentityID: &subject,
+		Kind: schemaenum.MembershipKindHuman, DisplayName: "Tankguy",
+		DisplayNameNorm: "tankguy", Role: schemaenum.MembershipRoleOwner,
+		JoinedAt: int64(fixtureNow), CreatedAt: int64(fixtureNow), UpdatedAt: int64(fixtureNow),
+	})
+	require.NoError(f.t, err)
+	return id
+}
+
+// providerOnce writes the `local` provider at most once per fixture.
+func (f *fixture) providerOnce() string {
+	f.t.Helper()
+	row, err := f.store.Queries().GetIdentityProviderByKey(f.t.Context(), "local")
+	if err == nil {
+		return row.ID
+	}
+	return f.provider("local", schemaenum.IdentityProviderKindLocal, true)
+}

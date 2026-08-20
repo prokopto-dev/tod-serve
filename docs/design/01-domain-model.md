@@ -81,6 +81,7 @@ Every row carries `circle_id NOT NULL REFERENCES circle(id)`.
 | `min_reporters_to_supersede` | INTEGER | default 1 — see [consensus §4](03-consensus.md) |
 | `revoke_invalidates_invites` | INTEGER | 0/1, defaults on for weakly-revocable circles |
 | `state` | TEXT | `active \| archived` |
+| `deleted_at` | INTEGER | Micros, NULL while live. A **tombstone**: `deleteCircle` cannot remove the row, because the append-only tables referencing it forbid it |
 
 `revocation_strength` is **derived, never stored** — `durable` iff every accepted, instance-enabled
 provider has `verifiable_subject = 1`, else `weak`. Storing it would let it drift the moment a

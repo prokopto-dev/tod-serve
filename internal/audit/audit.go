@@ -30,6 +30,7 @@ const (
 	ActionCircleCreated       Action = "circle.created"
 	ActionCircleUpdated       Action = "circle.updated"
 	ActionCircleProvidersSet  Action = "circle.providers_set"
+	ActionCircleDeleted       Action = "circle.deleted"
 	ActionMemberJoined        Action = "member.joined"
 	ActionMemberUpdated       Action = "member.updated"
 	ActionMemberRevoked       Action = "member.revoked"

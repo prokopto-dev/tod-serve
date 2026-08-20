@@ -137,15 +137,24 @@ by a command that already holds the database, stored as a hash in `tod_meta`, si
 compare-and-swap, and expiring. It resolves through the same lookup as an invite, so `previewInvite`
 and `/join` have one code path and a client cannot tell the two apart.
 
-**`deleteCircle` is unimplemented, and the reason is a conflict rather than an omission.** The row
-above says it deletes "the circle and every report in it";
+**`deleteCircle` writes a TOMBSTONE, and that is the resolution of a conflict rather than a
+shortcut.** This document used to say it deletes "the circle and every report in it";
 [canonical §10](00-canonical-conventions.md#10-the-report-log--non-negotiable) makes `tod_report`,
-`quake_event`, `invite_redemption` and `audit_log` append-only by database trigger. With
-`foreign_keys` ON, a circle that has any of those rows cannot be deleted at all — and every circle
-acquires an audit row on its first membership change. The invariant wins, so the route carries no
-handler; `uncoveredCircleRoutes` in `internal/api` names it and the tenancy test asserts that name
-against the registry in both directions. Giving it a `deleted_at` tombstone, or putting `audit_log`
-on a cascade allowlist, is a reviewed decision and is deliberately not made here.
+`quake_event`, `invite_redemption` and `audit_log` append-only by database trigger, and with
+`foreign_keys` ON a circle holding any of those rows cannot be deleted at all — every circle
+acquires an audit row on its first membership change. The invariant wins, and the report log
+outliving the circle is not a compromise: it is the whole trust argument for deriving state rather
+than storing it, and [canonical §11](00-canonical-conventions.md#11-retention) says ToD reports are
+never pruned.
+
+So `circle.deleted_at` is set and the rows stay. Every read carries `deleted_at IS NULL`, the
+unique index on `(name_norm, server)` is partial so the name is released, an invite naming a
+deleted circle answers `404 invite_invalid` — the same answer an unissued code gets — and
+`internal/auth` refuses a credential bound to a membership in a deleted circle on its very next
+request, which is the same rule revocation uses and for the same reason.
+
+**This is not a way to make data go away for somebody who asks.** That is a different operation
+with a different name, and it is not this one.
 
 ## Members and invites
 
