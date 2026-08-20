@@ -339,6 +339,16 @@ func (s *Service) Update(
 			}
 			role = string(parsed)
 		}
+		// Only when the role actually MOVES. `role` defaults to the subject's current one, so a
+		// request that carries nothing but a display name would otherwise read as a grant of
+		// whatever that member already holds — and renaming an owner would be refused to every
+		// officer. A guard about roles quietly becoming a guard about names is the sort of thing
+		// that gets a guard removed rather than fixed.
+		if role != row.Role {
+			if txErr = refuseGrantAboveOwnRole(ctx, q, circleID, actor, role); txErr != nil {
+				return txErr
+			}
+		}
 		if row.Role == string(authz.RoleOwner) && role != string(authz.RoleOwner) {
 			if txErr = requireAnotherOwner(ctx, q, circleID, id); txErr != nil {
 				return txErr
@@ -371,6 +381,61 @@ func (s *Service) Update(
 	// Re-read outside the transaction so the representation carries `possible_duplicate`, which
 	// is a fact about the whole member list rather than about the row that just changed.
 	return s.Get(ctx, circleID, id)
+}
+
+// refuseGrantAboveOwnRole stops a member handing out a role stronger than the one they hold.
+//
+// `member.manage` is held by officers, and without this an officer could set ANY member's role —
+// including their own — to `owner`, which adds `circle.security.manage`, `circle.delete`,
+// `token.mint` and `token.revoke`. That is self-service promotion to the strongest role in the
+// circle, and the rest of the design goes to real lengths to make becoming an owner deliberate:
+// `invite` carries `CHECK (role <> 'owner')` precisely so that "a leaked bot token can add a
+// visible, revocable member — not seize the circle", and the only other door is a code the CLI
+// prints once on the operator's own terminal. An officer promoting themselves walks straight past
+// both.
+//
+// The rule is the ordinary one and it is the ordering the role enum already carries: you may grant
+// what you hold, and not more. An owner may still make another owner, which is how ownership is
+// handed over.
+//
+// It does NOT stop an officer changing a member who currently outranks them — an officer can still
+// demote an owner, bounded by `last_owner`, so a circle always keeps one. Whether that should also
+// be refused is a policy question rather than an escalation: an officer who demotes an owner gains
+// nothing, because this function stops them taking the role. It is named here rather than decided
+// quietly.
+func refuseGrantAboveOwnRole(
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID,
+	actor core.MembershipID, granting string,
+) error {
+	granted, err := authz.ParseRole(granting)
+	if err != nil {
+		return err
+	}
+	actorRow, err := q.GetMembership(ctx, sqlitegen.GetMembershipParams{
+		CircleID: circleID.String(), ID: actor.String(),
+	})
+	if store.IsNotFound(err) {
+		// The actor is authenticated and this is their own circle — the tenancy middleware settled
+		// that before the handler ran — so a missing row is a database somebody edited by hand.
+		// It grants nothing rather than everything.
+		return apierr.New(apierr.CodeForbidden, "the acting membership no longer exists")
+	}
+	if err != nil {
+		return err
+	}
+	actorRole, err := authz.ParseRole(actorRow.Role)
+	if err != nil {
+		// A role outside the enum grants nothing. Failing open here would make a typo in a
+		// migration into a privilege escalation, which is the very thing this function prevents.
+		return apierr.Wrap(apierr.CodeForbidden, err, "the acting membership has no usable role")
+	}
+	if !actorRole.AtLeast(granted) {
+		return apierr.Newf(apierr.CodeForbidden,
+			"you hold %s and cannot grant %s; a role is handed out by somebody who holds it",
+			actorRole, granted).
+			WithField("body.role", "above the role you hold")
+	}
+	return nil
 }
 
 // requireAnotherOwner refuses to leave a circle without one.
