@@ -284,3 +284,66 @@ func (f *fixture) revoke(memberID core.MembershipID) {
 	})
 	require.NoError(f.t, err)
 }
+
+// seedCatalogueTimerOn is [fixture.seedCatalogueTimer] for a server other than blue, for the tests
+// about a catalogue timer's per-server fan-out.
+func (f *fixture) seedCatalogueTimerOn(
+	target catalogue.Target, server string, open, closeAt time.Duration,
+) {
+	f.t.Helper()
+	openSeconds, closeSeconds := int64(open.Seconds()), int64(closeAt.Seconds())
+	_, err := f.catalogue.PutTimer(f.t.Context(), target.ID, core.Server(server),
+		catalogue.WindowRequest{
+			WindowKind:               schemaenum.RaidTargetTimerWindowKindVariance,
+			WindowOpenOffsetSeconds:  &openSeconds,
+			WindowCloseOffsetSeconds: &closeSeconds,
+			Source:                   "test",
+		})
+	require.NoError(f.t, err)
+}
+
+// seedOverrideIn is [fixture.seedOverride] for a circle other than the fixture's own.
+func (f *fixture) seedOverrideIn(
+	circleID core.CircleID, target catalogue.Target, open, closeAt time.Duration,
+) {
+	f.t.Helper()
+	openSeconds, closeSeconds := int64(open.Seconds()), int64(closeAt.Seconds())
+	_, err := f.catalogue.PutOverride(f.t.Context(), circleID, target.ID,
+		f.seedMember(circleID, "Officer"), catalogue.WindowRequest{
+			WindowKind:               schemaenum.RaidTargetTimerWindowKindVariance,
+			WindowOpenOffsetSeconds:  &openSeconds,
+			WindowCloseOffsetSeconds: &closeSeconds,
+			Note:                     "we have tracked this for two years",
+		})
+	require.NoError(f.t, err)
+}
+
+// reportIn appends a kill in a circle other than the fixture's own.
+func (f *fixture) reportIn(
+	circleID core.CircleID, target catalogue.Target, diedAt core.Micros, source string,
+) tod.Created {
+	f.t.Helper()
+	circle, err := f.db.Queries().GetCircle(f.t.Context(), circleID.String())
+	require.NoError(f.t, err)
+	created, err := f.tods.Create(f.t.Context(), tod.CreateRequest{
+		CircleID: circleID, Reporter: f.seedMember(circleID, "Reporter"),
+		TargetID: target.ID.String(), Server: circle.Server, DiedAt: diedAt, Source: source,
+	})
+	require.NoError(f.t, err)
+	return created
+}
+
+// cachedIn reads the cache row for a circle other than the fixture's own.
+func (f *fixture) cachedIn(
+	circleID core.CircleID, target catalogue.Target,
+) (sqlitegen.TargetStateCache, bool) {
+	f.t.Helper()
+	row, err := f.db.Queries().GetTargetState(f.t.Context(), sqlitegen.GetTargetStateParams{
+		CircleID: circleID.String(), TargetID: target.ID.String(),
+	})
+	if store.IsNotFound(err) {
+		return sqlitegen.TargetStateCache{}, false
+	}
+	require.NoError(f.t, err)
+	return row, true
+}

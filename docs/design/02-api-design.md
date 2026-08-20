@@ -238,6 +238,14 @@ not `report_ids[]` and not `alternatives[]`. Both are the current cluster's deta
 `target_state_cache`, and rebuilding them for every target on every poll would mean clustering a
 circle's whole report log to render a list. `getTargetState` has them.
 
+A catalogue timer is instance-wide and **per server**, so `putRaidTargetTimer` and
+`tod-serve seed timers --file` move the window for every circle pinned to that server that has not
+overridden it — and leave alone every circle that has. The recomputation fans out over those
+circles and its failure **fails the write**: both are idempotent, so a retry converges, while a run
+that reported success with stale boards does not. The seed command is the only such write with no
+route, so the architectural gate over the registry cannot see it and
+`TestSeedTimers_RecomputesEveryBoardTheWindowsMoved` covers it instead.
+
 **`status` and every countdown are re-derived on each read** and are never served from the cache.
 A stored `pre_window` is stale the instant the window opens with no write in between, so the cache
 holds the *point estimate* and each read renders §6 and §7 from it against `as_of` — through

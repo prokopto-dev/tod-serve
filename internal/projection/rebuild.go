@@ -409,22 +409,30 @@ func (s *Service) OnTimerChange(
 	if err != nil {
 		return err
 	}
-	return s.recomputeForTimerChange(ctx, circle, targetID)
+	// Never skipped: this circle's OWN override is what just changed, so its effective timer
+	// moved whatever the resolved source now says.
+	_, err = s.recomputeForTimerChange(ctx, circle, targetID, false)
+	return err
 }
 
-// OnCatalogueTimerChange recomputes one target for EVERY circle pinned to the given server.
+// OnCatalogueTimerChange recomputes one target for every circle pinned to the given server that
+// has NOT overridden it.
 //
 // `raid_target_timer` is instance-wide and per-server, so writing one row moves the window for
-// every circle on that server that has not overridden it — and leaves alone every circle that has,
-// because [catalogue.Service.ResolveTimer] puts the override first and this recomputation goes
-// through it like any other. **The fan-out is a loop here rather than a nil check somewhere**: the
-// port is two methods rather than one nullable circle id precisely so the amount of work is
-// visible at the call site, and hiding it behind a branch in this function would give that back.
+// every circle on that server — except the ones that disagreed with the catalogue in the first
+// place, whose effective timer is unchanged because [catalogue.Service.ResolveTimer] puts the
+// override first. Recomputing those would write `timer_change` onto a board whose window did not
+// move, which is a small lie in the one field that exists to explain why an answer changed.
+//
+// **The fan-out is a loop here rather than a nil check somewhere.** The port is two methods rather
+// than one nullable circle id precisely so the amount of work is visible at the call site, and
+// hiding it behind a branch in this function would give that back. The circles it skipped are
+// counted and logged: a filter that drops something counts it somewhere visible.
 //
 // Every circle is attempted even after one fails, and the failures are joined. A partial
 // invalidation is the bad outcome, so the answer names all of it rather than the first circle that
-// happened to break — and the caller still fails, because a seed or a route that reported success
-// with three boards stale is exactly what this is for.
+// happened to break — and the caller still fails, because a route or a seed that reported success
+// with three boards stale is exactly what this exists to prevent.
 func (s *Service) OnCatalogueTimerChange(
 	ctx context.Context, server core.Server, targetID core.RaidTargetID,
 ) error {
@@ -437,10 +445,17 @@ func (s *Service) OnCatalogueTimerChange(
 		return apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
 
+	recomputed, overridden := 0, 0
 	var failures []error
 	for _, circle := range circles {
-		if recomputeErr := s.recomputeForTimerChange(ctx, circle, targetID); recomputeErr != nil {
-			failures = append(failures, fmt.Errorf("circle %s: %w", circle.ID, recomputeErr))
+		moved, changeErr := s.recomputeForTimerChange(ctx, circle, targetID, true)
+		switch {
+		case changeErr != nil:
+			failures = append(failures, fmt.Errorf("circle %s: %w", circle.ID, changeErr))
+		case moved:
+			recomputed++
+		default:
+			overridden++
 		}
 	}
 	if len(failures) > 0 {
@@ -450,30 +465,39 @@ func (s *Service) OnCatalogueTimerChange(
 	s.log.InfoContext(ctx, "catalogue timer change fanned out",
 		slog.String("server", string(server)),
 		slog.String("target_id", targetID.String()),
-		slog.Int("circles", len(circles)))
+		slog.Int("circles", len(circles)),
+		slog.Int("recomputed", recomputed),
+		slog.Int("skipped_overridden", overridden))
 	return nil
 }
 
-// recomputeForTimerChange is the one circle's worth of work both entry points do.
+// recomputeForTimerChange is the one circle's worth of work both entry points do. It reports
+// whether it recomputed, which is false only when `skipOverridden` held it back.
 func (s *Service) recomputeForTimerChange(
 	ctx context.Context, circle sqlitegen.Circle, targetID core.RaidTargetID,
-) error {
+	skipOverridden bool,
+) (bool, error) {
 	circleID, err := core.ParseID[core.Circle](circle.ID)
 	if err != nil {
-		return apierr.Wrap(apierr.CodeInternalError, err, "")
+		return false, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
 	timer, err := s.catalogue.ResolveTimer(ctx, circleID, targetID, core.Server(circle.Server))
 	if err != nil {
-		return err
+		return false, err
+	}
+	if skipOverridden && timer.Source == catalogue.TimerSourceCircleOverride {
+		return false, nil
 	}
 	quakes, err := s.latestQuake(ctx, circleID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = s.recompute(ctx, circleID, targetID, circle,
+	if _, err = s.recompute(ctx, circleID, targetID, circle,
 		map[core.RaidTargetID]catalogue.ResolvedTimer{targetID: timer}, quakes,
-		schemaenum.TargetStateChangeReasonTimerChange)
-	return err
+		schemaenum.TargetStateChangeReasonTimerChange); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Rebuild recomputes every cached state in one circle from the report log.
@@ -491,13 +515,22 @@ func (s *Service) Rebuild(ctx context.Context, circleID core.CircleID) (int, err
 	if err != nil {
 		return 0, err
 	}
+	// Through storeOrDrop, not store: the predicate that decides whether a target has a row lives
+	// in exactly one place. `deriveAll` only yields groups that have rows, so nothing is dropped
+	// here today — and the count below is of rows actually written rather than of groups seen, so
+	// it stays true if that ever stops being so.
+	written := 0
 	for _, derived := range states {
-		if _, err := s.store(ctx, circleID, derived.targetID, derived.state,
-			derived.rows, derived.reason); err != nil {
-			return 0, err
+		row, storeErr := s.storeOrDrop(ctx, circleID, derived.targetID, derived.state,
+			derived.rows, derived.reason)
+		if storeErr != nil {
+			return 0, storeErr
+		}
+		if row != nil {
+			written++
 		}
 	}
-	return len(states), nil
+	return written, nil
 }
 
 // RebuildAll rebuilds every live circle, and reports how many states it wrote.

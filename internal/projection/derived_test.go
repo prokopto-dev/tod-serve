@@ -285,3 +285,87 @@ func TestGet_AStaleRowForANowReportlessTarget_IsDroppedRatherThanRewritten(t *te
 	_, ok := f.cached(target)
 	require.False(t, ok)
 }
+
+// TestOnCatalogueTimerChange_FansOutToEveryCircleOnThatServerButNotTheOverriddenOnes.
+//
+// `raid_target_timer` is instance-wide and PER SERVER, so one write moves the window for every
+// circle pinned to that server that has not overridden it. This is the whole reason the port has
+// a second method rather than a nullable circle id: the fan-out is real work and the caller knows
+// which kind it did.
+//
+// Three things are asserted at once because they are one rule: a plain circle on that server
+// moves, a circle that overrode the catalogue does NOT, and a circle on another server is not
+// touched at all.
+func TestOnCatalogueTimerChange_FansOutToEveryCircleOnThatServerButNotTheOverriddenOnes(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	target := f.seedTarget("Vulak`Aerr", "Temple of Veeshan", false)
+
+	const catalogueOpen = 5 * 24 * time.Hour
+	const overrideOpen = 3 * 24 * time.Hour
+	const movedOpen = 6 * 24 * time.Hour
+	f.seedCatalogueTimer(target, catalogueOpen, 7*24*time.Hour)
+	f.seedCatalogueTimerOn(target, schemaenum.ServerGreen, catalogueOpen, 7*24*time.Hour)
+
+	// f.circle is on blue and takes the catalogue's word for it.
+	plain := f.circle
+	overriding := f.seedCircle("Overrider", schemaenum.ServerBlue)
+	elsewhere := f.seedCircle("Green Guild", schemaenum.ServerGreen)
+
+	died := fixtureNow.Add(-time.Hour)
+	f.report(target, died, schemaenum.TodReportSourceLogLine)
+	f.reportIn(overriding, target, died, schemaenum.TodReportSourceLogLine)
+	f.reportIn(elsewhere, target, died, schemaenum.TodReportSourceLogLine)
+
+	f.seedOverrideIn(overriding, target, overrideOpen, 4*24*time.Hour)
+	for _, circleID := range []core.CircleID{plain, overriding, elsewhere} {
+		_, err := f.states.Rebuild(t.Context(), circleID)
+		require.NoError(t, err)
+	}
+	before := map[core.CircleID]sqlitegen.TargetStateCache{}
+	for _, circleID := range []core.CircleID{plain, overriding, elsewhere} {
+		row, ok := f.cachedIn(circleID, target)
+		require.True(t, ok)
+		before[circleID] = row
+	}
+	require.Equal(t, int64(died.Add(catalogueOpen)), *before[plain].WindowOpenAt)
+	require.Equal(t, int64(died.Add(overrideOpen)), *before[overriding].WindowOpenAt)
+
+	// The catalogue's blue window moves. Nothing is reported anywhere.
+	f.seedCatalogueTimer(target, movedOpen, 8*24*time.Hour)
+	require.NoError(t, f.states.OnCatalogueTimerChange(
+		t.Context(), core.Server(schemaenum.ServerBlue), target.ID))
+
+	moved, ok := f.cachedIn(plain, target)
+	require.True(t, ok)
+	require.Equal(t, int64(died.Add(movedOpen)), *moved.WindowOpenAt,
+		"a circle taking the catalogue's word for it moved with it")
+	require.Equal(t, schemaenum.TargetStateChangeReasonTimerChange, *moved.ChangeReason,
+		"and says why, since nothing was reported")
+
+	held, ok := f.cachedIn(overriding, target)
+	require.True(t, ok)
+	require.Equal(t, *before[overriding].WindowOpenAt, *held.WindowOpenAt,
+		"the override still wins, which is what circle_timer_override is for")
+	require.Equal(t, before[overriding].ChangeReason, held.ChangeReason,
+		"and its board did not change, so it does not claim a timer_change it did not have")
+
+	green, ok := f.cachedIn(elsewhere, target)
+	require.True(t, ok)
+	require.Equal(t, *before[elsewhere].WindowOpenAt, *green.WindowOpenAt,
+		"a circle on another server is not on this fan-out at all")
+	require.Equal(t, before[elsewhere].ChangeReason, green.ChangeReason)
+}
+
+// TestOnCatalogueTimerChange_ABadServer_IsRefusedRatherThanFanningOutToNothing. Silently matching
+// no circles would report success while every board stayed stale.
+func TestOnCatalogueTimerChange_ABadServer_IsRefusedRatherThanFanningOutToNothing(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	target := f.seedTarget("Trakanon", "Old Sebilis", false)
+	err := f.states.OnCatalogueTimerChange(t.Context(), core.Server("purple"), target.ID)
+	require.Error(t, err)
+	got, ok := apierr.From(err)
+	require.True(t, ok)
+	require.Equal(t, apierr.CodeValidationFailed, got.Code())
+}
