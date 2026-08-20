@@ -4765,6 +4765,17 @@
               }
             }
           },
+          "304": {
+            "description": "The cached copy is still current. No body; the ETag is repeated so the next revalidation has something to send.",
+            "headers": {
+              "ETag": {
+                "description": "The entity tag of the representation that was not modified",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "400": {
             "content": {
               "application/problem+json": {
@@ -5796,6 +5807,17 @@
             "description": "OK",
             "headers": {
               "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The cached copy is still current. No body; the ETag is repeated so the next revalidation has something to send.",
+            "headers": {
+              "ETag": {
+                "description": "The entity tag of the representation that was not modified",
                 "schema": {
                   "type": "string"
                 }
@@ -8243,6 +8265,17 @@
               }
             }
           },
+          "304": {
+            "description": "The cached copy is still current. No body; the ETag is repeated so the next revalidation has something to send.",
+            "headers": {
+              "ETag": {
+                "description": "The entity tag of the representation that was not modified",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "400": {
             "content": {
               "application/problem+json": {
@@ -8395,6 +8428,17 @@
             "description": "OK",
             "headers": {
               "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The cached copy is still current. No body; the ETag is repeated so the next revalidation has something to send.",
+            "headers": {
+              "ETag": {
+                "description": "The entity tag of the representation that was not modified",
                 "schema": {
                   "type": "string"
                 }

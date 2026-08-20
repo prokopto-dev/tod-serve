@@ -238,6 +238,12 @@ not `report_ids[]` and not `alternatives[]`. Both are the current cluster's deta
 `target_state_cache`, and rebuilding them for every target on every poll would mean clustering a
 circle's whole report log to render a list. `getTargetState` has them.
 
+**Every ETag-returning GET revalidates**, and it is a middleware rather than a per-handler habit:
+one wrapper turns any `200` whose entity tag the caller already holds into a `304`, which is why
+`getCircle` and `getMember` answer one too. The registry's `ConditionalRead` flag is what puts that
+`304` in the document, so the two must agree — asserted from both ends, behaviourally over every
+driven route and structurally over every row.
+
 A catalogue timer is instance-wide and **per server**, so `putRaidTargetTimer` and
 `tod-serve seed timers --file` move the window for every circle pinned to that server that has not
 overridden it — and leave alone every circle that has. The recomputation fans out over those
