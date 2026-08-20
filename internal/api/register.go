@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -101,8 +103,38 @@ func (b *Builder) operation(r Route) huma.Operation {
 		Middlewares: huma.Middlewares{b.routeMiddleware(r)},
 		Extensions:  extensionsFor(r),
 		Errors:      errorStatusesFor(r),
+		Responses:   responsesFor(r),
 	}
 	return op
+}
+
+// responsesFor declares the responses the framework cannot infer from the handler's types.
+//
+// There is exactly one, and it needs declaring for a specific reason: a conditional read returns
+// its `304` through a dynamic `Status` field, and huma derives the documented responses from the
+// output STRUCT rather than from what the handler assigns. So a real 304 would be missing from the
+// contract, and a generated client would treat it as an undocumented error — the precise failure
+// an ETag exists to avoid.
+//
+// The framework merges rather than overwrites: it fills in only the responses and fields left
+// unset, and `defineErrors` replaces only codes listed in `Errors`, which 304 is not. A 304 is not
+// an error and must not be rendered with the problem schema.
+func responsesFor(r Route) map[string]*huma.Response {
+	if !r.ConditionalRead {
+		return nil
+	}
+	return map[string]*huma.Response{
+		strconv.Itoa(http.StatusNotModified): {
+			Description: "The cached copy is still current. No body; the ETag is repeated so the " +
+				"next revalidation has something to send.",
+			Headers: map[string]*huma.Header{
+				ETagHeader: {
+					Description: "The entity tag of the representation that was not modified",
+					Schema:      &huma.Schema{Type: "string"},
+				},
+			},
+		},
+	}
 }
 
 // securityFor renders the security requirement for a route. It is where "no token reaches a

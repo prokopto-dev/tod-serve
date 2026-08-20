@@ -179,6 +179,37 @@ type Route struct {
 	// bucket, so adding a third route that accepts a code is a one-word decision rather than a
 	// second limiter somebody has to remember to wire.
 	InviteOracle bool
+	// ConditionalRead marks a read that actually PERFORMS revalidation: it compares the caller's
+	// `If-None-Match` against the tag it would have returned and answers `304` with no body.
+	//
+	// It is separate from ETag, and the gap between them is deliberate rather than redundant.
+	// `ETag: true` says the operation returns a tag, which is what an `If-Match` writer needs.
+	// Revalidating is a second thing a handler has to actually do, and a route that advertises
+	// `If-None-Match` without doing it is worse than one that offers neither: a client that
+	// implements conditional requests against it pays for a full body on every poll while
+	// believing it does not.
+	//
+	// The flag drives the documented `304` — huma cannot infer one from a dynamic `Status` field,
+	// and a real response absent from the contract is one a generated client treats as an
+	// undocumented error. TestSpec_EveryConditionalRead_Documents304 compares the two in both
+	// directions, so the flag cannot be set on a route that does not revalidate, and a documented
+	// 304 cannot appear without it.
+	ConditionalRead bool
+	// InvalidatesTimer marks an operation that MOVES A RESPAWN WINDOW, and therefore changes every
+	// derived answer hanging off it with no row appended anywhere.
+	//
+	// The other four `target_state.change_reason` values are read back off the report log, which
+	// is what lets invalidation be a DELETE inside the writing transaction. `timer_change` is the
+	// fifth and the log cannot show it: a window moved and nothing was reported. It has to be
+	// PUSHED by whoever moved it.
+	//
+	// The flag is on the route rather than in the handler because a wiring that nothing enforces
+	// is one refactor from being gone, and this is the second push-based invalidation in this
+	// project to have had no mechanism behind it.
+	// TestRouteRegistry_EveryTimerWritingRoute_PushesTheInvalidation drives every route carrying
+	// it and asserts the invalidator fired; TestRouteRegistry_EveryWindowWritingPath_CarriesTheFlag
+	// closes the other direction, so the flag cannot be quietly dropped to silence the first.
+	InvalidatesTimer bool
 	// Hidden keeps the operation out of the OpenAPI document. Permitted only on `/healthz`,
 	// `/readyz`, `/metrics` and the OAuth callback — canonical §7, asserted by
 	// TestRouteRegistry_Hidden_OnlyTheOperationalEndpointsAndTheCallback.
@@ -524,8 +555,8 @@ func routes() []Route {
 			Versioned: true, Auth: AuthPermission,
 			Permissions: []authz.Permission{authz.PermissionCatalogueRead},
 			Scopes:      []authz.Scope{authz.ScopeCatalogueRead},
-			ETag:        true,
-			Summary:     "One raid target",
+			ETag:        true, ConditionalRead: true,
+			Summary: "One raid target",
 		},
 		{
 			ID: OpResolveRaidTarget, Method: http.MethodPost, Path: "/raid-targets/resolve",
@@ -555,7 +586,7 @@ func routes() []Route {
 			Path: "/raid-targets/{target_id}/timers/{server}", Versioned: true,
 			Auth:        AuthPermission,
 			Permissions: []authz.Permission{authz.PermissionCatalogueManage},
-			IfMatch:     true, ETag: true,
+			IfMatch:     true, ETag: true, InvalidatesTimer: true,
 			Summary: "Set a target's respawn timer for one server",
 		},
 		{
@@ -570,16 +601,19 @@ func routes() []Route {
 			Path: "/circles/{circle_id}/timer-overrides/{target_id}", Versioned: true,
 			Auth:         AuthPermission,
 			Permissions:  []authz.Permission{authz.PermissionCircleManage},
-			CircleScoped: true, IfMatch: true, ETag: true,
+			CircleScoped: true, IfMatch: true, ETag: true, InvalidatesTimer: true,
 			Summary: "Override one target's timer for this circle",
 		},
 		{
 			ID: OpDeleteCircleTimerOverride, Method: http.MethodDelete,
 			Path: "/circles/{circle_id}/timer-overrides/{target_id}", Versioned: true,
-			Auth:         AuthPermission,
-			Permissions:  []authz.Permission{authz.PermissionCircleManage},
-			CircleScoped: true,
-			Summary:      "Remove a circle's timer override",
+			Auth:        AuthPermission,
+			Permissions: []authz.Permission{authz.PermissionCircleManage},
+			// Removing an override moves the window too: the circle falls back to the catalogue
+			// timer, or to `unknown` if there is none. A board that kept serving the overridden
+			// window after the override was deleted is the same bug as one that never saw it set.
+			CircleScoped: true, InvalidatesTimer: true,
+			Summary: "Remove a circle's timer override",
 		},
 
 		// --- Instance administration ---

@@ -72,6 +72,15 @@ linters:
       # repeated path prefix with an identifier would make that impossible and the gate no stronger.
       - path: internal/api/registry\.go
         linters: [goconst]
+      # And a third time, for the third data table in this repository:
+      # internal/catalogue/embedded.go IS the shipped raid-target catalogue as literals, and the
+      # only way anybody can check it is to read a row and compare it against the game — "Vulak
+      # `Aerr, Temple of Veeshan, velious, ntov" is either right or it is not. Eighteen NToV mobs
+      # legitimately share a zone string; replacing it with `zoneTempleOfVeeshan` would hide the
+      # one thing a reviewer is here to verify and would catch no bug, because the failure mode is
+      # a WRONG zone, not an inconsistent one. TestEmbedded_EveryTarget_IsValid checks the shape.
+      - path: internal/catalogue/embedded\.go
+        linters: [goconst]
 
 formatters:
   enable:

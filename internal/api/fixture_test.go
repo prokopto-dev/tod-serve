@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/auth"
 	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/catalogue"
 	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
@@ -47,18 +49,20 @@ const (
 // keyed on `(membership, key)` — are rules about rows, and a mock would let every one of them pass
 // while the schema said otherwise.
 type harness struct {
-	t        *testing.T
-	server   *api.Server
-	store    *store.DB
-	clock    *clock.Test
-	ids      *core.Generator
-	minter   *auth.Minter
-	codec    *auth.SessionCodec
-	handler  http.Handler
-	provider core.IdentityProviderID
-	circles  *circle.Service
-	invites  *invite.Service
-	members  *membership.Service
+	t           *testing.T
+	server      *api.Server
+	store       *store.DB
+	clock       *clock.Test
+	ids         *core.Generator
+	minter      *auth.Minter
+	codec       *auth.SessionCodec
+	handler     http.Handler
+	provider    core.IdentityProviderID
+	circles     *circle.Service
+	invites     *invite.Service
+	members     *membership.Service
+	catalogue   *catalogue.Service
+	invalidator *recordingInvalidator
 }
 
 func newHarness(t *testing.T) *harness {
@@ -73,6 +77,7 @@ func newHarness(t *testing.T) *harness {
 
 	clk := clock.NewTest(fixtureNow)
 	ids := core.NewGenerator(rand.Reader)
+	invalidator := &recordingInvalidator{}
 	minter, err := auth.NewMinter(testPepper, rand.Reader)
 	require.NoError(t, err)
 	codec, err := auth.NewSessionCodec(testSessionKey)
@@ -82,17 +87,19 @@ func newHarness(t *testing.T) *harness {
 	svc := newServices(t, db, clk, ids, minter, log)
 
 	server, err := api.New(api.Config{
-		Version:    "0.0.0-test",
-		Store:      db,
-		Auth:       authn,
-		Circles:    svc.circles,
-		Members:    svc.members,
-		Invites:    svc.invites,
-		Identities: svc.identities,
-		Clock:      clk,
-		Log:        log,
-		IDs:        ids,
-		Metrics:    api.MetricsConfig{Enabled: true, Token: testMetricsTok},
+		Version:     "0.0.0-test",
+		Store:       db,
+		Auth:        authn,
+		Circles:     svc.circles,
+		Members:     svc.members,
+		Invites:     svc.invites,
+		Identities:  svc.identities,
+		Catalogue:   svc.catalogue,
+		Invalidator: invalidator,
+		Clock:       clk,
+		Log:         log,
+		IDs:         ids,
+		Metrics:     api.MetricsConfig{Enabled: true, Token: testMetricsTok},
 		// Response validation runs across the WHOLE integration suite: every request any test in
 		// this package makes is checked against the response contract, including the ones the
 		// framework answers before a handler runs.
@@ -104,6 +111,7 @@ func newHarness(t *testing.T) *harness {
 		t: t, server: server, store: db, clock: clk, ids: ids,
 		minter: minter, codec: codec, handler: server.Handler(),
 		circles: svc.circles, invites: svc.invites, members: svc.members,
+		catalogue: svc.catalogue, invalidator: invalidator,
 	}
 }
 
@@ -115,6 +123,7 @@ type wiredServices struct {
 	invites    *invite.Service
 	members    *membership.Service
 	identities *identity.Service
+	catalogue  *catalogue.Service
 }
 
 func newServices(
@@ -144,8 +153,16 @@ func newServices(
 		Log: log, Entropy: rand.Reader,
 	})
 	require.NoError(t, err)
+
+	// The catalogue is wired and left EMPTY. That is the default state of this whole suite on
+	// purpose: an instance with no targets and no timers is what an operator's VPS is on day one,
+	// so every test that does not deliberately seed one is exercising it.
+	catalogues, err := catalogue.New(catalogue.Config{Store: db, Clock: clk, IDs: ids, Log: log})
+	require.NoError(t, err)
+
 	return wiredServices{
 		circles: circles, invites: invites, members: members, identities: identities,
+		catalogue: catalogues,
 	}
 }
 
@@ -168,6 +185,8 @@ func newHarnessWithoutMetrics(t *testing.T) *harness {
 		Members:             svc.members,
 		Invites:             svc.invites,
 		Identities:          svc.identities,
+		Catalogue:           svc.catalogue,
+		Invalidator:         h.invalidator,
 		Clock:               h.clock,
 		Log:                 log,
 		IDs:                 h.ids,
@@ -463,4 +482,69 @@ func (h *harness) advance(d time.Duration) { h.clock.Advance(d) }
 func (h *harness) seedMemberIn(circleID core.CircleID, role authz.Role) core.MembershipID {
 	h.t.Helper()
 	return h.seedMember(circleID, role)
+}
+
+// timerChange is one push at the projection: which circle, which target, and whether it was the
+// instance-wide catalogue timer that moved rather than one circle's override.
+type timerChange struct {
+	Circle core.CircleID
+	Target core.RaidTargetID
+	Server core.Server
+	Scope  string
+}
+
+// recordingInvalidator is the [api.TimerInvalidator] the suite wires.
+//
+// It records rather than no-ops, because "did this route push the invalidation" is the question
+// TestRouteRegistry_EveryTimerWritingRoute_PushesTheInvalidation exists to answer, and a no-op
+// fake would let every route pass it. The failure it guards is a route that writes a window and
+// tells nobody, which is invisible from the response.
+type recordingInvalidator struct {
+	mu      sync.Mutex
+	changes []timerChange
+	// err, when set, is returned by both methods. A write whose invalidation failed must not
+	// report success, and that is only assertable if the fake can fail.
+	err error
+}
+
+func (r *recordingInvalidator) OnTimerChange(
+	_ context.Context, circleID core.CircleID, targetID core.RaidTargetID,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.changes = append(r.changes,
+		timerChange{Circle: circleID, Target: targetID, Scope: "circle"})
+	return r.err
+}
+
+func (r *recordingInvalidator) OnCatalogueTimerChange(
+	_ context.Context, server core.Server, targetID core.RaidTargetID,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.changes = append(r.changes,
+		timerChange{Server: server, Target: targetID, Scope: "instance"})
+	return r.err
+}
+
+// recorded returns the pushes so far.
+func (r *recordingInvalidator) recorded() []timerChange {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]timerChange(nil), r.changes...)
+}
+
+// reset clears the record, so a test can drive one route and assert on that route alone.
+func (r *recordingInvalidator) reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.changes = nil
+}
+
+// failWith makes both methods fail, for the assertion that a write whose invalidation failed
+// answers with the failure rather than reporting success.
+func (r *recordingInvalidator) failWith(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.err = err
 }

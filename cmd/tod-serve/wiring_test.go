@@ -4,10 +4,13 @@ import (
 	"crypto/rand"
 	"io"
 	"log/slog"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/prokopto-dev/tod-serve/internal/api"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
@@ -80,4 +83,57 @@ func TestWiring_IdentityService_WithNoEntropy_RefusesToStart(t *testing.T) {
 	_, err := identity.New(cfg)
 	require.Error(t, err,
 		"a nil entropy source must be a construction error, not a fallback to a default")
+}
+
+// TestWiring_TimerInvalidation_IsStillTheStub is a scheduled deletion, written as a test.
+//
+// [api.UnprojectedTimers] is correct for a binary with no projection: nothing writes
+// `target_state_cache`, so no moved window can make anything stale. The moment
+// `internal/projection` is wired here it stops being correct SILENTLY, and a board that quietly
+// ignores every timer edit is the confident mistake this project is built against.
+//
+// So the stub is not left to a comment. This asserts it is what `serve` passes, and it is the
+// thing that has to be deleted — with the stub, and with this test — by whoever wires the
+// projection. It is the same shape as `uncoveredCircleRoutes` in internal/api: a gap somebody has
+// to edit rather than one they might notice.
+//
+// WHEN YOU LAND internal/projection:
+//   - pass the projection service as api.Config.Invalidator in serve.go,
+//   - delete api.UnprojectedTimers and both of its methods,
+//   - delete this test,
+//   - and close the last hole in [api.TimerInvalidator]: the push happens after the write commits,
+//     so a crash between the two leaves the cache stale until the nightly job. The fix is the one
+//     audit.Append already uses — take the writing transaction's query set — which means threading
+//     a *sqlitegen.Queries through recompute, storeOrDrop, revokedReporters and
+//     catalogue.ResolveTimer. Every handler is retryable today, which closes the case a client can
+//     see; this closes the one it cannot.
+//
+// It will not compile once the stub is gone, which is the point.
+func TestWiring_TimerInvalidation_IsStillTheStub(t *testing.T) {
+	t.Parallel()
+	var invalidator api.TimerInvalidator = api.UnprojectedTimers{}
+
+	// The stub does nothing and reports success, which is only correct while there is no
+	// projection. Both methods, because both routes push.
+	require.NoError(t, invalidator.OnTimerChange(t.Context(), core.CircleID{}, core.RaidTargetID{}))
+	require.NoError(t, invalidator.OnCatalogueTimerChange(
+		t.Context(), core.ServerBlue, core.RaidTargetID{}))
+
+	// And `wire` still has no projection to pass. When it grows one, this fails and sends the
+	// reader to the list above.
+	require.NotContains(t, wiredServiceNames(t), "projection",
+		"internal/projection is wired now, so api.UnprojectedTimers is silently wrong: "+
+			"pass the projection as api.Config.Invalidator, then delete the stub and this test")
+}
+
+// wiredServiceNames reflects the field types of the `services` struct, so the assertion above is
+// about what the binary actually builds rather than about an import that might be for anything.
+func wiredServiceNames(t *testing.T) []string {
+	t.Helper()
+	typ := reflect.TypeFor[services]()
+	out := make([]string, 0, typ.NumField())
+	for i := range typ.NumField() {
+		out = append(out, strings.ToLower(typ.Field(i).Type.String()))
+	}
+	return out
 }

@@ -266,6 +266,42 @@ Returns `{ target, match_kind, candidates[] }`; ties are `422 ambiguous_target`.
 never ranked below a substring hit** — the same discipline merchant-mode's `NameMatcher` uses, for
 the same reason.
 
+`match_kind` is a closed set, strongest first, and `id` is the rung `createTodReport` reports when
+the caller sent a `target_id` and no matching happened:
+
+```
+id  name  name_normalised  alias  alias_normalised  prefix  substring
+```
+
+The first rung with any hit wins. It is never fallen through: a rung matching more than one target
+is the ambiguity, because falling through is exactly how a substring outranks the exact hit above
+it. The two fuzzy rungs skip `retired` targets — a retired mob stays addressable by its exact name
+so a backdated report still names the right row, and must not be what a half-typed name resolves to
+or the second candidate that turns a live target's match into a tie.
+
+`meta.candidates[]` is capped, and the detail says so when it cut the list. A one-letter query
+matches most of the catalogue, and a problem body carrying all of it is one no client reads.
+
+`listRaidTargets` also takes `expansion`, `zone`, `q` and `include_retired`. `q` runs the substring
+rung of the ladder above, over names **and** aliases, so a search box and a plugin cannot disagree
+about what a name matches. `getRaidTarget` returns `timers[]` — every per-server window the
+instance holds, which is `[]` on an unseeded one.
+
+`putCircleTimerOverride` both creates and replaces, and the two need different preconditions. A
+create has no prior tag to send, so `If-Match: *` is borrowed as "and it must NOT exist"; a replace
+has one, so nothing but that tag will do and `*` is refused with `412`. Honouring the wildcard in
+both directions would let an officer overwrite another officer's update having read nothing.
+
+Every operation that moves a respawn window — `putRaidTargetTimer`, `putCircleTimerOverride`,
+`deleteCircleTimerOverride`, deletion included, because falling back to the catalogue moves the
+window too — pushes the change at the projection. It is the one `change_reason` the report log
+cannot show: nothing is appended when a timer moves.
+
+The catalogue timer folded into a `listRaidTargets?server=` row is the **instance-wide** one, named
+`catalogue_timer` rather than `timer` deliberately: a circle override sits above it, and only the
+board's own resolution applies that. Feeding this field to the derivation would ignore every
+override a circle had set.
+
 ## Instance administration
 
 | Method | Path | OperationID | Permission | Scope |

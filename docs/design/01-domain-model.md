@@ -179,6 +179,39 @@ because these numbers are community-derived and genuinely disputed, and "our gui
 two years and the wiki is wrong" is a real thing an officer will say. Resolution order: circle
 override → catalogue timer → `unknown`.
 
+Names and aliases share **one namespace**: a spelling belongs to one target, whether it is that
+target's name or an alias of it. Neither unique index can say so — SQLite has no constraint that
+spans two tables — so `000005_raid_target_name_namespace.sql` enforces it with triggers. Without
+it an alias can be hung on a different target, and the resolve ladder answers that spelling with
+the canonical-name target because `name_norm` is rung two and `alias_norm` is rung four; the alias
+resolves to somebody else's mob and its owner is never told.
+
+`unknown` is a first-class answer, not a missing one. An instance that has never been handed a seed
+resolves every target to it, reports `status: no_timer`, and records times of death exactly as it
+otherwise would — canonical §15. The resolved timer still carries `is_quake_target`, so a quake
+clears the board on an instance that knows nothing about windows.
+
+**Timer numbers load from outside this repository.** `tod-serve seed timers --file` reads a JSON
+document from `tod-serve-p99-seed`:
+
+```json
+{ "version": 1,
+  "source": "tod-serve-p99-seed@<rev>",
+  "timers": [ { "target": "Vulak`Aerr", "server": "blue", "window_kind": "variance",
+                "window_open_offset_seconds": 0, "window_close_offset_seconds": 0,
+                "note": "" } ] }
+```
+
+`version` and `source` are both required — the seed repository versions separately, and a window
+nobody can attribute is a window nobody can dispute. `target` runs the resolve ladder, so a seed
+needs no catalogue of its own; `target_id` pins one outright. Unknown fields are refused rather
+than ignored. The whole file parses and every target resolves **before** the transaction opens a
+write, so a seed that fails changes nothing.
+
+Target IDENTITY is the other half and ships embedded, in `internal/catalogue`. `tod-serve seed
+targets` loads it, and is additive: a target an operator corrected or retired is left alone, so the
+command is safe to re-run on every upgrade.
+
 ### `tod_report` — append-only, the core
 
 | Column | Notes |

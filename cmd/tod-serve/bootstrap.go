@@ -292,7 +292,7 @@ func createCircle(
 ) error {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ids := core.NewGenerator(rand.Reader)
-	circles, invites, err := dataServices(db, clk, ids, log)
+	circles, invites, _, err := dataServices(db, clk, ids, log)
 	if err != nil {
 		return err
 	}

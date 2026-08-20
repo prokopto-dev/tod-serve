@@ -460,3 +460,81 @@ func TestTimerWindow_MalformedRows_AreRefused(t *testing.T) {
 		})
 	}
 }
+
+// TestRaidTargetNamespace_TriggersFire_AfterAllMigrations asserts the one rule no index can state:
+// a spelling belongs to ONE target, whether it is that target's name or one of its aliases.
+//
+// `ux_raid_target_name_norm` makes names unique among names and `ux_raid_target_alias_norm` makes
+// aliases unique among aliases; SQLite has no constraint that spans two tables, so
+// 000005_raid_target_name_namespace.sql does it with triggers. Without them an alias could be hung
+// on a different target and the resolve ladder would answer that spelling with the canonical-name
+// target — `name_norm` is rung two, `alias_norm` is rung four — so the alias would silently
+// resolve to somebody else's mob.
+//
+// It runs after EVERY migration and asserts an abort rather than a row in `sqlite_master`, for the
+// same reason the append-only test does: a table rebuild drops triggers silently, and a trigger
+// that exists and does not fire is exactly the failure being guarded against.
+func TestRaidTargetNamespace_TriggersFire_AfterAllMigrations(t *testing.T) {
+	t.Parallel()
+	ctx, db := openMigrated(t)
+
+	const (
+		targetA = "01K3TGT8N9M4X0Q7R2VB6C5D01"
+		targetB = "01K3TGT8N9M4X0Q7R2VB6C5D02"
+		aliasID = "01K3TGT8N9M4X0Q7R2VB6C5D03"
+	)
+	insertTarget := func(id, name, norm string) error {
+		return exec(t, ctx, db, `INSERT INTO raid_target
+			(id, name, name_norm, zone, zone_norm, expansion, category, is_quake_target, state,
+			 created_at, updated_at)
+			VALUES (?, ?, ?, 'Somewhere', 'somewhere', 'velious', 'ntov', 1, 'active', 1, 1)`,
+			id, name, norm)
+	}
+	require.NoError(t, insertTarget(targetA, "Lord Nagafen", "lordnagafen"))
+	require.NoError(t, insertTarget(targetB, "Lady Vox", "ladyvox"))
+	require.NoError(t, exec(t, ctx, db, `INSERT INTO raid_target_alias
+		(id, target_id, alias, alias_norm, created_at, updated_at)
+		VALUES (?, ?, 'Naggy', 'naggy', 1, 1)`, aliasID, targetA))
+
+	t.Run("an alias that is another target's name", func(t *testing.T) {
+		t.Parallel()
+		err := exec(t, ctx, db, `INSERT INTO raid_target_alias
+			(id, target_id, alias, alias_norm, created_at, updated_at)
+			VALUES ('01K3TGT8N9M4X0Q7R2VB6C5D04', ?, 'Lady Vox', 'ladyvox', 1, 1)`, targetA)
+		require.Error(t, err, "the alias was written; it would resolve to Lady Vox, not Nagafen")
+		require.Contains(t, err.Error(), "namespace", "%v", err)
+	})
+
+	t.Run("an alias updated onto another target's name", func(t *testing.T) {
+		t.Parallel()
+		err := exec(t, ctx, db,
+			`UPDATE raid_target_alias SET alias_norm = 'ladyvox' WHERE id = ?`, aliasID)
+		require.Error(t, err, "the alias was moved onto a target name")
+		require.Contains(t, err.Error(), "namespace", "%v", err)
+	})
+
+	t.Run("a target named after an existing alias", func(t *testing.T) {
+		t.Parallel()
+		err := insertTarget("01K3TGT8N9M4X0Q7R2VB6C5D05", "Naggy", "naggy")
+		require.Error(t, err, "a target took a name that was already an alias")
+		require.Contains(t, err.Error(), "namespace", "%v", err)
+	})
+
+	t.Run("a target renamed onto another target's alias", func(t *testing.T) {
+		t.Parallel()
+		err := exec(t, ctx, db,
+			`UPDATE raid_target SET name_norm = 'naggy' WHERE id = ?`, targetB)
+		require.Error(t, err, "a target was renamed onto somebody else's alias")
+		require.Contains(t, err.Error(), "namespace", "%v", err)
+	})
+
+	t.Run("a target renamed onto its OWN alias is permitted", func(t *testing.T) {
+		t.Parallel()
+		// Redundant rather than wrong: both spellings already resolve to this target, and the name
+		// rung simply wins. Refusing it would make a rename fail for a reason nobody could act on.
+		require.NoError(t, exec(t, ctx, db,
+			`UPDATE raid_target SET name_norm = 'naggy' WHERE id = ?`, targetA))
+		require.NoError(t, exec(t, ctx, db,
+			`UPDATE raid_target SET name_norm = 'lordnagafen' WHERE id = ?`, targetA))
+	})
+}

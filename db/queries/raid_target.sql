@@ -30,3 +30,10 @@ SET name = sqlc.arg(name), name_norm = sqlc.arg(name_norm),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
 RETURNING *;
+
+-- name: ListAllRaidTargets :many
+-- Every target, retired ones included. The resolve ladder needs the retired rows so a backdated
+-- report can still name a target by its exact name, and the catalogue is tens of rows, not tens of
+-- thousands, so it is read whole rather than matched with a LIKE that would be a second
+-- normalisation path beside core.Normalise.
+SELECT * FROM raid_target ORDER BY name_norm;

@@ -134,10 +134,13 @@ gen: gen-openapi
 migrate:
 	$(GO) run ./cmd/$(BIN) migrate --db $(DB_PATH)
 
-## seed: load the raid-target catalogue
+## seed: load the embedded raid-target identity into a local database
+# Identity only. Timers are NOT bundled and there is deliberately no target that loads them from
+# this repository: they are community-derived, disputed, and live in tod-serve-p99-seed. Load them
+# with `tod-serve seed timers --file <seed.json>`; canonical conventions section 15, SEED001.
 .PHONY: seed
 seed:
-	@$(call notyet,Phase 3,embedded target identity; timers come from the separate tod-serve-p99-seed repo)
+	$(GO) run ./cmd/$(BIN) seed targets --db $(DB_PATH)
 
 ## docs-check: every error code has a docs page, every ADR is within budget
 .PHONY: docs-check

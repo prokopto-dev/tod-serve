@@ -50,6 +50,20 @@ func (q *Queries) CreateRaidTargetAlias(ctx context.Context, arg CreateRaidTarge
 	return i, err
 }
 
+const deleteRaidTargetAliases = `-- name: DeleteRaidTargetAliases :execrows
+DELETE FROM raid_target_alias WHERE target_id = ?1
+`
+
+// An alias set is replaced wholesale on update. raid_target_alias is mutable, not append-only:
+// an alias is a spelling, not an observation.
+func (q *Queries) DeleteRaidTargetAliases(ctx context.Context, targetID string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteRaidTargetAliases, targetID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getRaidTargetByAliasNorm = `-- name: GetRaidTargetByAliasNorm :one
 SELECT t.id, t.name, t.name_norm, t.zone, t.zone_norm, t.expansion, t.category, t.is_quake_target, t.state, t.created_at, t.updated_at FROM raid_target t
 JOIN raid_target_alias a ON a.target_id = t.id
@@ -73,6 +87,42 @@ func (q *Queries) GetRaidTargetByAliasNorm(ctx context.Context, aliasNorm string
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listAllRaidTargetAliases = `-- name: ListAllRaidTargetAliases :many
+SELECT id, target_id, alias, alias_norm, created_at, updated_at FROM raid_target_alias ORDER BY alias_norm
+`
+
+// Every alias in the catalogue, for the resolve ladder and for rendering a page of targets without
+// one query per row.
+func (q *Queries) ListAllRaidTargetAliases(ctx context.Context) ([]RaidTargetAlias, error) {
+	rows, err := q.db.QueryContext(ctx, listAllRaidTargetAliases)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RaidTargetAlias{}
+	for rows.Next() {
+		var i RaidTargetAlias
+		if err := rows.Scan(
+			&i.ID,
+			&i.TargetID,
+			&i.Alias,
+			&i.AliasNorm,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRaidTargetAliases = `-- name: ListRaidTargetAliases :many
