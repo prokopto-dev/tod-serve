@@ -119,7 +119,25 @@ returns one. **There is no "list all circles on this instance" operation, at any
 A circle's existence is part of what it is hiding.
 
 `updateCircle` rejects `server` with `422 field_immutable`. The first circle is created by CLI at
-first run — `tod-serve circle create --name … --server blue` — which prints an owner invite code.
+first run — `tod-serve circle create --name … --server blue` — which prints an owner code.
+
+**That code is not an `invite`, and it cannot be.** `invite` carries `CHECK (role <> 'owner')`, so
+an invite granting ownership is unrepresentable — which is the point: an invite is time-boxed,
+role-capped and mintable by a bot token, and a leaked one must never seize a circle. The owner
+grant is a different thing with different properties: printed once on the operator's own terminal
+by a command that already holds the database, stored as a hash in `tod_meta`, single-use by
+compare-and-swap, and expiring. It resolves through the same lookup as an invite, so `previewInvite`
+and `/join` have one code path and a client cannot tell the two apart.
+
+**`deleteCircle` is unimplemented, and the reason is a conflict rather than an omission.** The row
+above says it deletes "the circle and every report in it";
+[canonical §10](00-canonical-conventions.md#10-the-report-log--non-negotiable) makes `tod_report`,
+`quake_event`, `invite_redemption` and `audit_log` append-only by database trigger. With
+`foreign_keys` ON, a circle that has any of those rows cannot be deleted at all — and every circle
+acquires an audit row on its first membership change. The invariant wins, so the route carries no
+handler; `uncoveredCircleRoutes` in `internal/api` names it and the tenancy test asserts that name
+against the registry in both directions. Giving it a `deleted_at` tombstone, or putting `audit_log`
+on a cascade allowlist, is a reviewed decision and is deliberately not made here.
 
 ## Members and invites
 

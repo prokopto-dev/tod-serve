@@ -18,8 +18,13 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/auth"
 	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/identity"
+	"github.com/prokopto-dev/tod-serve/internal/identity/identitysql"
+	"github.com/prokopto-dev/tod-serve/internal/invite"
+	"github.com/prokopto-dev/tod-serve/internal/membership"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
@@ -51,6 +56,9 @@ type harness struct {
 	codec    *auth.SessionCodec
 	handler  http.Handler
 	provider core.IdentityProviderID
+	circles  *circle.Service
+	invites  *invite.Service
+	members  *membership.Service
 }
 
 func newHarness(t *testing.T) *harness {
@@ -71,15 +79,20 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, err)
 	authn, err := auth.NewAuthenticator(db, minter, codec, clk, log, auth.DefaultStepUpWindow)
 	require.NoError(t, err)
+	svc := newServices(t, db, clk, ids, minter, log)
 
 	server, err := api.New(api.Config{
-		Version: "0.0.0-test",
-		Store:   db,
-		Auth:    authn,
-		Clock:   clk,
-		Log:     log,
-		IDs:     ids,
-		Metrics: api.MetricsConfig{Enabled: true, Token: testMetricsTok},
+		Version:    "0.0.0-test",
+		Store:      db,
+		Auth:       authn,
+		Circles:    svc.circles,
+		Members:    svc.members,
+		Invites:    svc.invites,
+		Identities: svc.identities,
+		Clock:      clk,
+		Log:        log,
+		IDs:        ids,
+		Metrics:    api.MetricsConfig{Enabled: true, Token: testMetricsTok},
 		// Response validation runs across the WHOLE integration suite: every request any test in
 		// this package makes is checked against the response contract, including the ones the
 		// framework answers before a handler runs.
@@ -90,6 +103,49 @@ func newHarness(t *testing.T) *harness {
 	return &harness{
 		t: t, server: server, store: db, clock: clk, ids: ids,
 		minter: minter, codec: codec, handler: server.Handler(),
+		circles: svc.circles, invites: svc.invites, members: svc.members,
+	}
+}
+
+// wiredServices is the domain half of the harness, built exactly the way `cmd/tod-serve` builds
+// it: real services over the real store, with no mock anywhere. The rules under test here are
+// rules about rows, and a mock would let every one of them pass while the schema said otherwise.
+type wiredServices struct {
+	circles    *circle.Service
+	invites    *invite.Service
+	members    *membership.Service
+	identities *identity.Service
+}
+
+func newServices(
+	t *testing.T, db *store.DB, clk clock.Clock, ids *core.Generator,
+	minter *auth.Minter, log *slog.Logger,
+) wiredServices {
+	t.Helper()
+	circles, err := circle.New(circle.Config{Store: db, Clock: clk, IDs: ids, Log: log})
+	require.NoError(t, err)
+	invites, err := invite.New(invite.Config{
+		Store: db, Clock: clk, IDs: ids, Entropy: rand.Reader, Log: log,
+	})
+	require.NoError(t, err)
+
+	identityStore, err := identitysql.New(db.Queries(), clk, invite.HashCode)
+	require.NoError(t, err)
+	clients, err := identity.NewGuardedClients(clk)
+	require.NoError(t, err)
+	identities, err := identity.New(identity.Config{
+		Store: identityStore, Clients: clients, Clock: clk, IDs: ids,
+		Entropy: rand.Reader, SPAJoinURL: "https://tod.example.com/join", Logger: log,
+	})
+	require.NoError(t, err)
+
+	members, err := membership.New(membership.Config{
+		Store: db, Clock: clk, IDs: ids, Minter: minter, Identity: identities,
+		Log: log, Entropy: rand.Reader,
+	})
+	require.NoError(t, err)
+	return wiredServices{
+		circles: circles, invites: invites, members: members, identities: identities,
 	}
 }
 
@@ -102,11 +158,16 @@ func newHarnessWithoutMetrics(t *testing.T) *harness {
 	authn, err := auth.NewAuthenticator(
 		h.store, h.minter, h.codec, h.clock, log, auth.DefaultStepUpWindow)
 	require.NoError(t, err)
+	svc := newServices(t, h.store, h.clock, h.ids, h.minter, log)
 
 	server, err := api.New(api.Config{
 		Version:             "0.0.0-test",
 		Store:               h.store,
 		Auth:                authn,
+		Circles:             svc.circles,
+		Members:             svc.members,
+		Invites:             svc.invites,
+		Identities:          svc.identities,
 		Clock:               h.clock,
 		Log:                 log,
 		IDs:                 h.ids,
@@ -164,6 +225,10 @@ func (h *harness) seedCircle(name string) core.CircleID {
 	return id
 }
 
+// localProviderKey is the wire key the fixture gives the `local` provider, matching what
+// `tod-serve init --local` writes.
+const localProviderKey = "local"
+
 // seedProvider writes the instance's local identity provider, which is the one that needs no third
 // party. It is written once per harness: `identity_provider.kind` is unique, so an instance has at
 // most one provider of each kind.
@@ -175,8 +240,12 @@ func (h *harness) seedProvider() core.IdentityProviderID {
 	id := newID[core.IdentityProvider](h)
 	_, err := h.store.Queries().CreateIdentityProvider(h.t.Context(),
 		sqlitegen.CreateIdentityProviderParams{
-			ID:          id.String(),
-			Key:         "local-" + id.String()[:8],
+			ID: id.String(),
+			// The wire key `listIdentityProviders` publishes and `/join` dispatches on. It is the
+			// plain kind because an instance holds at most one `local` row, so there is nothing
+			// to disambiguate — and a suffixed key would be a key no client could guess from the
+			// public discovery endpoint.
+			Key:         localProviderKey,
 			Kind:        schemaenum.IdentityProviderKindLocal,
 			DisplayName: "Local",
 			Enabled:     1,
@@ -388,3 +457,10 @@ func (r *sliceReader) Read(p []byte) (int, error) {
 
 // advance moves the fixture clock, for the tests that need time to pass.
 func (h *harness) advance(d time.Duration) { h.clock.Advance(d) }
+
+// seedMemberIn writes a membership in a circle the fixture did not create, for the tests that build
+// a circle through the real service rather than through seedCircle.
+func (h *harness) seedMemberIn(circleID core.CircleID, role authz.Role) core.MembershipID {
+	h.t.Helper()
+	return h.seedMember(circleID, role)
+}

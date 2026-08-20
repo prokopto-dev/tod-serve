@@ -466,9 +466,10 @@ func TestProblem_FrameworkErrors_AreRFC9457(t *testing.T) {
 					Body: "{not json",
 				}
 			},
-			// `previewInvite` has no handler yet, so the router answers first. What matters here
-			// is that it answers with a code rather than with the router's plain text.
-			code: apierr.CodeNotFound,
+			// The framework parses the body before the handler runs and builds its own error
+			// for a broken one. What matters here is that it comes back as a problem with a code
+			// from the closed enum rather than as the framework's default rendering.
+			code: apierr.CodeMalformedRequest,
 		},
 	}
 	for _, tc := range cases {

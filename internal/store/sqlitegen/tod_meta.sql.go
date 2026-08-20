@@ -9,6 +9,35 @@ import (
 	"context"
 )
 
+const consumeMeta = `-- name: ConsumeMeta :one
+UPDATE tod_meta
+SET value = ?1, updated_at = ?2
+WHERE key = ?3 AND value = ?4
+RETURNING "key", value, updated_at
+`
+
+type ConsumeMetaParams struct {
+	Value     string
+	UpdatedAt int64
+	Key       string
+	Expected  string
+}
+
+// Compare-and-swap on a value the caller has already read. It is what makes the one-time owner
+// grant single-use: the second redemption finds the row saying something other than what it read,
+// matches nothing, and gets no row back. A plain SetMeta would overwrite and succeed twice.
+func (q *Queries) ConsumeMeta(ctx context.Context, arg ConsumeMetaParams) (TodMeta, error) {
+	row := q.db.QueryRowContext(ctx, consumeMeta,
+		arg.Value,
+		arg.UpdatedAt,
+		arg.Key,
+		arg.Expected,
+	)
+	var i TodMeta
+	err := row.Scan(&i.Key, &i.Value, &i.UpdatedAt)
+	return i, err
+}
+
 const getMeta = `-- name: GetMeta :one
 
 SELECT "key", value, updated_at FROM tod_meta WHERE key = ?1

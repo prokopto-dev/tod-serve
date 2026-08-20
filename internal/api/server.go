@@ -12,8 +12,12 @@ import (
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/auth"
+	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/identity"
+	"github.com/prokopto-dev/tod-serve/internal/invite"
+	"github.com/prokopto-dev/tod-serve/internal/membership"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 )
 
@@ -46,6 +50,16 @@ type Config struct {
 	Store *store.DB
 	// Auth resolves credentials into principals.
 	Auth *auth.Authenticator
+	// Circles, Members, Invites and Identities are the domain services the handlers call.
+	//
+	// They are required rather than optional, and a nil one is refused at construction: an API
+	// that started with half its services wired would answer some routes and 500 on the rest,
+	// which is a worse failure than not starting — the operator finds out at the first request
+	// instead of at boot.
+	Circles    *circle.Service
+	Members    *membership.Service
+	Invites    *invite.Service
+	Identities *identity.Service
 	// Clock is the only reader of the wall clock.
 	Clock clock.Clock
 	// Log is where problems go. Nothing secret is ever written to it.
@@ -70,6 +84,14 @@ func (c Config) validate() error {
 		return errors.New("api config: store is nil")
 	case c.Auth == nil:
 		return errors.New("api config: authenticator is nil")
+	case c.Circles == nil:
+		return errors.New("api config: circle service is nil")
+	case c.Members == nil:
+		return errors.New("api config: membership service is nil")
+	case c.Invites == nil:
+		return errors.New("api config: invite service is nil")
+	case c.Identities == nil:
+		return errors.New("api config: identity service is nil")
 	case c.Clock == nil:
 		return errors.New("api config: clock is nil")
 	case c.Log == nil:
@@ -253,6 +275,10 @@ func (s *Server) registerAll() error {
 		s.registerMeta(),
 		s.registerPrincipal(),
 		s.registerTokens(),
+		s.registerCircles(),
+		s.registerMembers(),
+		s.registerInvites(),
+		s.registerJoin(),
 		s.registerHealth(),
 		s.registerMetrics(),
 	)
