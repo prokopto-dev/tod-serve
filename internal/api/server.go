@@ -19,7 +19,9 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
+	"github.com/prokopto-dev/tod-serve/internal/projection"
 	"github.com/prokopto-dev/tod-serve/internal/store"
+	"github.com/prokopto-dev/tod-serve/internal/tod"
 )
 
 // Title and DocumentVersion name the API in the generated document. The version is the API's, not
@@ -63,6 +65,11 @@ type Config struct {
 	Identities *identity.Service
 	// Catalogue owns raid-target identity, the per-server timers and the per-circle overrides.
 	Catalogue *catalogue.Service
+	// Tods appends to the report log; States derives and caches the board over it. They are two
+	// services rather than one because they sit on opposite sides of the invariant: one may only
+	// ever append, and the other holds nothing but a cache it is allowed to throw away.
+	Tods   *tod.Service
+	States *projection.Service
 	// Invalidator is told when a route moved a respawn window. Required, and nil is a
 	// construction error like every other dependency here: an API that started with a missing
 	// invalidator would serve a board that silently stopped tracking timer edits, which is worse
@@ -102,6 +109,10 @@ func (c Config) validate() error {
 		return errors.New("api config: identity service is nil")
 	case c.Catalogue == nil:
 		return errors.New("api config: catalogue service is nil")
+	case c.Tods == nil:
+		return errors.New("api config: tod service is nil")
+	case c.States == nil:
+		return errors.New("api config: projection service is nil")
 	case c.Invalidator == nil:
 		return errors.New("api config: timer invalidator is nil")
 	case c.Clock == nil:
@@ -207,6 +218,7 @@ func securitySchemes() map[string]*huma.SecurityScheme {
 func (b *Builder) handler() http.Handler {
 	var h http.Handler = b.mux
 	h = withAcceptableFormat(h, b.served, b.writeRawProblem)
+	h = withConditionalGet(h)
 	h = withFrameworkProblems(h, b.writeRawProblem)
 	h = withIdempotencyCapture(h)
 	h = withBufferedBody(h, MaxBodyBytes, b.writeRawProblem)
@@ -292,6 +304,8 @@ func (s *Server) registerAll() error {
 		s.registerInvites(),
 		s.registerCatalogue(),
 		s.registerJoin(),
+		s.registerTods(),
+		s.registerQuakes(),
 		s.registerHealth(),
 		s.registerMetrics(),
 	)

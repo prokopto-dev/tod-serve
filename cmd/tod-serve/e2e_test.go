@@ -151,8 +151,8 @@ func newE2EServer(t *testing.T, ctx context.Context, path string) *e2eServer {
 		Version: "0.0.0-e2e", Store: db, Auth: svc.authn,
 		Circles: svc.circles, Members: svc.members, Invites: svc.invites,
 		Identities: svc.identity, Catalogue: svc.catalogue,
-		Invalidator: api.UnprojectedTimers{},
-		Clock:       svc.clock, Log: log, IDs: svc.ids,
+		Tods: svc.tods, States: svc.states, Invalidator: svc.states,
+		Clock: svc.clock, Log: log, IDs: svc.ids,
 		OnResponseViolation: func(v api.Violation) { t.Errorf("response contract: %s", v) },
 	})
 	require.NoError(t, err)

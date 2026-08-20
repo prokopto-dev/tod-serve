@@ -18,7 +18,9 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/identity/identitysql"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
+	"github.com/prokopto-dev/tod-serve/internal/projection"
 	"github.com/prokopto-dev/tod-serve/internal/store"
+	"github.com/prokopto-dev/tod-serve/internal/tod"
 )
 
 // services is everything the binary wires. It exists so that the wiring is one function a test can
@@ -36,6 +38,8 @@ type services struct {
 	invites   *invite.Service
 	members   *membership.Service
 	catalogue *catalogue.Service
+	tods      *tod.Service
+	states    *projection.Service
 }
 
 // identityConfig builds the configuration `identity.New` is given.
@@ -151,12 +155,44 @@ func wire(
 	if err != nil {
 		return nil, err
 	}
+	tods, states, err := todServices(db, clk, ids, catalogues, log)
+	if err != nil {
+		return nil, err
+	}
 
 	return &services{
 		store: db, clock: clk, ids: ids, log: log, minter: minter, codec: codec,
 		authn: authn, identity: identities, circles: circles, invites: invites,
-		members: members, catalogue: catalogues,
+		members: members, catalogue: catalogues, tods: tods, states: states,
 	}, nil
+}
+
+// todServices wires the report log and the projection over it, both onto the catalogue that is
+// already built.
+//
+// It takes that catalogue rather than building one, and the direction is the point: the ingest path
+// asks it which target a name means, the projection asks it for the EFFECTIVE timer — circle
+// override, then catalogue, then unknown — and nothing asks the projection anything. A second
+// catalogue here would be a second resolve ladder and a second timer precedence, and the failure
+// mode of the latter is a circle override that silently stops working while the board goes on
+// looking authoritative.
+func todServices(
+	db *store.DB, clk clock.Clock, ids *core.Generator, catalogues *catalogue.Service,
+	log *slog.Logger,
+) (*tod.Service, *projection.Service, error) {
+	tods, err := tod.New(tod.Config{
+		Store: db, Clock: clk, IDs: ids, Catalogue: catalogues, Log: log,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	states, err := projection.New(projection.Config{
+		Store: db, Clock: clk, Catalogue: catalogues, Log: log,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return tods, states, nil
 }
 
 // spaJoinURL decides where the OAuth callback sends a browser.

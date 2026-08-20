@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/catalogue"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/projection"
 )
 
 // flagSeedFile names the seed file `seed timers` reads.
@@ -60,7 +63,10 @@ func newSeedTargetsCommand() *cobra.Command {
 			"safe to re-run after every upgrade.\n",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			svc, closeDB, err := seedService(cmd)
+			// `seed targets` needs no invalidation: it adds target IDENTITY, and the board reads
+			// the catalogue live on every render rather than from `target_state_cache`. Only a
+			// moved WINDOW makes a cached row stale.
+			svc, _, closeDB, err := seedService(cmd)
 			if err != nil {
 				return err
 			}
@@ -131,7 +137,7 @@ func newSeedTimersCommand() *cobra.Command {
 				return nil
 			}
 
-			svc, closeDB, err := seedService(cmd)
+			svc, states, closeDB, err := seedService(cmd)
 			if err != nil {
 				return err
 			}
@@ -145,7 +151,17 @@ func newSeedTimersCommand() *cobra.Command {
 				report.TimersWritten, report.Source); err != nil {
 				return fmt.Errorf("write seed result: %w", err)
 			}
-			return nil
+
+			refreshed, err := invalidateSeededTimers(cmd.Context(), states, report.Changed)
+			if _, writeErr := fmt.Fprintf(out,
+				"%d of %d moved windows recomputed\n", refreshed, len(report.Changed)); writeErr != nil {
+				return fmt.Errorf("write seed result: %w", writeErr)
+			}
+			// The timers are already written and the failure is reported rather than swallowed: a
+			// seed that half-invalidated must be LOUD, because the alternative is a run that says
+			// "61 timers written" while some boards go on serving the old window. Both writes are
+			// idempotent, so re-running the same seed converges.
+			return err
 		},
 	}
 	cmd.Flags().String(flagSeedFile, "",
@@ -161,23 +177,70 @@ func newSeedTimersCommand() *cobra.Command {
 	return cmd
 }
 
-// seedService opens the database and builds the catalogue service both verbs write through.
-func seedService(cmd *cobra.Command) (*catalogue.Service, func(), error) {
+// seedService opens the database and builds the catalogue service both verbs write through, plus
+// the projection `seed timers` invalidates through.
+//
+// The projection is built here rather than only where it is used because `seed timers` is a WRITE
+// path that moves respawn windows, and every other such path in this binary pushes an
+// invalidation. This one sits outside the route registry, so the architectural gate that holds the
+// routes to it cannot see this command at all — which is exactly why the wiring is not left
+// optional here.
+func seedService(cmd *cobra.Command) (
+	*catalogue.Service, *projection.Service, func(), error,
+) {
 	path, err := databasePath(cmd)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	log := textLogger(cmd.OutOrStdout())
 	db, closeDB, err := openStore(cmd.Context(), path, log)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+	clk, ids := clock.System{}, core.NewGenerator(rand.Reader)
 	svc, err := catalogue.New(catalogue.Config{
-		Store: db, Clock: clock.System{}, IDs: core.NewGenerator(rand.Reader), Log: log,
+		Store: db, Clock: clk, IDs: ids, Log: log,
 	})
 	if err != nil {
 		closeDB()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return svc, closeDB, nil
+	_, states, err := todServices(db, clk, ids, svc, log)
+	if err != nil {
+		closeDB()
+		return nil, nil, nil, err
+	}
+	return svc, states, closeDB, nil
+}
+
+// invalidateSeededTimers recomputes the derived state every window a seed moved.
+//
+// A catalogue timer is instance-wide and per-server, so ONE seeded row moves the window for every
+// circle pinned to that server that has not overridden it. That fan-out is
+// [projection.Service.OnCatalogueTimerChange]'s, and this loop is only the seed's half of it.
+//
+// It attempts every pair even after one fails, and joins the failures. A partial invalidation is
+// the outcome worth naming precisely: "the seed wrote 61 timers and 3 of them left boards stale"
+// is actionable, and "the seed failed" after the first bad one is not — the writes have already
+// happened either way.
+func invalidateSeededTimers(
+	ctx context.Context, states *projection.Service, changed []catalogue.SeededTimer,
+) (int, error) {
+	refreshed := 0
+	var failures []error
+	for _, timer := range changed {
+		if err := states.OnCatalogueTimerChange(ctx, timer.Server, timer.TargetID); err != nil {
+			failures = append(failures, fmt.Errorf("recompute %s on %s: %w",
+				timer.TargetID, timer.Server, err))
+			continue
+		}
+		refreshed++
+	}
+	if len(failures) > 0 {
+		return refreshed, fmt.Errorf(
+			"seed timers wrote every window, but %d of %d could not be recomputed; "+
+				"re-run the same seed to converge: %w",
+			len(failures), len(changed), errors.Join(failures...))
+	}
+	return refreshed, nil
 }

@@ -219,6 +219,31 @@ Exactly one of `target_id` / `target_name` is required. `target_name` runs the r
 `422 ambiguous_target` carries `meta.candidates[]` — **so the plugin can send the parsed name and
 never has to hold a catalogue.** `server` must match the circle's or `422 server_mismatch`.
 
+### `listTargetStates` — the board
+
+Every **active** raid target, including the ones nobody has reported, because a board that hid the
+targets with no ToD would be a board that could not tell you what you are not tracking. Sorted by
+`window_open_at`, soonest first, with **everything that has no window after everything that does**:
+nulls-first would put every unseeded target — which on a fresh instance is all of them — above the
+ones a raid leader is actually waiting on.
+
+The cursor is the last row's `target_id` and the next page is what follows it **in that sort
+order**, resolved server-side over a bounded set. It is still the opaque ULID cursor canonical §4
+requires; what it is not is a key the sort is on, so a row whose window moves between two pages can
+be skipped or repeated. The catalogue is a hundred-odd rows fixed by the game rather than by usage,
+which is what makes that trade cheap enough to take.
+
+A board row carries the state, the window, the timer's provenance and the **evidence counts** — but
+not `report_ids[]` and not `alternatives[]`. Both are the current cluster's detail, neither is in
+`target_state_cache`, and rebuilding them for every target on every poll would mean clustering a
+circle's whole report log to render a list. `getTargetState` has them.
+
+**`status` and every countdown are re-derived on each read** and are never served from the cache.
+A stored `pre_window` is stale the instant the window opens with no write in between, so the cache
+holds the *point estimate* and each read renders §6 and §7 from it against `as_of` — through
+`consensus.Project`, which is the same two functions `Derive` calls rather than a second copy of
+them. What the cache actually buys is not reading and clustering the log.
+
 ### `getTargetState`
 
 ```json

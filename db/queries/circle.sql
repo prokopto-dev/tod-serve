@@ -49,3 +49,17 @@ SET name = sqlc.arg(name), name_norm = sqlc.arg(name_norm), description = sqlc.a
     state = sqlc.arg(state), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(circle_id)
 RETURNING *;
+
+-- name: ListLiveCircles :many
+-- tenancy: the projection's rebuild and its nightly verify job sweep every circle. They have no
+-- caller and no tenant to be filtered by -- a maintenance job that could only see one circle would
+-- leave every other circle's cache unverified, which is the whole thing the job exists to stop.
+SELECT * FROM circle WHERE deleted_at IS NULL ORDER BY id;
+
+-- name: ListLiveCirclesOnServer :many
+-- tenancy: a catalogue timer is instance-wide and PER SERVER, so writing one moves the window for
+-- every circle pinned to that server. There is no single tenant to filter by -- the whole point of
+-- this query is the fan-out, and a version that took a circle_id could not express it.
+SELECT * FROM circle
+WHERE deleted_at IS NULL AND server = sqlc.arg(server)
+ORDER BY id;

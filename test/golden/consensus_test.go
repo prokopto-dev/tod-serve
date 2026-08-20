@@ -229,3 +229,82 @@ func TestDerive_CorpusCovers_EveryStatusAndConfidence(t *testing.T) {
 		require.Positive(t, kinds[k], "no fixture produces window kind %q", k)
 	}
 }
+
+// TestProject_OverTheGoldenCorpus_AgreesWithDerive is what stops [consensus.Project] becoming a
+// second derivation.
+//
+// `internal/projection` re-renders the status and the window of a CACHED point estimate on every
+// read, because both move with the clock and neither can be cached. It does that through Project
+// rather than through a copy of the two tables, and this replays the whole corpus to prove the two
+// answers are the same one: for every fixture, Project handed the state's own `died_at` and
+// `up_since` must reproduce the status and window Derive produced from the reports.
+func TestProject_OverTheGoldenCorpus_AgreesWithDerive(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range corpusFiles(t) {
+		t.Run(strings.TrimSuffix(name, ".json"), func(t *testing.T) {
+			t.Parallel()
+			f := loadFixture(t, name)
+			want := consensus.Derive(f.Reports, f.Quakes, f.Timer, f.Now, f.Circle)
+
+			status, window := consensus.Project(f.Timer, want.DiedAt, want.UpSince, f.Now)
+			require.Equal(t, want.Status, status, "%s: status", f.Description)
+			if diff := cmp.Diff(want.Window, window, compareAs); diff != "" {
+				t.Errorf("%s: window (-derive +project):\n%s", f.Description, diff)
+			}
+		})
+	}
+}
+
+// TestProject_AsTheClockMoves_WalksTheStatusesInOrder is the other half: the corpus pins one
+// instant per fixture, and the projection's whole reason for calling Project is that `now` moves
+// AFTER the estimate was cached.
+func TestProject_AsTheClockMoves_WalksTheStatusesInOrder(t *testing.T) {
+	t.Parallel()
+	open, closeAt := int64(4*60*60), int64(12*60*60)
+	timer := consensus.Timer{
+		Kind:               consensus.WindowVariance,
+		OpenOffsetSeconds:  &open,
+		CloseOffsetSeconds: &closeAt,
+	}
+	died := core.Micros(1_755_483_247_000_000)
+
+	cases := []struct {
+		name string
+		now  core.Micros
+		want consensus.Status
+	}{
+		{"before the window opens", died + 1, consensus.StatusPreWindow},
+		{
+			"the instant it opens", died + core.Micros(open*core.MicrosPerSecond),
+			consensus.StatusInWindow,
+		},
+		{
+			"halfway through", died + core.Micros((open+closeAt)/2*core.MicrosPerSecond),
+			consensus.StatusInWindow,
+		},
+		{
+			"the instant it closes", died + core.Micros(closeAt*core.MicrosPerSecond),
+			consensus.StatusInWindow,
+		},
+		{
+			"one microsecond later", died + core.Micros(closeAt*core.MicrosPerSecond) + 1,
+			consensus.StatusOverdue,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			status, window := consensus.Project(timer, &died, nil, tc.now)
+			require.Equal(t, tc.want, status)
+			require.NotNil(t, window.SecondsUntilOpen)
+			require.NotNil(t, window.ProgressBP)
+		})
+	}
+
+	// A quake outranks everything: it repopped the target, and whatever ToD preceded it describes
+	// a life the target no longer has.
+	up := died
+	status, _ := consensus.Project(timer, &died, &up, died+1)
+	require.Equal(t, consensus.StatusUp, status)
+}

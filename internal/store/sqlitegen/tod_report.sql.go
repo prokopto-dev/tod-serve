@@ -196,22 +196,155 @@ func (q *Queries) GetTodReportByNaturalKey(ctx context.Context, arg GetTodReport
 	return i, err
 }
 
+const listTodReportTargets = `-- name: ListTodReportTargets :many
+SELECT DISTINCT target_id FROM tod_report
+WHERE circle_id = ?1
+ORDER BY target_id
+`
+
+// Every target this circle has reported anything about. It is what makes a read-miss rebuild
+// bounded by the circle's activity rather than by the catalogue: a target nobody has reported has
+// no cluster to derive and nothing worth a cache row, so the board answers it without a read.
+func (q *Queries) ListTodReportTargets(ctx context.Context, circleID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listTodReportTargets, circleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var target_id string
+		if err := rows.Scan(&target_id); err != nil {
+			return nil, err
+		}
+		items = append(items, target_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTodReports = `-- name: ListTodReports :many
-SELECT id, circle_id, target_id, kind, died_at, reported_at, reporter_membership_id, source, self_confidence, source_line, source_character, log_character, killed_by_guild, client_clock_offset_seconds, retracts_report_id FROM tod_report
-WHERE circle_id = ?1 AND id > ?2
-ORDER BY id
-LIMIT ?3
+SELECT r.id, r.circle_id, r.target_id, r.kind, r.died_at, r.reported_at, r.reporter_membership_id, r.source, r.self_confidence, r.source_line, r.source_character, r.log_character, r.killed_by_guild, r.client_clock_offset_seconds, r.retracts_report_id,
+       EXISTS (SELECT 1 FROM tod_report x
+               WHERE x.circle_id = r.circle_id AND x.retracts_report_id = r.id) AS retracted
+FROM tod_report r
+WHERE r.circle_id = ?1
+  AND (CAST(?2 AS TEXT) = '' OR r.id < ?2)
+  AND (CAST(?3 AS TEXT) IS NULL OR r.target_id = ?3)
+  AND (CAST(?4 AS INTEGER) IS NULL OR r.died_at >= ?4)
+  AND (CAST(?5 AS INTEGER) IS NULL OR r.died_at <= ?5)
+  AND (CAST(?6 AS TEXT) IS NULL
+       OR r.reporter_membership_id = ?6)
+  AND (CAST(?7 AS INTEGER) = 1
+       OR (r.kind = 'kill'
+           AND NOT EXISTS (SELECT 1 FROM tod_report x
+                           WHERE x.circle_id = r.circle_id AND x.retracts_report_id = r.id)))
+ORDER BY r.id DESC
+LIMIT ?8
 `
 
 type ListTodReportsParams struct {
-	CircleID string
-	AfterID  string
-	RowLimit int64
+	CircleID             string
+	AfterID              string
+	TargetID             *string
+	DiedAfter            *int64
+	DiedBefore           *int64
+	ReporterMembershipID *string
+	IncludeRetracted     int64
+	RowLimit             int64
 }
 
-// The id is a ULID, so it is also the cursor: time-ordered, opaque, and free.
-func (q *Queries) ListTodReports(ctx context.Context, arg ListTodReportsParams) ([]TodReport, error) {
-	rows, err := q.db.QueryContext(ctx, listTodReports, arg.CircleID, arg.AfterID, arg.RowLimit)
+type ListTodReportsRow struct {
+	ID                       string
+	CircleID                 string
+	TargetID                 string
+	Kind                     string
+	DiedAt                   int64
+	ReportedAt               int64
+	ReporterMembershipID     string
+	Source                   string
+	SelfConfidence           string
+	SourceLine               *string
+	SourceCharacter          *string
+	LogCharacter             *string
+	KilledByGuild            *string
+	ClientClockOffsetSeconds *int64
+	RetractsReportID         *string
+	Retracted                bool
+}
+
+// The report log, newest first. The id is a ULID, so it is also the cursor: time-ordered, opaque
+// and free, and an empty cursor is the first page rather than a sentinel a caller has to know.
+//
+// `retracted` is computed rather than stored, because the retraction is a SEPARATE ROW and the
+// original is never touched. `include_retracted = 0` hides a retracted kill AND every retraction
+// row: a retraction the caller can see pointing at a report they cannot is a dangling reference
+// the client would have to explain.
+func (q *Queries) ListTodReports(ctx context.Context, arg ListTodReportsParams) ([]ListTodReportsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTodReports,
+		arg.CircleID,
+		arg.AfterID,
+		arg.TargetID,
+		arg.DiedAfter,
+		arg.DiedBefore,
+		arg.ReporterMembershipID,
+		arg.IncludeRetracted,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTodReportsRow{}
+	for rows.Next() {
+		var i ListTodReportsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CircleID,
+			&i.TargetID,
+			&i.Kind,
+			&i.DiedAt,
+			&i.ReportedAt,
+			&i.ReporterMembershipID,
+			&i.Source,
+			&i.SelfConfidence,
+			&i.SourceLine,
+			&i.SourceCharacter,
+			&i.LogCharacter,
+			&i.KilledByGuild,
+			&i.ClientClockOffsetSeconds,
+			&i.RetractsReportID,
+			&i.Retracted,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTodReportsForCircle = `-- name: ListTodReportsForCircle :many
+SELECT id, circle_id, target_id, kind, died_at, reported_at, reporter_membership_id, source, self_confidence, source_line, source_character, log_character, killed_by_guild, client_clock_offset_seconds, retracts_report_id FROM tod_report
+WHERE circle_id = ?1
+ORDER BY target_id, died_at, id
+`
+
+// Every report in the circle, grouped by target, for `tod-serve rebuild-states` and the nightly
+// verify job. One query rather than one per target: a rebuild that issued a query per target would
+// be the slowest thing the binary does, and it runs on a schedule nobody watches.
+func (q *Queries) ListTodReportsForCircle(ctx context.Context, circleID string) ([]TodReport, error) {
+	rows, err := q.db.QueryContext(ctx, listTodReportsForCircle, circleID)
 	if err != nil {
 		return nil, err
 	}

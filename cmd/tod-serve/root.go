@@ -71,6 +71,8 @@ func newRootCommand() *cobra.Command {
 		newCircleCommand(),
 		newSeedCommand(),
 		newDoctorCommand(),
+		newRebuildStatesCommand(),
+		newVerifyStatesCommand(),
 	)
 	return root
 }

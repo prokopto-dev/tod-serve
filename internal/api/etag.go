@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
@@ -80,4 +81,43 @@ func RequireIfMatch[T any](header string, current T) error {
 	return apierr.New(apierr.CodePreconditionFailed,
 		"the resource has changed since the ETag you sent").
 		WithCurrent(body)
+}
+
+// withConditionalGet turns a fresh `200` whose entity tag the client already holds into a `304`.
+//
+// It lives in the middleware rather than in each handler because the alternative is every ETag'd
+// read growing the same four lines, and the one that forgets them is the one that sends a board
+// down a phone connection every five seconds. A handler computes its tag and answers normally; if
+// the caller's `If-None-Match` matches, the body never leaves this function.
+//
+// The response is buffered ONLY for a conditional request. An unconditional read — every request
+// from a client that has no cached copy — passes straight through with no copy at all.
+//
+// RFC 9110 §15.4.5: a `304` carries the validators and the caching headers and does NOT carry
+// `Content-Type` or `Content-Length`, because there is no representation being described. Sending
+// them would describe a body that is not there.
+func withConditionalGet(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		presented := r.Header.Get(IfNoneMatchHeader)
+		if presented == "" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		rec := &responseRecorder{header: http.Header{}, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+
+		if rec.status != http.StatusOK || !MatchesIfNoneMatch(presented, rec.header.Get(ETagHeader)) {
+			rec.flushTo(w)
+			return
+		}
+		for name, values := range rec.header {
+			if name == "Content-Type" || name == "Content-Length" {
+				continue
+			}
+			for _, v := range values {
+				w.Header().Add(name, v)
+			}
+		}
+		w.WriteHeader(http.StatusNotModified)
+	})
 }

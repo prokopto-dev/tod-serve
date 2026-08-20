@@ -113,3 +113,51 @@ func (q *Queries) ListQuakeEvents(ctx context.Context, circleID string) ([]Quake
 	}
 	return items, nil
 }
+
+const listQuakeEventsPage = `-- name: ListQuakeEventsPage :many
+SELECT id, circle_id, occurred_at, reported_at, reported_by_membership_id, source, note FROM quake_event
+WHERE circle_id = ?1
+  AND (CAST(?2 AS TEXT) = '' OR id < ?2)
+ORDER BY id DESC
+LIMIT ?3
+`
+
+type ListQuakeEventsPageParams struct {
+	CircleID string
+	AfterID  string
+	RowLimit int64
+}
+
+// The quake log, newest first by id. It pages on the id rather than on occurred_at because the
+// cursor is the ULID and nothing else: occurred_at is game truth and may be backdated, so a cursor
+// over it would skip a row that arrived after the page it belongs on.
+func (q *Queries) ListQuakeEventsPage(ctx context.Context, arg ListQuakeEventsPageParams) ([]QuakeEvent, error) {
+	rows, err := q.db.QueryContext(ctx, listQuakeEventsPage, arg.CircleID, arg.AfterID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []QuakeEvent{}
+	for rows.Next() {
+		var i QuakeEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.CircleID,
+			&i.OccurredAt,
+			&i.ReportedAt,
+			&i.ReportedByMembershipID,
+			&i.Source,
+			&i.Note,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

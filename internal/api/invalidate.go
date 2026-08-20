@@ -51,30 +51,3 @@ type TimerInvalidator interface {
 	// two into one signature would put that fan-out decision behind a nil check.
 	OnCatalogueTimerChange(ctx context.Context, server core.Server, targetID core.RaidTargetID) error
 }
-
-// UnprojectedTimers is a [TimerInvalidator] for a binary that has no projection to invalidate.
-//
-// **It is temporary and it is scheduled for deletion.** `internal/projection` maintains
-// `target_state_cache`; until it is wired into this binary there is no cache, nothing writes a
-// derived row, and so there is nothing a moved window could make stale. On THAT binary this type
-// is correct rather than a shortcut.
-//
-// The moment the projection lands it stops being correct, silently, which is precisely the shape
-// of failure this file exists to prevent. So it is not left to a comment:
-// TestWiring_TimerInvalidation_IsStillTheStub asserts this is what `cmd/tod-serve` passes and says
-// what to do the day it is wrong. Whoever lands the projection is sent here to delete this type
-// and pass the real service — the same way `uncoveredCircleRoutes` makes closing a tenancy gap an
-// edit somebody has to make rather than one they might.
-type UnprojectedTimers struct{}
-
-// OnTimerChange does nothing, because there is nothing to invalidate. See the type comment.
-func (UnprojectedTimers) OnTimerChange(context.Context, core.CircleID, core.RaidTargetID) error {
-	return nil
-}
-
-// OnCatalogueTimerChange does nothing, for the same reason.
-func (UnprojectedTimers) OnCatalogueTimerChange(
-	context.Context, core.Server, core.RaidTargetID,
-) error {
-	return nil
-}
