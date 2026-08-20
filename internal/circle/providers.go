@@ -176,6 +176,21 @@ func validateGate(provider sqlitegen.IdentityProvider, want AcceptedProvider) er
 func Accepted(
 	ctx context.Context, q *sqlitegen.Queries, id core.CircleID, providerKey string,
 ) (ProviderView, error) {
+	// The circle first, and deliberately rather than by relying on the caller having read it.
+	// `circle_provider` rows outlive a tombstoned circle — nothing deletes them, because nothing
+	// deletes anything here — so a lookup that started from them would answer for a circle that no
+	// longer exists. Every caller today happens to have resolved the circle first; "happens to" is
+	// not a mechanism.
+	//
+	// The row rather than the representation: `GetCircle` carries `deleted_at IS NULL`, and
+	// building the full view here would read every accepted provider a second time on a path that
+	// is about to read them once.
+	if _, err := q.GetCircle(ctx, id.String()); err != nil {
+		if store.IsNotFound(err) {
+			return ProviderView{}, apierr.New(apierr.CodeNotFound, "no such circle")
+		}
+		return ProviderView{}, apierr.Wrap(apierr.CodeInternalError, err, "")
+	}
 	accepted, err := acceptedProviders(ctx, q, id)
 	if err != nil {
 		return ProviderView{}, err
