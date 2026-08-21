@@ -63,6 +63,7 @@ type harness struct {
 	provider    core.IdentityProviderID
 	circles     *circle.Service
 	invites     *invite.Service
+	identity    *identity.Service
 	members     *membership.Service
 	catalogue   *catalogue.Service
 	tods        *tod.Service
@@ -100,6 +101,7 @@ func newHarness(t *testing.T) *harness {
 		Version:     "0.0.0-test",
 		Store:       db,
 		Auth:        authn,
+		Sessions:    codec,
 		Circles:     svc.circles,
 		Members:     svc.members,
 		Invites:     svc.invites,
@@ -123,6 +125,7 @@ func newHarness(t *testing.T) *harness {
 		t: t, server: server, store: db, clock: clk, ids: ids,
 		minter: minter, codec: codec, handler: server.Handler(),
 		circles: svc.circles, invites: svc.invites, members: svc.members,
+		identity:  svc.identities,
 		catalogue: svc.catalogue, tods: svc.tods, states: svc.states, grants: svc.grants,
 		invalidator: invalidator,
 	}
@@ -212,6 +215,7 @@ func newHarnessWithoutMetrics(t *testing.T) *harness {
 		Version:             "0.0.0-test",
 		Store:               h.store,
 		Auth:                authn,
+		Sessions:            h.codec,
 		Circles:             svc.circles,
 		Members:             svc.members,
 		Invites:             svc.invites,

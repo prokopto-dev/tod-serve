@@ -79,6 +79,7 @@ func newServeCommand() *cobra.Command {
 				Version:    version,
 				Store:      db,
 				Auth:       svc.authn,
+				Sessions:   svc.codec,
 				Circles:    svc.circles,
 				Members:    svc.members,
 				Invites:    svc.invites,

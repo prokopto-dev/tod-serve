@@ -53,6 +53,14 @@ type Config struct {
 	Store *store.DB
 	// Auth resolves credentials into principals.
 	Auth *auth.Authenticator
+	// Sessions signs the `__Host-tod_session` cookie `/join` and `/sessions` set.
+	//
+	// It is separate from Auth, which only ever READS a session. Minting one is a different
+	// capability and lives on exactly the two operations that have just verified a credential:
+	// the capability floor is session-only, so those two are the only doors into it, and a
+	// console that could not open one could not revoke a member, revoke an invite, read the audit
+	// log or configure a provider.
+	Sessions *auth.SessionCodec
 	// Circles, Members, Invites and Identities are the domain services the handlers call.
 	//
 	// They are required rather than optional, and a nil one is refused at construction: an API
@@ -99,6 +107,8 @@ func (c Config) validate() error {
 		return errors.New("api config: store is nil")
 	case c.Auth == nil:
 		return errors.New("api config: authenticator is nil")
+	case c.Sessions == nil:
+		return errors.New("api config: session codec is nil")
 	case c.Circles == nil:
 		return errors.New("api config: circle service is nil")
 	case c.Members == nil:
@@ -304,6 +314,7 @@ func (s *Server) registerAll() error {
 		s.registerInvites(),
 		s.registerCatalogue(),
 		s.registerAdmin(),
+		s.registerAuth(),
 		s.registerJoin(),
 		s.registerTods(),
 		s.registerQuakes(),

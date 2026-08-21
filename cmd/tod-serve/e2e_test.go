@@ -20,7 +20,6 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/api"
 	"github.com/prokopto-dev/tod-serve/internal/auth"
 	"github.com/prokopto-dev/tod-serve/internal/authz"
-	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 )
@@ -103,7 +102,7 @@ func TestEndToEnd_InitToJoinToACircleScopedRoute(t *testing.T) {
 	require.Contains(t, preview.WeakProviders, "local")
 
 	// --- join: redeem the code with a local credential and get a PAT ----------------------------
-	joined := srv.join(t, ownerCode, "Tankguy")
+	joined, _ := srv.join(t, ownerCode, "Tankguy")
 	require.True(t, joined.Created)
 	require.Equal(t, "owner", joined.Membership.Role)
 	require.Equal(t, "Riot Blue", joined.Circle.Name)
@@ -123,7 +122,7 @@ func TestEndToEnd_InitToJoinToACircleScopedRoute(t *testing.T) {
 	require.Equal(t, "weak", mine.RevocationStrength)
 
 	// --- and the second circle's principal, refused with 404 ------------------------------------
-	rival := srv.join(t, rivalCode, "Rivalguy")
+	rival, _ := srv.join(t, rivalCode, "Rivalguy")
 	require.NotEqual(t, joined.Circle.ID, rival.Circle.ID)
 
 	body := srv.get(t, "/api/v1/circles/"+joined.Circle.ID.String(),
@@ -147,8 +146,9 @@ func TestEndToEnd_InitToJoinToACircleScopedRoute(t *testing.T) {
 // request the test makes.
 type e2eServer struct {
 	handler http.Handler
-	clock   clock.Clock
-	codec   *auth.SessionCodec
+	// lastHeader is the response header of the most recent call, so a helper can read a
+	// `Set-Cookie` off it without every request signature growing a second return value.
+	lastHeader http.Header
 }
 
 func newE2EServer(t *testing.T, ctx context.Context, path string) *e2eServer {
@@ -161,7 +161,7 @@ func newE2EServer(t *testing.T, ctx context.Context, path string) *e2eServer {
 	svc, err := wire(ctx, db, log, core.Secret(e2ePepper), core.Secret(e2eSessionKey))
 	require.NoError(t, err)
 	server, err := api.New(api.Config{
-		Version: "0.0.0-e2e", Store: db, Auth: svc.authn,
+		Version: "0.0.0-e2e", Store: db, Auth: svc.authn, Sessions: svc.codec,
 		Circles: svc.circles, Members: svc.members, Invites: svc.invites,
 		Identities: svc.identity, Catalogue: svc.catalogue,
 		Tods: svc.tods, States: svc.states, Invalidator: svc.states,
@@ -169,29 +169,29 @@ func newE2EServer(t *testing.T, ctx context.Context, path string) *e2eServer {
 		OnResponseViolation: func(v api.Violation) { t.Errorf("response contract: %s", v) },
 	})
 	require.NoError(t, err)
-	return &e2eServer{handler: server.Handler(), clock: svc.clock, codec: svc.codec}
+	return &e2eServer{handler: server.Handler()}
 }
 
-// steppedUpSession returns the browser session cookie value for a membership, signed by the key
-// this server was wired with.
+// sessionFrom reads the browser session out of a response's `Set-Cookie`.
 //
-// **It is minted here because no ROUTE mints one yet.** `completeAuthorization` is the operation
-// that will set `__Host-tod_session`, and it lands with the OAuth flow; until then the capability
-// floor is reachable only by a session somebody encoded with the server's own codec.
-// TestSessionMinting_NoRouteMintsOne_YetIsStillTrue holds that gap visible rather than assumed, and
-// goes red when the route lands. Everything past the cookie in this test is the real thing: the
-// real middleware, the real instance-grant read, the real step-up check and the real handlers.
-func (s *e2eServer) steppedUpSession(t *testing.T, membership core.MembershipID) string {
+// It replaces a helper that encoded a cookie with the server's own codec, which was a scheduled
+// deletion: until `/join` and `/sessions` set one, the capability floor was reachable in this test
+// only by a credential no browser could ever have obtained. Everything past it was real — the real
+// middleware, the real ledger read, the real step-up check — but the credential itself was not, and
+// a test that mints its own credential cannot fail the way a broken login does.
+func sessionFrom(t *testing.T, header http.Header) string {
 	t.Helper()
-	now := s.clock.Now()
-	value, err := s.codec.Encode(auth.Session{
-		MembershipID: membership.String(),
-		IssuedAt:     now,
-		ExpiresAt:    now.Add(auth.DefaultSessionTTL),
-		SteppedUpAt:  now,
-	})
-	require.NoError(t, err)
-	return value
+	for _, c := range (&http.Response{Header: header}).Cookies() {
+		if c.Name == auth.SessionCookie {
+			require.True(t, c.Secure, "the session cookie must be Secure: __Host- requires it")
+			require.True(t, c.HttpOnly, "no script has any reason to read a session")
+			require.Equal(t, http.SameSiteLaxMode, c.SameSite,
+				"a cross-site POST must not carry the session")
+			return c.Value
+		}
+	}
+	require.FailNow(t, "the response set no "+auth.SessionCookie+" cookie")
+	return ""
 }
 
 func (s *e2eServer) request(
@@ -249,6 +249,7 @@ func (s *e2eServer) call(t *testing.T, r e2eRequest) []byte {
 	rec := httptest.NewRecorder()
 	s.handler.ServeHTTP(rec, req)
 	require.Equal(t, r.Want, rec.Code, "%s %s answered: %s", r.Method, r.Path, rec.Body.String())
+	s.lastHeader = rec.Header()
 	return rec.Body.Bytes()
 }
 
@@ -262,12 +263,15 @@ func (s *e2eServer) get(t *testing.T, path, token string, want int) []byte {
 	return s.request(t, http.MethodGet, path, "", token, want)
 }
 
-func (s *e2eServer) join(t *testing.T, code, displayName string) joinedResponse {
+// join redeems a code and returns BOTH credentials the one operation mints: the PAT in the body
+// and the browser session in the `Set-Cookie`. Both come out of the same request because both
+// clients come through the same door — there is no browser-only route to redeem an invite.
+func (s *e2eServer) join(t *testing.T, code, displayName string) (joinedResponse, string) {
 	t.Helper()
 	body := s.post(t, "/api/v1/join", joinBody(code, displayName), "", http.StatusOK)
 	var joined joinedResponse
 	require.NoError(t, json.Unmarshal(body, &joined))
-	return joined
+	return joined, sessionFrom(t, s.lastHeader)
 }
 
 // joinedResponse mirrors what `/join` answers. It is declared here rather than reusing the service
@@ -368,7 +372,7 @@ func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 
 	// --- the operator joins, which is what creates the identity ---------------------------------
 	srv := newE2EServer(t, ctx, path)
-	joined := srv.join(t, ownerCode, "Operator")
+	joined, session := srv.join(t, ownerCode, "Operator")
 	require.Equal(t, "owner", joined.Membership.Role)
 
 	identities, err := captureCLI(t, "instance", "identities", "--db", path)
@@ -378,7 +382,8 @@ func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 	require.Contains(t, identities, "local")
 
 	// --- an owner, stepped up, with no grant: refused, and the code says which half failed ------
-	session := srv.steppedUpSession(t, joined.Membership.ID)
+	// The session is the one `/join` set on the response above: a real credential a browser could
+	// have, rather than one this test encoded for itself.
 	refused := srv.call(t, e2eRequest{
 		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
 		Session: session, Want: http.StatusForbidden,
