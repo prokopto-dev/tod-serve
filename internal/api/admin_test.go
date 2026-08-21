@@ -343,3 +343,45 @@ func TestSessionMinting_NoRouteMintsOne_IsStillTrue(t *testing.T) {
 	require.True(t, registered[api.OpListAdminIdentityProviders])
 	require.True(t, registered[api.OpCreateIdentityProvider])
 }
+
+// `/me` is how a client discovers what it may do, and an instance grant has to reach it: an admin
+// console that could not tell whether this operator holds `instance.security.manage` would have to
+// probe the route and read the 403.
+//
+// It asserts the effective set is the ROLE'S PERMISSIONS PLUS THE GRANT and nothing else, so a
+// union that reached into the role matrix — handing over whatever else the granted identity's
+// circle role implied — is a red test rather than a surprise.
+func TestGetCurrentPrincipal_AnInstanceGrant_ReachesTheEffectivePermissions(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	session, owner := h.adminSession(t)
+
+	before := h.do(request{Method: http.MethodGet, Path: api.BasePath + "/me", Session: session})
+	require.Equal(t, http.StatusOK, before.Status, before.Body)
+	var view api.PrincipalView
+	require.NoError(t, json.Unmarshal([]byte(before.Body), &view))
+	require.ElementsMatch(t, permissionStrings(authz.RolePermissions(authz.RoleOwner).Slice()),
+		view.Permissions)
+
+	h.grantInstance(owner, authz.PermissionOpsRead)
+
+	after := h.do(request{Method: http.MethodGet, Path: api.BasePath + "/me", Session: session})
+	require.NoError(t, json.Unmarshal([]byte(after.Body), &view))
+	want := append(authz.RolePermissions(authz.RoleOwner).Slice(), authz.PermissionOpsRead)
+	require.ElementsMatch(t, permissionStrings(want), view.Permissions)
+
+	// A token belonging to the same identity's membership sees none of it: an instance grant is on
+	// the identity and a token is bound to a membership.
+	token := h.seedToken(owner, authz.ScopeCircleRead)
+	byToken := h.do(request{Method: http.MethodGet, Path: api.BasePath + "/me", Token: token})
+	require.NoError(t, json.Unmarshal([]byte(byToken.Body), &view))
+	require.NotContains(t, view.Permissions, string(authz.PermissionOpsRead))
+}
+
+func permissionStrings(perms []authz.Permission) []string {
+	out := make([]string, 0, len(perms))
+	for _, p := range perms {
+		out = append(out, string(p))
+	}
+	return out
+}

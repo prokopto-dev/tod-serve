@@ -195,6 +195,16 @@ func TestRouteRegistry_EveryInstanceRealmRoute_IsSessionOnly(t *testing.T) {
 			continue
 		}
 		seen++
+		for _, p := range r.Permissions {
+			if !authz.IsInstanceRealm(p) {
+				continue
+			}
+			// The catalogue side. `SessionOnly()` reads the ROUTE's declared scopes, so without
+			// this a scope widened to grant an instance-realm permission would leave every
+			// assertion below green while a token reached the permission.
+			require.Empty(t, authz.ScopesFor(p),
+				"%s carries %q, which is instance-realm and reachable by a PAT scope", r.ID, p)
+		}
 		require.Empty(t, r.Scopes, "%s carries an instance-realm permission and declares scopes", r.ID)
 		require.False(t, r.AnyScope,
 			"%s carries an instance-realm permission and accepts any scope", r.ID)

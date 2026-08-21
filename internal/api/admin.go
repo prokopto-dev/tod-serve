@@ -46,7 +46,7 @@ type AdminIdentityProvider struct {
 	ClientID string `json:"client_id"`
 	// ClientSecretSet says whether a secret is stored, which is all an operator needs to know and
 	// all this API will ever say about it.
-	ClientSecretSet bool `json:"client_secret_set"`
+	ClientSecretSet bool   `json:"client_secret_set"`
 	RedirectURI     string `json:"redirect_uri"`
 	TokenEndpoint   string `json:"token_endpoint"`
 }
