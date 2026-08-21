@@ -230,3 +230,101 @@ func TestCurrent_TheListing_ShowsEveryPairWithADecision(t *testing.T) {
 	require.True(t, f.effective(f.alice).Has(authz.PermissionInstanceOwner))
 	require.False(t, f.effective(f.alice).Has(authz.PermissionOpsRead))
 }
+
+// fixedEntropy yields the same byte forever, so a generator built over it mints an id with a known
+// entropy tail. It is what lets this file put two ids in a CHOSEN order inside one millisecond.
+type fixedEntropy byte
+
+func (f fixedEntropy) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(f)
+	}
+	return len(p), nil
+}
+
+// TestDecide_TwoGeneratorsInOneMillisecond_CanStillAppend is the regression test for a LOCKOUT.
+//
+// `tod-serve instance grant` builds a fresh `core.Generator` per invocation, and a ULID is
+// monotonic only within one generator: two invocations inside the same millisecond draw random
+// entropy, so the later row can sort BELOW the earlier one. The chain tail used to be
+// `ORDER BY id DESC LIMIT 1`, which then returned the earlier row forever — the next append reused
+// a `prev_hash` its successor had already claimed, `ux_instance_grant_chain` refused it, and the
+// ledger stopped accepting decisions on an instance nobody could then administer.
+//
+// The ids here are forced into the wrong order rather than raced for, because a race reproduces it
+// only sometimes and proves nothing on the run where it does not.
+func TestDecide_TwoGeneratorsInOneMillisecond_CanStillAppend(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+
+	// The first console invocation mints a HIGH id, the second a LOW one, at the same instant.
+	first := f.serviceWithEntropy(fixedEntropy(0xFF))
+	second := f.serviceWithEntropy(fixedEntropy(0x00))
+
+	a, err := first.Decide(t.Context(), instancegrant.DecideRequest{
+		IdentityID: f.alice, Permission: authz.PermissionOpsRead,
+		Decision: instancegrant.DecisionGranted,
+	})
+	require.NoError(t, err)
+	b, err := second.Decide(t.Context(), instancegrant.DecideRequest{
+		IdentityID: f.bob, Permission: authz.PermissionOpsRead,
+		Decision: instancegrant.DecisionGranted,
+	})
+	require.NoError(t, err)
+
+	require.Less(t, b.ID.String(), a.ID.String(),
+		"this test only exercises the bug when the SECOND row sorts below the first")
+	require.Equal(t, a.DecidedAt, b.DecidedAt, "both rows must share one instant")
+
+	// The third append is the one that used to be impossible.
+	c, err := second.Decide(t.Context(), instancegrant.DecideRequest{
+		IdentityID: f.alice, Permission: authz.PermissionCatalogueManage,
+		Decision: instancegrant.DecisionGranted,
+	})
+	require.NoError(t, err, "the ledger can no longer be appended to")
+
+	// And the chain is right: the third row names the SECOND row's hash, which is the one that was
+	// actually written last, not the one with the greatest id.
+	rows := f.rawByID(map[string]bool{a.ID.String(): true, b.ID.String(): true, c.ID.String(): true})
+	require.Nil(t, rows[a.ID.String()].prevHash, "the first decision has no predecessor")
+	require.Equal(t, rows[a.ID.String()].hash, rows[b.ID.String()].prevHash)
+	require.Equal(t, rows[b.ID.String()].hash, rows[c.ID.String()].prevHash)
+
+	// Every decision is still readable and in force, which is the point of being able to append.
+	require.True(t, f.effective(f.alice).Has(authz.PermissionOpsRead))
+	require.True(t, f.effective(f.alice).Has(authz.PermissionCatalogueManage))
+	require.True(t, f.effective(f.bob).Has(authz.PermissionOpsRead))
+
+	// A fourth append, from a THIRD generator, still works — the fix is not "one more row".
+	third := f.serviceWithEntropy(fixedEntropy(0x7F))
+	_, err = third.Decide(t.Context(), instancegrant.DecideRequest{
+		IdentityID: f.bob, Permission: authz.PermissionOpsRead,
+		Decision: instancegrant.DecisionRevoked,
+	})
+	require.NoError(t, err)
+	require.False(t, f.effective(f.bob).Has(authz.PermissionOpsRead))
+}
+
+// rawRow is the ledger as the database holds it. It reads the columns directly rather than through
+// the service, so a bug in the conversion cannot hide one in the chain.
+type rawRow struct {
+	hash     []byte
+	prevHash []byte
+}
+
+// rawByID returns the named rows keyed by id, so an assertion about the chain does not depend on
+// the order a listing happens to return them in — which is the very thing this file's regression
+// test is about.
+func (f *fixture) rawByID(want map[string]bool) map[string]rawRow {
+	f.t.Helper()
+	rows, err := f.store.Queries().ListInstanceGrantHistory(f.t.Context())
+	require.NoError(f.t, err)
+	out := map[string]rawRow{}
+	for _, row := range rows {
+		if want[row.ID] {
+			out[row.ID] = rawRow{hash: row.Hash, prevHash: row.PrevHash}
+		}
+	}
+	require.Len(f.t, out, len(want), "not every named row came back")
+	return out
+}

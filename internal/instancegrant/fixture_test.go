@@ -87,6 +87,20 @@ func (f *fixture) seedIdentity(provider core.IdentityProviderID, subject string)
 	return id
 }
 
+// serviceWithEntropy returns a SECOND service over the same database, with its own id generator.
+//
+// That is what a second `tod-serve instance grant` invocation is: a fresh process, a fresh
+// generator, and no memory of the ids the last one minted.
+func (f *fixture) serviceWithEntropy(entropy io.Reader) *instancegrant.Service {
+	f.t.Helper()
+	svc, err := instancegrant.New(instancegrant.Config{
+		Store: f.store, Clock: f.clock, IDs: core.NewGenerator(entropy),
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	require.NoError(f.t, err)
+	return svc
+}
+
 // newIdentityID mints an id for an identity that does NOT exist, so a test can drive the
 // unknown-identity path without relying on a hand-typed ULID.
 func (f *fixture) newIdentityID() core.IdentityID {

@@ -474,6 +474,14 @@ table "instance_grant" {
     columns = [column.prev_hash]
     where   = "prev_hash IS NOT NULL"
   }
+  // And one row per hash. The tail of the chain is now DERIVED from it — the row whose hash no
+  // other row names — so two rows sharing one would give the ledger two tails or none, in the same
+  // way `ORDER BY id` gave it the wrong one. The chain covers the row's own id, so a duplicate is
+  // either a SHA-256 collision or a hand-written INSERT; this makes the second unrepresentable.
+  index "ux_instance_grant_hash" {
+    unique  = true
+    columns = [column.hash]
+  }
   index "ix_instance_grant_identity" {
     columns = [column.identity_id]
   }

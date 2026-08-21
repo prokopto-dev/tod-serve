@@ -34,11 +34,11 @@ instance-scoped audit log, and it cannot drift from what it describes because it
 [canonical §9](../design/00-canonical-conventions.md#9-tenancy--this-project-diverges-from-dkp)
 allowlist and in `INSTANCE_SCOPED` in `scripts/repo-gates.sh`, which one test already compares.
 
-**Which decision is current is a database constraint, not a sort.** Each row names the row it
-supersedes; `UNIQUE (supersedes_id)` and a partial `UNIQUE (identity_id, permission) WHERE
-supersedes_id IS NULL` make each pair's decisions one chain with exactly one tail. The effective
-grant is that tail, so neither clock skew nor two ULIDs minted in one millisecond by two processes
-can make two rows both look latest.
+**Nothing here is ordered by id, and that is load-bearing.** A ULID is monotonic within one
+generator, and each console invocation builds its own — so two inside a millisecond can mint out of
+order. Each row therefore names the row it supersedes, and `UNIQUE (supersedes_id)` plus a partial
+`UNIQUE (identity_id, permission) WHERE supersedes_id IS NULL` make each pair one chain with one
+tail. The hash chain's tail is derived the same way: the row whose hash nothing names.
 
 **`permission` is restricted to the instance realm by a generated `CHECK`,** rendered into
 `db/enums.hcl` from `authz.Permissions()` filtered on realm — the path every other enumerated column
@@ -78,11 +78,10 @@ it exists to make possible.
   where a capability list would have been one indexed read.
 - **Bad, because the ledger grows without bound**, in decisions rather than grants, and nothing
   prunes it.
-- **Bad, because an identity link does not carry grants.** Somebody who links a second identity
-  holds their instance permissions on the first one only, and will find that surprising.
+- **Bad, because an identity link does not carry grants.**
 
 ### Reversal cost
 
-Low, and it stays low. The table is additive and nothing references it; the authorization path asks
-for an instance set and would ask a different source unchanged. Reverting to A keeps the tail rows
-and drops the rest. Reverting to B or C means re-answering the audit question this ADR answers.
+Low. The table is additive and nothing references it; the authorization path asks for an instance
+set and would ask a different source unchanged. Reverting to A keeps the tail rows and drops the
+rest; reverting to B or C re-opens the audit question this ADR answers.

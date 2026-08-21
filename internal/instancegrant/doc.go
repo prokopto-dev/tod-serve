@@ -11,11 +11,15 @@
 //     the event an audit log exists for, and `audit_log.circle_id` is NOT NULL, so `internal/audit`
 //     cannot hold an instance-level event at all. The chain is [audit.ChainHash] rather than a
 //     second implementation of it.
-//   - **Which decision is current is a database constraint, not a sort.**
+//   - **Nothing here is ordered by id, and that is load-bearing.** A ULID is monotonic within one
+//     generator and each console invocation builds its own, so two inside a millisecond can mint
+//     out of order. Which decision is current is therefore a constraint —
 //     `ux_instance_grant_supersedes` and `ux_instance_grant_head` make each (identity, permission)
-//     pair one chain with exactly one tail, so [Service.Effective] needs no ordering rule and no
-//     tie-break. If two rows ever satisfy the tail query, that is a forked chain and this package
-//     says so rather than picking one.
+//     pair one chain with exactly one tail — and the hash chain's own tail is the row whose hash
+//     no other row names, never the greatest id. Selecting it by id made the ledger stop accepting
+//     appends entirely after two console invocations landed in one millisecond. If two rows ever
+//     satisfy either tail query, that is a forked chain and this package says so rather than
+//     picking one.
 //   - **The grant is on an IDENTITY, not a membership.** A membership is in one circle and an
 //     instance permission is about the whole instance. That is also why a personal access token
 //     never reaches one: a token is bound to a membership (ADR-0005).

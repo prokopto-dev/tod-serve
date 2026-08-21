@@ -225,13 +225,9 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (Grant, error) 
 				req.Permission, req.IdentityID, ErrNoChange)
 		}
 
-		var prevHash []byte
-		head, err := q.GetLatestInstanceGrant(ctx)
-		switch {
-		case err == nil:
-			prevHash = head.Hash
-		case !store.IsNotFound(err):
-			return fmt.Errorf("read the instance grant chain head: %w", err)
+		prevHash, err := chainTail(ctx, q)
+		if err != nil {
+			return err
 		}
 
 		id, err := core.NewID[core.InstanceGrant](s.ids, now)
@@ -274,6 +270,46 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (Grant, error) 
 		slog.String("decision", string(out.Decision)),
 		slog.Bool("by_console", out.ByConsole()))
 	return out, nil
+}
+
+// chainTail returns the hash the next decision must name as its predecessor: the hash of the row
+// no other row already points at, or nil when the ledger is empty.
+//
+// It is derived from the CHAIN and never from `ORDER BY id`. A ULID is monotonic within one
+// generator, and `tod-serve instance grant` builds a fresh one per invocation — so two invocations
+// inside one millisecond mint from random entropy and the later row can sort below the earlier
+// one. An id-ordered head then returns the earlier row forever, the next append reuses a
+// `prev_hash` that row's successor already claimed, and `ux_instance_grant_chain` refuses it: the
+// ledger stops accepting decisions, permanently, on an instance nobody can then administer.
+//
+// The unique index makes that failure loud rather than a silent fork, which is the only reason the
+// bug was a lockout and not a chain that quietly branched.
+func chainTail(ctx context.Context, q *sqlitegen.Queries) ([]byte, error) {
+	tails, err := q.ListInstanceGrantChainTail(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read the instance grant chain tail: %w", err)
+	}
+	switch len(tails) {
+	case 1:
+		return tails[0].Hash, nil
+	case 0:
+		// Empty ledger, or a chain that has no tail at all. The second needs a hand-written INSERT
+		// forming a cycle, and answering it by starting a second chain beside the one already
+		// there would hide exactly the tampering the chain exists to make visible.
+		any, err := q.InstanceGrantExists(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("read whether the instance grant ledger is empty: %w", err)
+		}
+		if any {
+			return nil, fmt.Errorf("the ledger holds rows and no unreferenced hash: %w",
+				ErrForkedChain)
+		}
+		return nil, nil
+	default:
+		// Two unreferenced hashes is a forked chain, which `ux_instance_grant_chain` makes
+		// unrepresentable — so reaching this means the index is gone, or two rows share a hash.
+		return nil, fmt.Errorf("the ledger has %d chain tails: %w", len(tails), ErrForkedChain)
+	}
 }
 
 // tail returns the decision nothing supersedes for one identity and one permission, or nil when
