@@ -15,6 +15,7 @@ import (
 
 	"github.com/prokopto-dev/tod-serve/internal/api"
 	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/ui"
 )
 
 // The server's own timeouts. A home server on a domestic connection meets slow clients routinely,
@@ -75,6 +76,14 @@ func newServeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The console is optional at BUILD time and required to be honest at run time: a
+			// binary compiled without the web assets serves the API alone, and the log line
+			// below says so. Silently serving a blank page is the failure this reports instead.
+			console, consoleErr := ui.Handler()
+			if consoleErr != nil && !errors.Is(consoleErr, ui.ErrNotBuilt) {
+				return consoleErr
+			}
+
 			server, err := api.New(api.Config{
 				Version:    version,
 				Store:      db,
@@ -93,6 +102,7 @@ func newServeCommand() *cobra.Command {
 				Clock:       svc.clock,
 				Log:         log,
 				IDs:         svc.ids,
+				Console:     console,
 				Metrics: api.MetricsConfig{
 					Enabled: os.Getenv(envMetricsEnabled) == "true",
 					Token:   core.Secret(os.Getenv(envMetricsToken)),
@@ -106,7 +116,12 @@ func newServeCommand() *cobra.Command {
 				slog.String("addr", envOr(envAddr, defaultAddr)),
 				slog.String("database", path),
 				slog.Int("operations", len(server.Registered())),
-				slog.Int("unimplemented", len(server.Unimplemented())))
+				slog.Int("unimplemented", len(server.Unimplemented())),
+				slog.Bool("console", console != nil))
+			if console == nil {
+				log.WarnContext(ctx, "this binary carries no web console; it serves the API only",
+					slog.String("build_it_with", "make build-web"))
+			}
 
 			return listenAndServe(ctx, log, server)
 		},

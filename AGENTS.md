@@ -33,6 +33,8 @@ than writing it down as though it were enforced.
 | `internal/clock/` | The only `time.Now` |
 | `internal/apierr/` | The closed error-code enum and the RFC 9457 problem the edge renders |
 | `internal/repogate/` | The gates that need an AST rather than a grep: `CLOCK001`, `SLEEP001`, `ROUTE001`, `RAND001` |
+| `internal/ui/` | The embedded admin console. `//go:embed all:dist`, staged from `web/dist` by `make build-web`. Declares no route — it returns a handler and `internal/api` decides where it sits |
+| `web/` | The console: React + Vite + TypeScript + Tailwind. **Not part of the Go module** — `web/go.mod` is what says so, and what stops `./...` compiling whatever Go code the JavaScript dependency tree ships. `web/src/api/generated.ts` is generated from `openapi/openapi.json` and never hand-edited |
 | `internal/canondoc/` | Reads fenced blocks out of the normative documents, so a gate compares code against the document rather than against a copy of it |
 | `db/` | `schema.hcl` is the single schema truth; `enums.hcl` is generated; `queries/*.sql`; `migrations-sqlite/`, forward-only |
 | `test/repo/` | Tests about the repository itself, not the product: they assert the gates below actually fire |
@@ -62,7 +64,16 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    neither may construct a client. `NET001`, plus a dialer that resolves, checks every resolved
    address against a deny list covering private, link-local, loopback and cloud-metadata ranges,
    and then dials the checked address literal so a DNS rebind has no second lookup to win.
-7. **`web/src` contains no `fetch` outside `web/src/api`.** ESLint rule plus a CI grep.
+7. **`web/src` contains no `fetch` or `XMLHttpRequest` outside `web/src/api`.** `tod/no-network-outside-api`,
+   a local ESLint rule, plus `WEB001`. Two mechanisms because they fail differently: a lint rule is
+   switched off by an `eslint-disable` comment and a grep is not, and the grep runs in the CI job
+   with no npm. The rule is the authority — it resolves through the scope, so a property named
+   `fetch` is not the global and a shadowing local binding is not either. Beside it,
+   `TestAPIParity_EveryConsoleRequest_IsReachableWithAScopedToken` drives every operation the
+   console calls with a scoped token: **a capability the browser has and a token cannot reach is a
+   red build.** And `WEB002` bans the browser's clock — every countdown is a signed offset from the
+   response's `as_of`, because a machine four minutes fast would otherwise render a window that is
+   wrong on screen and right in the database.
 8. **Migrations are forward-only and the report log is never rewritten.** `MIG001` fails a `Down`
    block containing DDL or a file out of sequence; `LOG001` fails an `UPDATE` or `DELETE` against an
    append-only table anywhere in `db/queries` or `db/migrations-sqlite`, which is every route Go has
@@ -152,8 +163,12 @@ are not bundled, they load from a separate seed repository, and an instance with
 make help         # every target, documented
 make status       # what is still stubbed — derived from notyet call sites, never hand-maintained
 make check        # what CI runs
-make gen          # regenerate the enum catalogue, the migration, the sqlc bindings and the spec
+make gen          # regenerate the enum catalogue, the migration, the sqlc bindings, the spec
+                  # and the console's TypeScript client
 make gen-openapi  # just openapi/openapi.json, which needs neither Atlas nor sqlc
+make gen-web      # just web/src/api/generated.ts, from the checked-in openapi/openapi.json
+make build-web    # build the console and stage it where go:embed reads it
+make lint-web     # the console's ESLint run, its own rule's unit test, and the generated client
 make spec-diff    # the spec breaks no client against the base branch, renames included
 make test-tenancy # cross-circle isolation over the route registry
 make seed         # load the embedded raid-target identity. Timers are NOT bundled:

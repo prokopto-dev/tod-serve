@@ -94,6 +94,13 @@ type Config struct {
 	// InviteRateLimit is the ONE bucket every public route that accepts an invite code draws on.
 	// Its zero value is the default.
 	InviteRateLimit RateLimit
+	// Console is the embedded admin console, from `internal/ui`. Optional: a binary built with
+	// no web assets serves the API alone and says so at startup, rather than serving a blank
+	// page that looks like a broken console.
+	//
+	// It is a plain [http.Handler] rather than the package, so `internal/api` does not import
+	// `internal/ui` and the console can be swapped for a stub in a test.
+	Console http.Handler
 	// OnResponseViolation installs the response validator and receives every response that breaks
 	// the contract canonical §7 states. The integration suite sets it to something that fails the
 	// test; production leaves it nil, where the same rules are held by the one place that renders
@@ -323,8 +330,15 @@ func (s *Server) registerAll() error {
 	)
 }
 
-// Handler returns the API router. It does NOT serve `/metrics`, which is on its own listener.
-func (s *Server) Handler() http.Handler { return s.api.handler() }
+// Handler returns everything this listener serves: the API, and the console behind it when one
+// was built in. It does NOT serve `/metrics`, which is on its own listener.
+func (s *Server) Handler() http.Handler {
+	api := s.api.handler()
+	if s.cfg.Console == nil {
+		return api
+	}
+	return withConsole(api, s.cfg.Console)
+}
 
 // MetricsHandler returns the metrics router, and false when metrics are disabled.
 //

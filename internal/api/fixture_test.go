@@ -200,6 +200,46 @@ func newServices(
 	}
 }
 
+// newHarnessWithConsole builds the same server with a stub console behind the API.
+//
+// The stub is a stand-in for `internal/ui`, deliberately: what these tests are about is the SPLIT
+// — which requests reach the API and which fall through — and wiring the real console would make
+// them depend on whether somebody had run `make build-web`, which is exactly the kind of
+// conditional coverage this repository refuses.
+func newHarnessWithConsole(t *testing.T) *harness {
+	t.Helper()
+	h := newHarness(t)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := newServices(t, h.store, h.clock, h.ids, h.minter, log)
+	authn, err := auth.NewAuthenticator(
+		h.store, h.minter, h.codec, svc.grants, h.clock, log, auth.DefaultStepUpWindow)
+	require.NoError(t, err)
+
+	server, err := api.New(api.Config{
+		Version:             "0.0.0-test",
+		Store:               h.store,
+		Auth:                authn,
+		Sessions:            h.codec,
+		Circles:             svc.circles,
+		Members:             svc.members,
+		Invites:             svc.invites,
+		Identities:          svc.identities,
+		Catalogue:           svc.catalogue,
+		Tods:                svc.tods,
+		States:              svc.states,
+		Invalidator:         h.invalidator,
+		Clock:               h.clock,
+		Log:                 log,
+		IDs:                 h.ids,
+		Console:             stubConsole(),
+		Metrics:             api.MetricsConfig{Enabled: true, Token: testMetricsTok},
+		OnResponseViolation: func(v api.Violation) { t.Errorf("response contract: %s", v) },
+	})
+	require.NoError(t, err)
+	h.server, h.handler = server, server.Handler()
+	return h
+}
+
 // newHarnessWithoutMetrics builds the same server with metrics off, which is the DEFAULT: a
 // metrics endpoint that is on unless somebody turns it off is an information leak nobody chose.
 func newHarnessWithoutMetrics(t *testing.T) *harness {
