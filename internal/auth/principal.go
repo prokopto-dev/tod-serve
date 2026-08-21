@@ -50,27 +50,45 @@ type Principal struct {
 	// SteppedUpAt is when a session last proved its identity. Zero for a token, which can never
 	// step up.
 	SteppedUpAt core.Micros
+	// IdentityID is the person behind a human membership, and is zero for a service membership —
+	// a bot has no identity, it has an owner. It is the key an instance grant hangs off.
+	IdentityID core.IdentityID
+	// InstanceGrants are the instance-realm permissions this principal's IDENTITY currently holds,
+	// read live from `instance_grant` on every request for the same reason the membership is: a
+	// revoked grant takes effect on the next request rather than when a credential expires.
+	//
+	// It is empty for a token at every scope. See ADR-0012 and [authz.EffectiveForToken].
+	InstanceGrants authz.Set
 }
 
 // Effective returns what this principal may actually do: `role permissions ∩ token scopes` for a
-// token, and the role's permissions for a session. The intersection lives in internal/authz and is
-// not reimplemented here.
+// token, and the role's permissions plus the identity's instance grants for a session. Both are
+// computed in internal/authz and neither is reimplemented here.
 func (p Principal) Effective() authz.Set {
 	if p.Kind == KindPAT {
 		return authz.EffectiveForToken(p.Role, p.Scopes)
 	}
-	return authz.EffectiveForSession(p.Role)
+	return authz.EffectiveForSession(p.Role, p.InstanceGrants)
 }
 
 // Can reports whether the principal holds the permission, after narrowing.
 func (p Principal) Can(perm authz.Permission) bool { return p.Effective().Has(perm) }
 
-// RoleHolds reports whether the principal's ROLE holds the permission, before any token narrowing.
+// Holds reports whether the principal was GRANTED the permission, before any token narrowing: by
+// the membership's role for a circle-realm key, and by the identity's instance grants for an
+// instance-realm one.
 //
 // The difference between this and [Principal.Can] is the difference between `forbidden` and
 // `insufficient_scope`, which point at completely different fixes: ask an officer for a role,
 // versus mint a token with the scope.
-func (p Principal) RoleHolds(perm authz.Permission) bool {
+//
+// The realm branch is here rather than in the caller because asking a role about an instance-realm
+// key would answer false for a principal who holds the grant, and a 403 saying "your role does not
+// hold it" is exactly the confidently wrong answer this project is built against.
+func (p Principal) Holds(perm authz.Permission) bool {
+	if authz.IsInstanceRealm(perm) {
+		return p.InstanceGrants.Has(perm)
+	}
 	return authz.RolePermissions(p.Role).Has(perm)
 }
 

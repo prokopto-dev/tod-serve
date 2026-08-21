@@ -41,6 +41,7 @@ it is a reviewed decision.
 | `identity_provider` | mutable | The pluggable IdP registry. |
 | `identity` | append-mostly | `(provider_id, subject)` → a person, instance-wide. Carries `blocked_at`. |
 | `identity_link` | append-only | Officer-asserted equivalence between two **verifiable** identities. |
+| `instance_grant` | append-only | One instance-level authorization **decision** — `granted` or `revoked` — on an identity. Hash-chained; it is its own audit record, because `audit_log.circle_id` is `NOT NULL`. [ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md) |
 | `auth_flow` | mutable, prunable | One in-flight OAuth authorization: `state`, the **server-side** PKCE verifier, TTL. |
 | `credential_ticket` | mutable, prunable | A verified subject, single-use, 120-second TTL, between the OAuth callback and `/join` or `/sessions`. |
 | `raid_target` | mutable | Catalogue: mob identity. Server-agnostic. |

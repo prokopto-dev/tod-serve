@@ -152,9 +152,18 @@ const listLiveCircles = `-- name: ListLiveCircles :many
 SELECT id, name, name_norm, description, server, timezone, min_reporters_to_supersede, revoke_invalidates_invites, state, deleted_at, created_at, updated_at FROM circle WHERE deleted_at IS NULL ORDER BY id
 `
 
-// tenancy: the projection's rebuild and its nightly verify job sweep every circle. They have no
-// caller and no tenant to be filtered by -- a maintenance job that could only see one circle would
-// leave every other circle's cache unverified, which is the whole thing the job exists to stop.
+// tenancy: SAFE because it takes no caller-supplied input of any kind and its result never reaches
+// a response body. It backs `tod-serve rebuild-states` and the nightly verify job, which have no
+// caller and no tenant: a maintenance sweep that could only see one circle would leave every other
+// circle's cache unverified, which is the whole thing the job exists to stop.
+//
+// THIS QUERY MUST NEVER BACK A CALLER-FACING ROUTE. The moment it does it is an instance-wide
+// circle enumeration -- the existence oracle canonical section 7 exists to close, because a
+// circle's existence is part of what it is hiding. That is not left to this comment:
+// TestCircleEnumeration_IsReachableOnlyFromTheProjection is the gate.
+//
+// `deleted_at IS NULL` like every other read here: a tombstoned circle must not come back onto the
+// recompute path.
 func (q *Queries) ListLiveCircles(ctx context.Context) ([]Circle, error) {
 	rows, err := q.db.QueryContext(ctx, listLiveCircles)
 	if err != nil {
@@ -197,9 +206,15 @@ WHERE deleted_at IS NULL AND server = ?1
 ORDER BY id
 `
 
-// tenancy: a catalogue timer is instance-wide and PER SERVER, so writing one moves the window for
-// every circle pinned to that server. There is no single tenant to filter by -- the whole point of
-// this query is the fan-out, and a version that took a circle_id could not express it.
+// tenancy: SAFE for the same reason as ListLiveCircles above, and under the same constraint. Its
+// only argument is a server, which is chosen by an instance-realm write rather than by a caller
+// naming a circle, and its result never reaches a response body -- it is an internal invalidation
+// sweep. A catalogue timer is instance-wide and per server, so writing one moves the window for
+// every circle pinned to that server, and the fan-out is the point.
+//
+// THIS QUERY MUST NEVER BACK A CALLER-FACING ROUTE, and
+// TestCircleEnumeration_IsReachableOnlyFromTheProjection is what holds it to that rather than this
+// sentence. `deleted_at IS NULL` for the same reason as above.
 func (q *Queries) ListLiveCirclesOnServer(ctx context.Context, server string) ([]Circle, error) {
 	rows, err := q.db.QueryContext(ctx, listLiveCirclesOnServer, server)
 	if err != nil {

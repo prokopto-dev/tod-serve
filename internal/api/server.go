@@ -303,6 +303,7 @@ func (s *Server) registerAll() error {
 		s.registerMembers(),
 		s.registerInvites(),
 		s.registerCatalogue(),
+		s.registerAdmin(),
 		s.registerJoin(),
 		s.registerTods(),
 		s.registerQuakes(),

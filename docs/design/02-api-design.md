@@ -345,6 +345,19 @@ override a circle had set.
 
 ## Instance administration
 
+**Every permission in this table is instance-realm: no circle role grants one, and no PAT reaches
+one at any scope.** They come from an `instance_grant` on the caller's identity
+([ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md)), written by `tod-serve
+instance grant` at the console — which is also the recovery path, and the reason an instance needs
+no `last_owner` rule. Four of the five are in the capability floor and need a re-authenticated
+session; `ops.read` is not.
+
+On `/admin/identity-providers`, `client_secret` is **write-only**: it goes in and never comes back
+out, and the representation says only whether one is `client_secret_set`. `key` and `kind` are
+immutable (`422 field_immutable`) because `kind` decides `verifiable_subject`, and a delete is
+refused (`409 conflict`) once anybody has joined through the provider — **disabling** it is the
+operation that stops new joins.
+
 | Method | Path | OperationID | Permission | Scope |
 |---|---|---|---|---|
 | GET | `/admin/identity-providers` | `listAdminIdentityProviders` | `instance.security.manage` | — step-up |
@@ -398,8 +411,8 @@ invite_exhausted (409)           invite_revoked (409)          provider_not_acce
 provider_disabled (409)          provider_unverifiable (422)   credential_invalid (401)
 credential_expired (401)         credential_stale (401)        identity_provider_unreachable (503)
 acknowledgement_required (422)   server_mismatch (422)         died_at_in_future (422)
-died_at_too_old (422)            report_immutable (409)        already_retracted (409)
-retract_not_permitted (403)      unknown_target (422)          ambiguous_target (422)
+died_at_too_old (422)            already_retracted (409)       retract_not_permitted (403)
+unknown_target (422)             ambiguous_target (422)
 last_owner (409)                 field_immutable (422)         link_requires_verifiable_identity (422)
 guild_membership_required (403)  guild_role_required (403)     auth_ticket_invalid (401)
 auth_ticket_expired (401)        auth_flow_expired (409)       identity_blocked (403)

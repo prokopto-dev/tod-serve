@@ -11,6 +11,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
 
+	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/canondoc"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 )
@@ -331,6 +332,15 @@ func seedAppendOnlyRows(t *testing.T, ctx context.Context, db *DB, f fixture) {
 		INSERT INTO event_outbox (id, circle_id, kind, payload_json, created_at)
 		VALUES (?, ?, 'tod.changed', '{}', ?)`,
 		id.next(t), f.CircleID, int64(now))
+
+	// A console grant: decided_by_identity_id NULL is the operator at the console, which is the
+	// only writer that exists before any identity does. ADR-0012.
+	mustExec(t, ctx, db, `
+		INSERT INTO instance_grant (id, identity_id, permission, decision, supersedes_id,
+			decided_by_identity_id, reason, prev_hash, hash, decided_at)
+		VALUES (?, ?, ?, ?, NULL, NULL, '', NULL, ?, ?)`,
+		id.next(t), f.IdentityID, string(authz.PermissionInstanceOwner),
+		schemaenum.InstanceGrantDecisionGranted, []byte("hash-0002"), int64(now))
 }
 
 func count(t *testing.T, ctx context.Context, db *DB, table string) int {

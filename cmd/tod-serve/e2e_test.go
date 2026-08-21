@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -16,6 +18,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/tod-serve/internal/api"
+	"github.com/prokopto-dev/tod-serve/internal/auth"
+	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 )
@@ -30,6 +35,10 @@ const (
 // codePattern finds the owner code the CLI prints. It matches the canonical form only: a test that
 // accepted a loose spelling would pass while the CLI printed something no client could redeem.
 var codePattern = regexp.MustCompile(`TODI-[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}`)
+
+// ulidPattern finds an id in a console listing. Anchored to the full 26 characters so a truncated
+// column would fail the test rather than produce an id the API refuses.
+var ulidPattern = regexp.MustCompile(`\b[0-9A-HJKMNP-TV-Z]{26}\b`)
 
 // TestEndToEnd_InitToJoinToACircleScopedRoute is the acceptance path, over real SQLite in a temp
 // directory and the real HTTP server, with nothing stubbed.
@@ -136,7 +145,11 @@ func TestEndToEnd_InitToJoinToACircleScopedRoute(t *testing.T) {
 
 // e2eServer is the wired API over a real database, with the response contract checked on every
 // request the test makes.
-type e2eServer struct{ handler http.Handler }
+type e2eServer struct {
+	handler http.Handler
+	clock   clock.Clock
+	codec   *auth.SessionCodec
+}
 
 func newE2EServer(t *testing.T, ctx context.Context, path string) *e2eServer {
 	t.Helper()
@@ -156,34 +169,86 @@ func newE2EServer(t *testing.T, ctx context.Context, path string) *e2eServer {
 		OnResponseViolation: func(v api.Violation) { t.Errorf("response contract: %s", v) },
 	})
 	require.NoError(t, err)
-	return &e2eServer{handler: server.Handler()}
+	return &e2eServer{handler: server.Handler(), clock: svc.clock, codec: svc.codec}
+}
+
+// steppedUpSession returns the browser session cookie value for a membership, signed by the key
+// this server was wired with.
+//
+// **It is minted here because no ROUTE mints one yet.** `completeAuthorization` is the operation
+// that will set `__Host-tod_session`, and it lands with the OAuth flow; until then the capability
+// floor is reachable only by a session somebody encoded with the server's own codec.
+// TestSessionMinting_NoRouteMintsOne_YetIsStillTrue holds that gap visible rather than assumed, and
+// goes red when the route lands. Everything past the cookie in this test is the real thing: the
+// real middleware, the real instance-grant read, the real step-up check and the real handlers.
+func (s *e2eServer) steppedUpSession(t *testing.T, membership core.MembershipID) string {
+	t.Helper()
+	now := s.clock.Now()
+	value, err := s.codec.Encode(auth.Session{
+		MembershipID: membership.String(),
+		IssuedAt:     now,
+		ExpiresAt:    now.Add(auth.DefaultSessionTTL),
+		SteppedUpAt:  now,
+	})
+	require.NoError(t, err)
+	return value
 }
 
 func (s *e2eServer) request(
 	t *testing.T, method, path, body, token string, wantStatus int,
 ) []byte {
 	t.Helper()
+	return s.call(t, e2eRequest{
+		Method: method, Path: path, Body: body, Token: token, Want: wantStatus,
+	})
+}
+
+// e2eRequest is one call. It is a struct rather than eight positional parameters because the
+// admin path needs a cookie, an `If-Match` and a body at once, and a call site reading
+// `"", "", cookie, "*"` is a call site nobody can check.
+type e2eRequest struct {
+	Method  string
+	Path    string
+	Body    string
+	Token   string
+	Session string
+	IfMatch string
+	Want    int
+}
+
+func (s *e2eServer) call(t *testing.T, r e2eRequest) []byte {
+	t.Helper()
 	var reader io.Reader
-	if body != "" {
-		reader = strings.NewReader(body)
+	if r.Body != "" {
+		reader = strings.NewReader(r.Body)
 	}
-	req := httptest.NewRequestWithContext(t.Context(), method, path, reader)
-	if body != "" {
+	req := httptest.NewRequestWithContext(t.Context(), r.Method, r.Path, reader)
+	if r.Body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	// The middle of the range, on every request this test makes: `*/*` is curl's default and what
 	// almost every HTTP client sends, and the API once answered 406 to all of them.
 	req.Header.Set("Accept", "*/*")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if r.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+r.Token)
 	}
-	if method == http.MethodPost {
-		req.Header.Set(api.IdempotencyKeyHeader, method+" "+path+" "+body)
+	if r.Session != "" {
+		req.AddCookie(&http.Cookie{Name: auth.SessionCookie, Value: r.Session})
+	}
+	if r.IfMatch != "" {
+		req.Header.Set(api.IfMatchHeader, r.IfMatch)
+	}
+	if r.Method == http.MethodPost {
+		// Hashed rather than spelled: `Idempotency-Key` is capped at 255 characters and a provider
+		// body is longer than that. What matters is that a retry of the same call reuses the key,
+		// which a hash of the call gives for free.
+		sum := sha256.Sum256([]byte(r.Method + " " + r.Path + " " + r.Body))
+		req.Header.Set(api.IdempotencyKeyHeader, hex.EncodeToString(sum[:16]))
 	}
 
 	rec := httptest.NewRecorder()
 	s.handler.ServeHTTP(rec, req)
-	require.Equal(t, wantStatus, rec.Code, "%s %s answered: %s", method, path, rec.Body.String())
+	require.Equal(t, r.Want, rec.Code, "%s %s answered: %s", r.Method, r.Path, rec.Body.String())
 	return rec.Body.Bytes()
 }
 
@@ -259,4 +324,188 @@ func captureCLI(t *testing.T, args ...string) (string, error) {
 	root.SetArgs(args)
 	err := root.ExecuteContext(t.Context())
 	return buf.String(), err
+}
+
+// TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider is the acceptance path ADR-0012 exists
+// for: a brand new instance, and an operator ending up able to add the Discord provider over HTTP.
+//
+// Before this, `instance.security.manage` was instance-realm and nothing granted it, so
+// `/admin/identity-providers` answered 403 to every principal including a stepped-up owner — and
+// configuring an identity provider was a command-line operation with no API equivalent at all.
+//
+// It is one test rather than seven because the thing under test is that the steps COMPOSE. The
+// console writes a grant against an identity; the join created that identity; the middleware reads
+// the ledger on the next request. Any one of those passing in isolation proves nothing about the
+// operator's actual morning.
+func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "tod.db")
+
+	require.NoError(t, runCLI(t, "migrate", "--db", path))
+	initOut, err := captureCLI(t,
+		"init", "--db", path, "--name", "Fresh Instance",
+		"--public-url", "https://tod.example.com",
+		"--circle", "Ops", "--server", "blue",
+		"--local", "--accept-local", "--acknowledge-weak-revocation")
+	require.NoError(t, err)
+	// The bootstrap tells the operator what the next step is. A binary that leaves somebody with a
+	// working circle and an unadministrable instance has not finished the job it started.
+	require.Contains(t, initOut, "tod-serve instance identities")
+	require.Contains(t, initOut, "instance.owner")
+
+	ownerCode := codePattern.FindString(initOut)
+	require.NotEmpty(t, ownerCode)
+
+	// --- no identity yet, so there is nothing to grant to ---------------------------------------
+	before, err := captureCLI(t, "instance", "identities", "--db", path)
+	require.NoError(t, err)
+	require.Contains(t, before, "nobody has joined a circle")
+
+	empty, err := captureCLI(t, "instance", "grants", "--db", path)
+	require.NoError(t, err)
+	require.Contains(t, empty, "no instance permission has been granted")
+
+	// --- the operator joins, which is what creates the identity ---------------------------------
+	srv := newE2EServer(t, ctx, path)
+	joined := srv.join(t, ownerCode, "Operator")
+	require.Equal(t, "owner", joined.Membership.Role)
+
+	identities, err := captureCLI(t, "instance", "identities", "--db", path)
+	require.NoError(t, err)
+	identityID := ulidPattern.FindString(identities)
+	require.NotEmpty(t, identityID, "instance identities printed no id:\n%s", identities)
+	require.Contains(t, identities, "local")
+
+	// --- an owner, stepped up, with no grant: refused, and the code says which half failed ------
+	session := srv.steppedUpSession(t, joined.Membership.ID)
+	refused := srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
+		Session: session, Want: http.StatusForbidden,
+	})
+	require.Contains(t, string(refused), `"code":"forbidden"`)
+
+	// A token belonging to the same person is refused differently, because the fix is different:
+	// no PAT reaches an instance-realm permission at any scope.
+	byToken := srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
+		Token: joined.Token.Secret, Want: http.StatusForbidden,
+	})
+	require.Contains(t, string(byToken), `"code":"session_required"`)
+
+	// --- the console grants it -------------------------------------------------------------------
+	granted, err := captureCLI(t, "instance", "grant", "--db", path,
+		"--identity", identityID, "--permission", string(authz.PermissionInstanceSecurityManage),
+		"--reason", "first operator")
+	require.NoError(t, err)
+	require.Contains(t, granted, "granted")
+
+	// Granting it twice is refused rather than appending a row where nothing happened.
+	_, err = captureCLI(t, "instance", "grant", "--db", path,
+		"--identity", identityID, "--permission", string(authz.PermissionInstanceSecurityManage))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already records")
+
+	// --- and the same session, unchanged, now reaches the admin surface -------------------------
+	listed := srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
+		Session: session, Want: http.StatusOK,
+	})
+	var page struct {
+		Items []api.AdminIdentityProvider `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(listed, &page))
+	require.Len(t, page.Items, 1)
+	require.Equal(t, "local", page.Items[0].Key)
+
+	// --- configuring the Discord provider, which is the whole point ------------------------------
+	const clientSecret = "e2e-discord-client-secret"
+	createdBody := srv.call(t, e2eRequest{
+		Method: http.MethodPost, Path: "/api/v1/admin/identity-providers", Session: session,
+		Body: `{"key":"discord","kind":"discord","display_name":"Discord",
+		        "client_id":"1234567890","client_secret":` + quote(clientSecret) + `,
+		        "redirect_uri":"https://tod.example.com/api/v1/auth/callback/discord",
+		        "token_endpoint":"https://discord.com/api/oauth2/token","enabled":true}`,
+		Want: http.StatusOK,
+	})
+	require.NotContains(t, string(createdBody), clientSecret,
+		"the client secret came back out of the API it went into")
+	var created api.AdminIdentityProviderResponse
+	require.NoError(t, json.Unmarshal(createdBody, &created))
+	require.Equal(t, "discord", created.Key)
+	require.True(t, created.Enabled)
+	require.True(t, created.ClientSecretSet)
+	// `verifiable_subject` is a CHECK against `kind` and was never in the request. A caller cannot
+	// assert it, which is why revocation strength can be trusted to be derived.
+	require.True(t, created.VerifiableSubject)
+
+	// --- and changing it, under If-Match ---------------------------------------------------------
+	current := srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
+		Session: session, Want: http.StatusOK,
+	})
+	require.NoError(t, json.Unmarshal(current, &page))
+	require.Len(t, page.Items, 2)
+
+	etag, err := api.ETagOf(providerByKey(t, page.Items, "discord"))
+	require.NoError(t, err)
+	renamedBody := srv.call(t, e2eRequest{
+		Method: http.MethodPatch, Session: session, IfMatch: etag,
+		Path: "/api/v1/admin/identity-providers/" + created.ID,
+		Body: `{"display_name":"Discord (guild gate)"}`,
+		Want: http.StatusOK,
+	})
+	var renamed api.AdminIdentityProviderResponse
+	require.NoError(t, json.Unmarshal(renamedBody, &renamed))
+	require.Equal(t, "Discord (guild gate)", renamed.DisplayName)
+	require.NotContains(t, string(renamedBody), clientSecret)
+	// The secret survived an update that did not mention it. Omitting a write-only field must not
+	// clear it, or every rename would silently break the OAuth application.
+	require.True(t, renamed.ClientSecretSet)
+
+	// The kind is immutable, and saying so is why the field is accepted at all: ignoring it would
+	// let a client believe a provider had been retyped, and kind decides verifiable_subject.
+	immutable := srv.call(t, e2eRequest{
+		Method: http.MethodPatch, Session: session, IfMatch: "*",
+		Path: "/api/v1/admin/identity-providers/" + created.ID,
+		Body: `{"kind":"oidc"}`, Want: http.StatusUnprocessableEntity,
+	})
+	require.Contains(t, string(immutable), `"code":"field_immutable"`)
+
+	// --- and the grant is revocable, which is what makes granting it worth doing ------------------
+	_, err = captureCLI(t, "instance", "revoke", "--db", path,
+		"--identity", identityID, "--permission", string(authz.PermissionInstanceSecurityManage),
+		"--reason", "handed over")
+	require.NoError(t, err)
+
+	after := srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
+		Session: session, Want: http.StatusForbidden,
+	})
+	require.Contains(t, string(after), `"code":"forbidden"`)
+
+	// Both decisions survive. The ledger IS the audit record for an instance permission, because
+	// audit_log.circle_id is NOT NULL and an instance grant belongs to no circle.
+	history, err := captureCLI(t, "instance", "grants", "--db", path, "--history")
+	require.NoError(t, err)
+	require.Contains(t, history, "granted")
+	require.Contains(t, history, "revoked")
+	require.Contains(t, history, "first operator")
+	require.Contains(t, history, "handed over")
+	require.Contains(t, history, "console")
+}
+
+// providerByKey finds one provider in a listing, failing rather than returning a zero value: a
+// missing row would otherwise be asserted against as an empty one.
+func providerByKey(
+	t *testing.T, items []api.AdminIdentityProvider, key string,
+) api.AdminIdentityProvider {
+	t.Helper()
+	for _, item := range items {
+		if item.Key == key {
+			return item
+		}
+	}
+	t.Fatalf("no provider %q in %v", key, items)
+	return api.AdminIdentityProvider{}
 }

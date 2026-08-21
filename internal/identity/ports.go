@@ -70,16 +70,31 @@ type StoredIdentity struct {
 	Blocked bool
 }
 
-// ProviderPort reads the registry, and flips the one column an operator may flip.
+// ProviderPort reads and administers the registry.
 //
-// There is deliberately no SetVerifiableSubject: it is a CHECK against `kind`, not an operator
-// toggle, and a port method offering to change it would be the first half of somebody making it
-// one. `enabled` is the only mutable bit here.
+// There is deliberately no SetVerifiableSubject and no way to change a row's `kind`: verifiability
+// is a CHECK against the kind, not an operator toggle, and a port method offering to change either
+// would be the first half of somebody making it one. A provider that turned out to be the wrong
+// kind is deleted and re-added, which is refused once anybody has joined through it — and that
+// refusal is the honest answer.
 type ProviderPort interface {
 	ProviderByKey(ctx context.Context, key string) (Provider, error)
 	ProviderByID(ctx context.Context, id string) (Provider, error)
 	EnabledProviders(ctx context.Context) ([]Provider, error)
 	SetProviderEnabled(ctx context.Context, id string, enabled bool, at core.Micros) (Provider, error)
+
+	// AllProviders is the administrative read: disabled rows included, because an operator
+	// configuring the instance has to see the one they turned off.
+	AllProviders(ctx context.Context) ([]Provider, error)
+	// CreateProvider writes a new row. `verifiable_subject` is derived from the kind and never
+	// taken from a caller — it is a CHECK against `kind`, and everything about revocation strength
+	// hangs off it.
+	CreateProvider(ctx context.Context, p Provider, at core.Micros) (Provider, error)
+	// UpdateProvider rewrites the mutable columns of an existing row. `key` and `kind` are not
+	// among them; see the query.
+	UpdateProvider(ctx context.Context, p Provider, at core.Micros) (Provider, error)
+	// DeleteProvider removes a row, and is REFUSED by the database once anything references it.
+	DeleteProvider(ctx context.Context, id string) error
 }
 
 // AuthFlowPort writes and consumes `auth_flow`. Consumption is single-use in the database — the

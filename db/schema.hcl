@@ -368,6 +368,137 @@ table "identity_link" {
   strict = true
 }
 
+// instance_grant — who may do what at the INSTANCE level. ADR-0012.
+//
+// Instance-scoped by construction: the row is about an identity and the whole instance, so a
+// `circle_id` would be a false statement rather than a missing one. It is on the canonical §9
+// allowlist and in `INSTANCE_SCOPED` in scripts/repo-gates.sh, which one test compares.
+//
+// APPEND-ONLY. A row is a DECISION — `granted` or `revoked` — not a state, so the row that took a
+// permission away is as durable as the one that gave it. Handing somebody the instance's identity
+// providers is exactly the event an audit log exists for, and `audit_log.circle_id` is NOT NULL:
+// an instance event belongs to no circle, so this table is its own audit record. It is hash-chained
+// for the same reason `audit_log` is — the trigger stops a rewrite, and the chain makes a row
+// removed by something that bypassed the trigger visible in everything after it.
+//
+// WHICH DECISION IS CURRENT IS A CONSTRAINT, NOT A SORT. Each row names the row it supersedes;
+// `ux_instance_grant_supersedes` and `ux_instance_grant_head` make each (identity, permission)
+// pair's decisions one chain with exactly one tail, so no clock skew and no two ULIDs minted in
+// the same millisecond by two processes can make two rows both look latest.
+//
+// `permission` is CHECKed against the instance-realm keys, generated from internal/authz into
+// db/enums.hcl. A circle-realm key here would be a grant nothing could ever consult, because a
+// circle permission comes from a membership's role.
+//
+// `decided_by_identity_id` is NULLABLE, and NULL means the operator at the console — `tod-serve
+// instance grant` holds the database and precedes every identity on a fresh instance. That is a
+// different fact from a person having decided it, so it is a different value rather than a
+// self-reference.
+table "instance_grant" {
+  schema = schema.main
+  column "id" {
+    null = false
+    type = text
+  }
+  column "identity_id" {
+    null = false
+    type = text
+  }
+  column "permission" {
+    null = false
+    type = text
+  }
+  column "decision" {
+    null = false
+    type = text
+  }
+  column "supersedes_id" {
+    null = true
+    type = text
+  }
+  column "decided_by_identity_id" {
+    null = true
+    type = text
+  }
+  column "reason" {
+    null    = false
+    type    = text
+    default = ""
+  }
+  column "prev_hash" {
+    null = true
+    type = blob
+  }
+  column "hash" {
+    null = false
+    type = blob
+  }
+  column "decided_at" {
+    null = false
+    type = integer
+  }
+  primary_key {
+    columns = [column.id]
+  }
+  foreign_key "fk_instance_grant_identity" {
+    columns     = [column.identity_id]
+    ref_columns = [table.identity.column.id]
+  }
+  foreign_key "fk_instance_grant_supersedes" {
+    columns     = [column.supersedes_id]
+    ref_columns = [table.instance_grant.column.id]
+  }
+  foreign_key "fk_instance_grant_decided_by" {
+    columns     = [column.decided_by_identity_id]
+    ref_columns = [table.identity.column.id]
+  }
+  // One row may supersede one row. Without this two revocations could both claim the same grant
+  // and the pair would have two tails, which is the ambiguity this design exists to remove.
+  index "ux_instance_grant_supersedes" {
+    unique  = true
+    columns = [column.supersedes_id]
+    where   = "supersedes_id IS NOT NULL"
+  }
+  // And one chain per pair: a second first-decision for the same identity and permission would be
+  // a second head, which is the same ambiguity from the other end.
+  index "ux_instance_grant_head" {
+    unique  = true
+    columns = [column.identity_id, column.permission]
+    where   = "supersedes_id IS NULL"
+  }
+  // One row may name one predecessor. Two rows claiming the same `prev_hash` is a FORKED chain,
+  // which is a chain that proves nothing: verification would follow one branch and never see the
+  // other. `audit_log` leaves this to a single writer; here it is a constraint.
+  index "ux_instance_grant_chain" {
+    unique  = true
+    columns = [column.prev_hash]
+    where   = "prev_hash IS NOT NULL"
+  }
+  // And one row per hash. The tail of the chain is now DERIVED from it — the row whose hash no
+  // other row names — so two rows sharing one would give the ledger two tails or none, in the same
+  // way `ORDER BY id` gave it the wrong one. The chain covers the row's own id, so a duplicate is
+  // either a SHA-256 collision or a hand-written INSERT; this makes the second unrepresentable.
+  index "ux_instance_grant_hash" {
+    unique  = true
+    columns = [column.hash]
+  }
+  index "ix_instance_grant_identity" {
+    columns = [column.identity_id]
+  }
+  check "ck_instance_grant_permission" {
+    expr = local.check_instance_grant_permission
+  }
+  check "ck_instance_grant_decision" {
+    expr = local.check_instance_grant_decision
+  }
+  // A row cannot supersede itself. The chain is otherwise well-formed and this is the one cycle a
+  // single INSERT could create.
+  check "ck_instance_grant_supersedes_another_row" {
+    expr = "(supersedes_id IS NULL OR supersedes_id <> id)"
+  }
+  strict = true
+}
+
 // auth_flow — one in-flight browser OAuth authorization. Short-lived, capped per caller, swept on
 // expiry: an unredeemed flow is litter, not history, and nothing reads it after `expires_at`.
 //

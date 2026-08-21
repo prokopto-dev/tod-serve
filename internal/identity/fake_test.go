@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/prokopto-dev/tod-serve/internal/core"
@@ -109,6 +110,56 @@ func (f *fakeStore) SetProviderEnabled(_ context.Context, id string, enabled boo
 	f.providersByID[id] = p
 	f.providersByKey[p.Key] = p
 	return p, nil
+}
+
+func (f *fakeStore) AllProviders(_ context.Context) ([]identity.Provider, error) {
+	f.record("AllProviders")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]identity.Provider, 0, len(f.providersByID))
+	for _, p := range f.providersByID {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
+}
+
+func (f *fakeStore) CreateProvider(
+	_ context.Context, p identity.Provider, _ core.Micros,
+) (identity.Provider, error) {
+	f.record("CreateProvider", p.Key)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.providersByID[p.ID] = p
+	f.providersByKey[p.Key] = p
+	return p, nil
+}
+
+func (f *fakeStore) UpdateProvider(
+	_ context.Context, p identity.Provider, _ core.Micros,
+) (identity.Provider, error) {
+	f.record("UpdateProvider", p.ID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.providersByID[p.ID]; !ok {
+		return identity.Provider{}, identity.ErrNotFound
+	}
+	f.providersByID[p.ID] = p
+	f.providersByKey[p.Key] = p
+	return p, nil
+}
+
+func (f *fakeStore) DeleteProvider(_ context.Context, id string) error {
+	f.record("DeleteProvider", id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.providersByID[id]
+	if !ok {
+		return identity.ErrNotFound
+	}
+	delete(f.providersByID, id)
+	delete(f.providersByKey, p.Key)
+	return nil
 }
 
 func (f *fakeStore) CreateAuthFlow(_ context.Context, flow identity.AuthFlow) error {

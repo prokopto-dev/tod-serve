@@ -137,30 +137,44 @@ func Append(
 	return nil
 }
 
-// chainHash is SHA-256 over the previous hash and every field of this entry.
+// ChainHash is SHA-256 over the previous hash and every field of an entry.
 //
 // Every field, deliberately: a chain over only the id and the timestamp would let the action, the
 // actor or the detail be rewritten without breaking it, and the trigger that forbids the rewrite
 // is a different mechanism guarding a different failure. Fields are length-prefixed rather than
 // concatenated, so two entries whose fields differ only in where one string ends and the next
 // begins cannot collide.
-func chainHash(row sqlitegen.AppendAuditLogParams) []byte {
+//
+// It is exported because `instance_grant` is hash-chained too and `audit_log.circle_id` is NOT
+// NULL, so an instance-level decision cannot live in this table (ADR-0012). Two implementations of
+// one chain would be two answers to "was this rewritten", and the second one is always the one
+// nobody re-derives by hand when a chain breaks.
+func ChainHash(prev []byte, fields ...[]byte) []byte {
 	h := sha256.New()
 	write := func(b []byte) {
 		// Deliberate waiver: hash.Hash.Write is documented never to return an error.
 		_, _ = fmt.Fprintf(h, "%d:", len(b))
 		_, _ = h.Write(b)
 	}
-	write(row.PrevHash)
-	write([]byte(row.ID))
-	write([]byte(row.CircleID))
-	write([]byte(deref(row.ActorMembershipID)))
-	write([]byte(row.Action))
-	write([]byte(row.EntityType))
-	write([]byte(deref(row.EntityID)))
-	write([]byte(row.DetailJson))
-	write(fmt.Appendf(nil, "%d", row.CreatedAt))
+	write(prev)
+	for _, f := range fields {
+		write(f)
+	}
 	return h.Sum(nil)
+}
+
+// chainHash chains one audit_log row.
+func chainHash(row sqlitegen.AppendAuditLogParams) []byte {
+	return ChainHash(row.PrevHash,
+		[]byte(row.ID),
+		[]byte(row.CircleID),
+		[]byte(deref(row.ActorMembershipID)),
+		[]byte(row.Action),
+		[]byte(row.EntityType),
+		[]byte(deref(row.EntityID)),
+		[]byte(row.DetailJson),
+		fmt.Appendf(nil, "%d", row.CreatedAt),
+	)
 }
 
 func deref(s *string) string {

@@ -120,6 +120,20 @@ Discord and some do not.
 A new circle auto-accepts every enabled provider with `verifiable_subject = 1`. **`local` is never
 auto-added** — an owner must reach for it.
 
+**`instance.security.manage` is instance-realm: no circle role grants it, and no PAT reaches it at
+any scope.** It comes from an `instance_grant` on the caller's identity
+([ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md)), which is written by
+`tod-serve instance grant` at the console — a grant names an identity, an identity is created by
+joining a circle, and a fresh database has neither, so the console goes first. `tod-serve init`
+prints the route from a fresh database to an administrable instance.
+
+The instance level is `/admin/identity-providers`. `client_secret` is write-only there: it goes in
+and never comes back out, and the representation says only whether one is `client_secret_set`.
+`key` and `kind` are immutable — `422 field_immutable` — because `kind` decides
+`verifiable_subject`, and changing it would restate what revocation means for every circle already
+accepting the provider, silently. Deleting a provider is refused once anybody has joined through
+it: the foreign keys are `NO ACTION`, and **disabling** it is the operation that stops new joins.
+
 Removing a provider from a circle stops *new* joins via it; it does **not** revoke existing
 memberships. The alternative — mass-revoke on removal — is a footgun that will eventually delete a
 guild's whole roster with one click.

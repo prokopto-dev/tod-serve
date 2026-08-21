@@ -22,6 +22,7 @@ than writing it down as though it were enforced.
 | `internal/circle/`, `membership/`, `tod/` | Domain services |
 | `internal/catalogue/` | Raid-target identity, the per-server timers, the per-circle overrides. **The one resolve ladder** and the one `name_norm` matcher; target identity ships embedded here, timer data ships from nowhere |
 | `internal/invite/` | Invite codes: minting, the generous parser a hand-typed code needs, **the one hash** `identitysql` is handed, and the single-use owner grant that gives a circle its first owner |
+| `internal/instancegrant/` | The instance-permission ledger: append-only, hash-chained decisions keyed on an **identity**. Its own audit record, because `audit_log.circle_id` is `NOT NULL` |
 | `internal/audit/` | The hash-chained append to `audit_log`. Every caller passes a transaction's query set: an audit row that survives a rollback is worse than no row, because it is believed |
 | `internal/schemaenum/` | The enum catalogue — every enumerated column, and the ordering rule for the two that have one |
 | `internal/dbschema/` | Binds each catalogue enum to the column that holds it, and generates `db/enums.hcl`. Enum `CHECK` lists are never hand-written |

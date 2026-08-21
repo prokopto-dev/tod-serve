@@ -271,72 +271,147 @@ func TestGetRaidTarget_AnUnseededTarget_HasAnEmptyTimersArray(t *testing.T) {
 	require.Equal(t, got.Header.Get(api.ETagHeader), again.Header.Get(api.ETagHeader))
 }
 
-// TestRaidTargetWrites_AreUnreachableUntilInstanceGrantsExist is a gap made into a gate.
+// TestRaidTargetWrites_AGrant_IsWhatMakesThemReachable is what replaces
+// TestRaidTargetWrites_AreUnreachableUntilInstanceGrantsExist.
 //
-// `catalogue.manage` is REALM-INSTANCE: canonical §6 has no instance role enum, so no circle role
-// grants it and `TestPermissions_InstanceRealm_IsNotGrantedByAnyRole` in internal/authz pins that.
-// These three handlers are written, correct and covered at the service level — and reachable by
-// nobody, including an owner on a stepped-up session, until the auth subsystem lands instance
-// grants.
-//
-// Registering them anyway is the right direction: the route registry IS the surface, the handlers
-// are already under the architectural tests that walk it, and the day a grant exists they work
-// with no further change. What would NOT be right is leaving that unsaid, so this test asserts the
-// 403 rather than skipping the routes. When instance grants land it goes red, and whoever lands
-// them is sent here to write the tests these three operations then deserve.
-func TestRaidTargetWrites_AreUnreachableUntilInstanceGrantsExist(t *testing.T) {
+// That test asserted a 403 for every principal including a stepped-up owner, because
+// `catalogue.manage` is instance-realm and nothing granted it. ADR-0012 is what grants it, so the
+// assertion is now the pair: the same stepped-up owner still gets 403 with no grant, and reaches
+// all three operations with one. Keeping only the success half would let the permission check be
+// deleted entirely without a red test.
+func TestRaidTargetWrites_AGrant_IsWhatMakesThemReachable(t *testing.T) {
+	t.Parallel()
+
+	writes := []struct {
+		name    string
+		method  string
+		path    func(id string) string
+		body    string
+		headers map[string]string
+		status  int
+	}{
+		{
+			name: "createRaidTarget", method: http.MethodPost,
+			path: func(string) string { return api.BasePath + "/raid-targets" },
+			body: `{"name": "A Mob", "zone": "Somewhere", "expansion": "kunark",
+			        "category": "zone_boss"}`,
+			headers: map[string]string{api.IdempotencyKeyHeader: "granted-create"},
+			status:  http.StatusOK,
+		},
+		{
+			name: "updateRaidTarget", method: http.MethodPatch,
+			path:    func(id string) string { return api.BasePath + "/raid-targets/" + id },
+			body:    `{"zone": "Somewhere Else"}`,
+			headers: map[string]string{api.IfMatchHeader: "*"},
+			status:  http.StatusOK,
+		},
+		{
+			name: "putRaidTargetTimer", method: http.MethodPut,
+			path: func(id string) string {
+				return api.BasePath + "/raid-targets/" + id + "/timers/blue"
+			},
+			body:    `{"window_kind": "unknown"}`,
+			headers: map[string]string{api.IfMatchHeader: "*"},
+			status:  http.StatusOK,
+		},
+	}
+
+	for _, tt := range writes {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.seedCatalogue()
+			reader, circleID := h.catalogueReader()
+			owner := h.seedMember(circleID, authz.RoleOwner)
+			session := h.session(owner, true)
+			id := h.resolveTargetID(reader, "Lord Nagafen")
+
+			// No grant: a stepped-up owner is still refused, and the reason names the grant
+			// rather than the role, because the role was never going to be the fix.
+			refused := h.do(request{
+				Method: tt.method, Path: tt.path(id), Session: session,
+				Body: tt.body, Headers: tt.headers,
+			})
+			h.requireProblem(refused, apierr.CodeForbidden)
+
+			h.grantInstance(owner, authz.PermissionCatalogueManage)
+
+			got := h.do(request{
+				Method: tt.method, Path: tt.path(id), Session: session,
+				Body: tt.body, Headers: tt.headers,
+			})
+			require.Equal(t, tt.status, got.Status, got.Body)
+
+			// And the grant is revocable. The ledger's second decision takes effect on the very
+			// next request, which is the property that makes revoking one worth doing at all.
+			h.revokeInstance(owner, authz.PermissionCatalogueManage)
+			after := h.do(request{
+				Method: tt.method, Path: tt.path(id), Session: session,
+				Body: tt.body, Headers: tt.headers,
+			})
+			h.requireProblem(after, apierr.CodeForbidden)
+		})
+	}
+}
+
+// The grant is not a way past the capability floor. `catalogue.manage` is session-and-step-up
+// only, so a granted identity presenting a token or a stale session is refused for that reason —
+// and the code says which, because the two have different fixes.
+func TestRaidTargetWrites_AGrantedIdentity_StillMeetsTheCapabilityFloor(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.seedCatalogue()
 	reader, circleID := h.catalogueReader()
 	owner := h.seedMember(circleID, authz.RoleOwner)
-	session := h.session(owner, true)
+	h.grantInstance(owner, authz.PermissionCatalogueManage)
 	id := h.resolveTargetID(reader, "Lord Nagafen")
+	path := api.BasePath + "/raid-targets/" + id
 
-	tests := []struct {
-		name    string
-		method  string
-		path    string
-		body    string
-		headers map[string]string
-	}{
-		{
-			name: "createRaidTarget", method: http.MethodPost,
-			path: api.BasePath + "/raid-targets",
-			body: `{"name": "A Mob", "zone": "Somewhere", "expansion": "kunark",
-			        "category": "zone_boss"}`,
-			headers: map[string]string{api.IdempotencyKeyHeader: "unreachable"},
-		},
-		{
-			name: "updateRaidTarget", method: http.MethodPatch,
-			path:    api.BasePath + "/raid-targets/" + id,
-			body:    `{"zone": "Somewhere Else"}`,
-			headers: map[string]string{api.IfMatchHeader: "*"},
-		},
-		{
-			name: "putRaidTargetTimer", method: http.MethodPut,
-			path:    api.BasePath + "/raid-targets/" + id + "/timers/blue",
-			body:    `{"window_kind": "unknown"}`,
-			headers: map[string]string{api.IfMatchHeader: "*"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := h.do(request{
-				Method: tt.method, Path: tt.path, Session: session,
-				Body: tt.body, Headers: tt.headers,
-			})
-			h.requireProblem(got, apierr.CodeForbidden)
-		})
-	}
-
-	// And the reads beside them are reachable, so the 403 above is about the permission and not
-	// about the routes being broken.
-	read := h.do(request{
-		Method: http.MethodGet, Path: api.BasePath + "/raid-targets/" + id, Token: reader,
+	// A token belonging to the granted identity's own membership. An instance grant is on the
+	// IDENTITY and a token is bound to a membership, so this reaches nothing.
+	token := h.seedToken(owner, authz.ScopeCatalogueRead)
+	byToken := h.do(request{
+		Method: http.MethodPatch, Path: path, Token: token,
+		Body: `{"zone": "Nope"}`, Headers: map[string]string{api.IfMatchHeader: "*"},
 	})
-	require.Equal(t, http.StatusOK, read.Status, read.Body)
+	h.requireProblem(byToken, apierr.CodeSessionRequired)
+
+	// A session that has not stepped up recently enough.
+	stale := h.do(request{
+		Method: http.MethodPatch, Path: path, Session: h.session(owner, false),
+		Body: `{"zone": "Nope"}`, Headers: map[string]string{api.IfMatchHeader: "*"},
+	})
+	h.requireProblem(stale, apierr.CodeStepUpRequired)
+}
+
+// A grant reaches exactly the permission granted and nothing beside it. The ledger is not a role:
+// `catalogue.manage` must not carry `instance.circle.create` along with it, which is the whole
+// reason ADR-0012 rejected an instance role enum.
+func TestInstanceGrant_OnePermission_DoesNotCarryTheOthers(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedInstance(false)
+	h.seedCatalogue()
+	_, circleID := h.catalogueReader()
+	owner := h.seedMember(circleID, authz.RoleOwner)
+	h.grantInstance(owner, authz.PermissionCatalogueManage)
+	session := h.session(owner, true)
+
+	created := h.do(request{
+		Method: http.MethodPost, Path: api.BasePath + "/raid-targets", Session: session,
+		Body: `{"name": "A Mob", "zone": "Somewhere", "expansion": "kunark",
+		        "category": "zone_boss"}`,
+		Headers: map[string]string{api.IdempotencyKeyHeader: "carries-nothing"},
+	})
+	require.Equal(t, http.StatusOK, created.Status, created.Body)
+
+	// Same identity, same stepped-up session, a different instance-realm key.
+	circle := h.do(request{
+		Method: http.MethodPost, Path: api.BasePath + "/circles", Session: session,
+		Body:    `{"name": "Second", "server": "blue"}`,
+		Headers: map[string]string{api.IdempotencyKeyHeader: "carries-nothing-2"},
+	})
+	h.requireProblem(circle, apierr.CodeForbidden)
 }
 
 // TestGetRaidTarget_ASeededTimer_FoldsIntoTheReadAndOnlyForItsServer covers the read side of a

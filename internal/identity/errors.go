@@ -46,6 +46,13 @@ const (
 	CodeInviteExhausted Code = "invite_exhausted"
 
 	CodeLinkRequiresVerifiableIdentity Code = "link_requires_verifiable_identity"
+
+	// Generic, and produced by the provider registry rather than by a credential path: this
+	// package owns `identity_provider`, so administering it is where "no such row", "that key is
+	// taken" and "that column is immutable" come from.
+	CodeNotFound       Code = "not_found"
+	CodeConflict       Code = "conflict"
+	CodeFieldImmutable Code = "field_immutable"
 )
 
 // Codes returns every code this package can produce, in declaration order.
@@ -62,6 +69,7 @@ func Codes() []Code {
 		CodeGuildMembershipRequired, CodeGuildRoleRequired, CodeIdentityBlocked,
 		CodeInviteInvalid, CodeInviteExpired, CodeInviteRevoked, CodeInviteExhausted,
 		CodeLinkRequiresVerifiableIdentity,
+		CodeNotFound, CodeConflict, CodeFieldImmutable,
 	}
 }
 
@@ -78,13 +86,13 @@ func (c Code) Status() int {
 	case CodeProviderScopeDeclined, CodeGuildMembershipRequired,
 		CodeGuildRoleRequired, CodeIdentityBlocked:
 		return http.StatusForbidden
-	case CodeInviteInvalid:
+	case CodeInviteInvalid, CodeNotFound:
 		return http.StatusNotFound
 	case CodeAuthFlowExpired, CodeProviderDisabled, CodeProviderNotAccepted,
-		CodeInviteExpired, CodeInviteRevoked, CodeInviteExhausted:
+		CodeInviteExpired, CodeInviteRevoked, CodeInviteExhausted, CodeConflict:
 		return http.StatusConflict
 	case CodeValidationFailed, CodeProviderUnverifiable, CodeAcknowledgementRequired,
-		CodeLinkRequiresVerifiableIdentity:
+		CodeLinkRequiresVerifiableIdentity, CodeFieldImmutable:
 		return http.StatusUnprocessableEntity
 	case CodeProviderUnreachable:
 		return http.StatusServiceUnavailable

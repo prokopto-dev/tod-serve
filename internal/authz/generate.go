@@ -13,6 +13,10 @@ import (
 // the values, and they come from here.
 const ScopeEnumName = "api_token.scope"
 
+// InstanceGrantEnumName is the enum name the instance-realm permission value set is generated
+// under. It is the qualified column, like every other enum name.
+const InstanceGrantEnumName = "instance_grant.permission"
+
 // ScopeEnum returns the PAT scope value set as an enum, so the CHECK constraint and the OpenAPI
 // enum are rendered by the same code that renders every other enum in the schema.
 func ScopeEnum() schemaenum.Enum {
@@ -21,6 +25,21 @@ func ScopeEnum() schemaenum.Enum {
 		values = append(values, string(def.Key))
 	}
 	return schemaenum.Enum{Name: ScopeEnumName, Values: values}
+}
+
+// InstancePermissionEnum returns the instance-realm permission keys as an enum, so that
+// `instance_grant.permission` gets its CHECK from the same generator every other enumerated column
+// uses.
+//
+// It lives here rather than in internal/schemaenum because the values ARE the authorization
+// catalogue: a copy of them in the enum catalogue would be the second permission list canonical §6
+// forbids, and it would have to be repeated a third time in that document's §5 fenced block.
+func InstancePermissionEnum() schemaenum.Enum {
+	values := make([]string, 0, len(Permissions()))
+	for _, p := range InstancePermissions() {
+		values = append(values, string(p))
+	}
+	return schemaenum.Enum{Name: InstanceGrantEnumName, Values: values}
 }
 
 // RolesFor returns the roles that grant p, weakest first.

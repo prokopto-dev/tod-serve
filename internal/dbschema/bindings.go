@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 )
 
@@ -35,12 +36,32 @@ func (b Binding) LocalName() string {
 
 // Predicate renders the `column IN (…)` expression for this binding.
 func (b Binding) Predicate() (string, error) {
-	enum, ok := schemaenum.Lookup(b.Enum)
+	enum, ok := LookupEnum(b.Enum)
 	if !ok {
 		return "", fmt.Errorf("bind %s.%s: no enum named %q in the catalogue",
 			b.Table, b.Column, b.Enum)
 	}
 	return enum.InSQL(b.Column), nil
+}
+
+// CatalogueEnums returns every enum a column in this schema may be bound to.
+//
+// It is internal/schemaenum's catalogue plus the two internal/authz owns. Those two live there
+// because their values ARE the authorization catalogue: a copy in the enum catalogue would be the
+// second permission list canonical §6 forbids, and canonical §5's fenced block would then hold a
+// third. Which package a value set comes from is not a distinction a CHECK constraint has.
+func CatalogueEnums() []schemaenum.Enum {
+	return append(schemaenum.All(), authz.ScopeEnum(), authz.InstancePermissionEnum())
+}
+
+// LookupEnum returns the enum with the given name from [CatalogueEnums].
+func LookupEnum(name string) (schemaenum.Enum, bool) {
+	for _, e := range CatalogueEnums() {
+		if e.Name == name {
+			return e, true
+		}
+	}
+	return schemaenum.Enum{}, false
 }
 
 // Bindings returns every enum-constrained column in the schema, in table order.
@@ -63,6 +84,12 @@ func Bindings() []Binding {
 
 		{Table: "identity_link", Column: "method", Enum: schemaenum.NameIdentityLinkMethod},
 		{Table: "identity_provider", Column: "kind", Enum: schemaenum.NameIdentityProviderKind},
+
+		// The value set is the authorization catalogue filtered to the instance realm, so a grant
+		// naming a circle-realm key is unrepresentable rather than merely rejected in Go — see
+		// ADR-0012. It is the one binding whose enum comes from internal/authz.
+		{Table: "instance_grant", Column: "permission", Enum: authz.InstanceGrantEnumName},
+		{Table: "instance_grant", Column: "decision", Enum: schemaenum.NameInstanceGrantDecision},
 
 		// An invite grants a role, so it draws on the membership role enum; `CHECK (role <> 'owner')`
 		// sits next to it in the DDL and is shape rather than catalogue.
@@ -108,6 +135,12 @@ func UnstoredEnums() map[string]string {
 		// Derived from the circle's accepted providers on every read. The domain model is explicit:
 		// storing it would let it drift the moment a provider is added to the instance.
 		schemaenum.NameCircleRevocationStrength: "derived from the accepted providers, never stored",
+
+		// `api_token.scopes_json` is a JSON array, which canonical §8 says is validated on write
+		// and never queried into — so there is no column for a CHECK to sit on. auth.ParseScopesJSON
+		// is the enforcement, and it refuses a token whose scopes this binary does not know rather
+		// than silently narrowing it.
+		authz.ScopeEnumName: "stored as a JSON array in api_token.scopes_json, validated in Go",
 	}
 }
 

@@ -72,16 +72,24 @@ func TestRouteRegistry_EveryTimerWritingRoute_PushesTheInvalidation(t *testing.T
 		},
 		api.OpPutRaidTargetTimer: func(t *testing.T, h *harness) string {
 			t.Helper()
-			// `catalogue.manage` is instance-realm and reaches nobody yet, so this route cannot be
-			// driven through the edge — see
-			// TestRaidTargetWrites_AreUnreachableUntilInstanceGrantsExist. Skipping it here would
-			// be exactly the silent hole this test exists to close, so it is driven through the
-			// registered handler with the permission check satisfied the only way available: it is
-			// not, and the assertion below is that the invalidation is unreachable BECAUSE the
-			// route is, rather than because the call is missing.
-			//
-			// The call itself is covered by TestPutRaidTargetTimer_TheHandler_PushesInstanceWide.
-			return ""
+			// Driven through the edge like every other route here. It could not be until
+			// ADR-0012: `catalogue.manage` is instance-realm and nothing granted it, so this
+			// driver used to return early and the assertion below never ran for this route.
+			reader, circleID := h.catalogueReader()
+			owner := h.seedMember(circleID, authz.RoleOwner)
+			h.grantInstance(owner, authz.PermissionCatalogueManage)
+			id := h.resolveTargetID(reader, "Venril Sathir")
+			h.invalidator.reset()
+			got := h.do(request{
+				Method:  http.MethodPut,
+				Path:    api.BasePath + "/raid-targets/" + id + "/timers/blue",
+				Session: h.session(owner, true),
+				Headers: map[string]string{api.IfMatchHeader: "*"},
+				Body: `{"window_kind": "variance", "window_open_offset_seconds": 300,
+				        "window_close_offset_seconds": 400}`,
+			})
+			require.Equal(t, http.StatusOK, got.Status, got.Body)
+			return id
 		},
 	}
 
@@ -101,9 +109,9 @@ func TestRouteRegistry_EveryTimerWritingRoute_PushesTheInvalidation(t *testing.T
 			h := newHarness(t)
 			h.seedCatalogue()
 			target := drive(t, h)
-			if target == "" {
-				return
-			}
+			require.NotEmpty(t, target,
+				"%s has a driver that drove nothing, so the assertion below would pass over an "+
+					"unexercised route", route.ID)
 			pushed := h.invalidator.recorded()
 			require.Len(t, pushed, 1,
 				"%s wrote a window and pushed %d invalidations; the board will go on serving the "+

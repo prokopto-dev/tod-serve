@@ -170,6 +170,85 @@ func TestRouteRegistry_EveryStepUpRoute_ReachesNoToken(t *testing.T) {
 	}
 }
 
+// Every route carrying an instance-realm permission is session-only, and this is derived from the
+// registry rather than from a list of the seven that are.
+//
+// ADR-0012 rests on it: an instance grant belongs to an IDENTITY and a personal access token is
+// bound to a membership, so a leaked token must reach none of them. That is true today because no
+// scope grants an instance-realm key — which makes `SessionOnly()` true by arithmetic — and this
+// is what fails if somebody widens a scope or hangs a scope off one of these routes.
+//
+// `ops.read` is instance-realm and NOT in the capability floor, so this covers a route
+// TestRouteRegistry_EveryStepUpRoute_ReachesNoToken does not: reading diagnostics needs a session
+// but not a re-authenticated one.
+func TestRouteRegistry_EveryInstanceRealmRoute_IsSessionOnly(t *testing.T) {
+	t.Parallel()
+	seen := 0
+	for _, r := range api.Routes() {
+		instanceRealm := false
+		for _, p := range r.Permissions {
+			if authz.IsInstanceRealm(p) {
+				instanceRealm = true
+			}
+		}
+		if !instanceRealm {
+			continue
+		}
+		seen++
+		for _, p := range r.Permissions {
+			if !authz.IsInstanceRealm(p) {
+				continue
+			}
+			// The catalogue side. `SessionOnly()` reads the ROUTE's declared scopes, so without
+			// this a scope widened to grant an instance-realm permission would leave every
+			// assertion below green while a token reached the permission.
+			require.Empty(t, authz.ScopesFor(p),
+				"%s carries %q, which is instance-realm and reachable by a PAT scope", r.ID, p)
+		}
+		require.Empty(t, r.Scopes, "%s carries an instance-realm permission and declares scopes", r.ID)
+		require.False(t, r.AnyScope,
+			"%s carries an instance-realm permission and accepts any scope", r.ID)
+		require.True(t, r.SessionOnly(),
+			"%s carries an instance-realm permission and a token reaches it", r.ID)
+		require.False(t, r.CircleScoped,
+			"%s carries an instance-realm permission and is circle-scoped; a grant is about the "+
+				"whole instance, so a per-circle answer would be two authorization models", r.ID)
+	}
+	require.Positive(t, seen, "no route carries an instance-realm permission; the filter is wrong")
+}
+
+// And every instance-realm permission in the catalogue reaches at least one route, so a key that
+// can be granted and used for nothing is a red test rather than a discovery.
+//
+// It is a KNOWN-GAP list rather than a bare assertion, because `instance.owner` genuinely reaches
+// no route yet: instance grants are managed from the console in this milestone (ADR-0012). Naming
+// it here is what stops that being forgotten — adding a route for it turns this red.
+func TestPermissions_EveryInstanceRealmKey_ReachesARouteOrIsNamedHere(t *testing.T) {
+	t.Parallel()
+	unreached := map[authz.Permission]string{
+		authz.PermissionInstanceOwner: "instance grants are managed from the console; ADR-0012 " +
+			"names the routes that would use this as the follow-up",
+	}
+
+	reached := map[authz.Permission]bool{}
+	for _, r := range api.Routes() {
+		for _, p := range r.Permissions {
+			reached[p] = true
+		}
+	}
+	for _, p := range authz.InstancePermissions() {
+		reason, named := unreached[p]
+		require.NotEqual(t, reached[p], named,
+			"%q must either reach a route or be named as unreached here, not both or neither", p)
+		if named {
+			require.NotEmpty(t, reason)
+		}
+	}
+	for p := range unreached {
+		require.True(t, authz.IsInstanceRealm(p), "%q is named here and is not instance-realm", p)
+	}
+}
+
 // Every POST that creates domain state requires `Idempotency-Key`. This is the architectural test
 // docs/concepts/invariants.md names, over the registry rather than over a list.
 func TestRoutes_EveryStateCreatingPost_RequiresIdempotencyKey(t *testing.T) {

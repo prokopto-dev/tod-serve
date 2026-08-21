@@ -16,6 +16,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/identity/identitysql"
+	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
 	"github.com/prokopto-dev/tod-serve/internal/projection"
@@ -33,6 +34,7 @@ type services struct {
 	minter    *auth.Minter
 	codec     *auth.SessionCodec
 	authn     *auth.Authenticator
+	grants    *instancegrant.Service
 	identity  *identity.Service
 	circles   *circle.Service
 	invites   *invite.Service
@@ -121,7 +123,14 @@ func wire(
 	if err != nil {
 		return nil, err
 	}
-	authn, err := auth.NewAuthenticator(db, minter, codec, clk, log, auth.DefaultStepUpWindow)
+	grants, err := instancegrant.New(instancegrant.Config{
+		Store: db, Clock: clk, IDs: ids, Log: log,
+	})
+	if err != nil {
+		return nil, err
+	}
+	authn, err := auth.NewAuthenticator(
+		db, minter, codec, grants, clk, log, auth.DefaultStepUpWindow)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +171,7 @@ func wire(
 
 	return &services{
 		store: db, clock: clk, ids: ids, log: log, minter: minter, codec: codec,
-		authn: authn, identity: identities, circles: circles, invites: invites,
+		authn: authn, grants: grants, identity: identities, circles: circles, invites: invites,
 		members: members, catalogue: catalogues, tods: tods, states: states,
 	}, nil
 }

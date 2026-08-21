@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
@@ -344,9 +345,21 @@ Redeem this ONE-TIME owner code to become its owner. It is shown once and never 
 
 Redeem it at POST /api/v1/join, or paste it into the join page:
   <public url>/join#%s
+
+Redeeming it creates an IDENTITY. Instance administration hangs off that identity and not
+off this circle's owner role, so the last bootstrap step is at this console:
+
+  tod-serve %s %s              # find the identity the owner code created
+  tod-serve %s %s --%s <id> --%s %s
+
+That grant is what makes the instance administrable over the API — adding the Discord
+provider included. See docs/adr/0012-instance-grants-are-a-capability-ledger.md.
 `,
 		view.Name, view.Server, view.ID, providerKeys(view), view.RevocationStrength,
-		code, expiresAt, code)
+		code, expiresAt, code,
+		verbInstance, verbIdentities,
+		verbInstance, verbGrant, flagIdentity, flagPermission,
+		authz.PermissionInstanceOwner)
 	if err != nil {
 		return fmt.Errorf("write circle result: %w", err)
 	}
@@ -358,7 +371,8 @@ func providerKeys(view circle.Circle) string {
 		// Named rather than left blank: a circle that accepts nothing cannot be joined at all, and
 		// an operator who has not configured a provider yet should read that here rather than
 		// discover it when the owner code fails.
-		return "none yet — add one with `instance.security.manage`, then setCircleProviders"
+		return "none yet — POST /admin/identity-providers with `instance.security.manage`, " +
+			"then setCircleProviders"
 	}
 	keys := make([]string, 0, len(view.AcceptedProviders))
 	for _, p := range view.AcceptedProviders {

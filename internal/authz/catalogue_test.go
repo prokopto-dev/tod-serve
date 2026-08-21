@@ -168,17 +168,44 @@ func TestPermissions_CircleRealm_IsGrantedBySomeRole(t *testing.T) {
 	}
 }
 
-// The instance realm has no role matrix, because there is no instance role enum in the canonical
-// conventions and inventing one would put a second authorization model in the codebase. This pins
-// the hole so it stays visible.
-func TestPermissions_InstanceRealm_IsNotGrantedByAnyRole(t *testing.T) {
+// The instance realm is granted by the ledger and by nothing else. ADR-0012.
+//
+// This replaces TestPermissions_InstanceRealm_IsNotGrantedByAnyRole, which asserted only the first
+// half below and existed to keep a hole visible while it was open. Both halves matter now and the
+// second is the one that closed it: a permission no role grants and no ledger can hold is a
+// permission nobody can ever exercise, which is the state this catalogue was in until ADR-0012.
+func TestPermissions_InstanceRealm_IsGrantedOnlyByTheLedger(t *testing.T) {
 	t.Parallel()
+	grantable := authz.InstancePermissionEnum()
+	require.NotEmpty(t, grantable.Values)
+
 	for _, def := range authz.Permissions() {
 		if def.Realm != authz.RealmInstance {
+			// And nothing circle-realm leaks into the ledger's value set. A circle permission
+			// there would be a grant nothing consults, because a circle permission comes from a
+			// membership's role.
+			require.False(t, grantable.Contains(string(def.Key)),
+				"%q is circle-realm and instance_grant would accept it", def.Key)
 			continue
 		}
 		require.Empty(t, authz.RolesFor(def.Key),
-			"%q is instance-realm and a circle role grants it", def.Key)
+			"%q is instance-realm and a circle role grants it, which would be the second "+
+				"authorization model internal/authz exists to keep out", def.Key)
+		require.True(t, grantable.Contains(string(def.Key)),
+			"%q is instance-realm and instance_grant cannot hold it, so nothing can grant it",
+			def.Key)
+	}
+}
+
+// No scope reaches an instance-realm permission, at any role. That is what makes "a leaked token
+// cannot pivot into the instance" arithmetic rather than a promise — and it is checked over the
+// whole catalogue rather than over the capability floor, because `ops.read` is instance-realm and
+// deliberately NOT floored.
+func TestScopes_NoScopeGrants_AnInstanceRealmPermission(t *testing.T) {
+	t.Parallel()
+	for _, p := range authz.InstancePermissions() {
+		require.Empty(t, authz.ScopesFor(p),
+			"%q is instance-realm and a PAT scope reaches it", p)
 	}
 }
 

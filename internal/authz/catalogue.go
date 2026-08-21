@@ -241,6 +241,29 @@ func Scopes() []ScopeDef {
 	}
 }
 
+// InstancePermissions returns every permission granted at the instance level, in catalogue order.
+//
+// It is the value set of `instance_grant.permission`: a grant naming a circle-realm key would be a
+// grant nothing could ever consult, because a circle permission comes from a membership's role.
+// [InstancePermissionEnum] is how that becomes a CHECK constraint rather than a convention.
+func InstancePermissions() []Permission {
+	var out []Permission
+	for _, def := range Permissions() {
+		if def.Realm == RealmInstance {
+			out = append(out, def.Key)
+		}
+	}
+	return out
+}
+
+// IsInstanceRealm reports whether the permission is granted at the instance level rather than by a
+// circle membership's role. An unknown key is not: a permission that fell out of the catalogue must
+// fail closed in both directions.
+func IsInstanceRealm(p Permission) bool {
+	def, ok := LookupPermission(p)
+	return ok && def.Realm == RealmInstance
+}
+
 // LookupPermission returns the definition of key.
 func LookupPermission(key Permission) (PermissionDef, bool) {
 	for _, def := range Permissions() {

@@ -67,7 +67,7 @@ func ParseRole(s string) (Role, error) {
 // TestRolePermissions_EachRole_ContainsTheRoleBelow enforces that. A non-cumulative row would mean
 // promoting someone could take a capability away, which is not a thing anybody would predict.
 //
-// Instance-realm permissions appear nowhere here — see the package comment.
+// Instance-realm permissions appear nowhere here — see the package comment and ADR-0012.
 func RolePermissions(r Role) Set {
 	observer := NewSet(
 		PermissionCircleRead,
@@ -119,15 +119,26 @@ func RolePermissions(r Role) Set {
 	}
 }
 
-// EffectiveForSession returns what a browser session holding this role may do. A session is not
+// EffectiveForSession returns what a browser session may do: its role's permissions in its circle,
+// plus the instance-realm permissions its IDENTITY has been granted (ADR-0012). A session is not
 // narrowed by scopes; it is narrowed by step-up, which is a separate question asked per operation
 // — see [RequiresStepUp].
-func EffectiveForSession(r Role) Set { return RolePermissions(r) }
+//
+// The instance set is a parameter rather than something this package reads, because it comes from
+// a table and this package holds no store. It is a union rather than a second lookup at the call
+// site so that "what may this principal do" has one answer computed in one place — the same reason
+// [EffectiveForToken] owns the intersection.
+func EffectiveForSession(r Role, instance Set) Set { return RolePermissions(r).Union(instance) }
 
 // EffectiveForToken returns role permissions ∩ token scopes: the capability floor, stated as code.
 //
 // A token can only ever narrow what its membership's role already grants, so a leaked token is
 // bounded by the person it belongs to. A token with no scopes may do nothing at all.
+//
+// It takes no instance set, and that is the point: an instance grant belongs to an identity and a
+// token is bound to a membership, so a leaked token cannot reach one however the ledger reads.
+// TestScopes_NoScopeGrants_AnInstanceRealmPermission keeps the intersection empty from the other
+// side, so this stays true if a scope is ever widened.
 func EffectiveForToken(r Role, scopes []Scope) Set {
 	return RolePermissions(r).Intersect(GrantedByScopes(scopes))
 }

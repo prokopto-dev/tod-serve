@@ -18,6 +18,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
@@ -69,7 +70,12 @@ func newStubRig(t *testing.T, ops ...OperationID) *stubRig {
 	require.NoError(t, err)
 	codec, err := auth.NewSessionCodec("stub-session-key")
 	require.NoError(t, err)
-	authn, err := auth.NewAuthenticator(db, minter, codec, clk, log, auth.DefaultStepUpWindow)
+	grants, err := instancegrant.New(instancegrant.Config{
+		Store: db, Clock: clk, IDs: ids, Log: log,
+	})
+	require.NoError(t, err)
+	authn, err := auth.NewAuthenticator(
+		db, minter, codec, grants, clk, log, auth.DefaultStepUpWindow)
 	require.NoError(t, err)
 
 	cfg := Config{Version: "stub", Store: db, Auth: authn, Clock: clk, Log: log, IDs: ids}
