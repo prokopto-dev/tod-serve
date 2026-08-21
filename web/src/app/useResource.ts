@@ -3,17 +3,16 @@
 // Neither issues a request itself: both take a loader that calls `api.<operationId>(…)`, which is
 // what keeps every request in `web/src/api` and every one of them nameable by the API-parity test.
 //
-// **`loading` is DERIVED, not stored.** A hook that set it in an effect reports `loading: false`
-// for the render between "a reload was asked for" and "the effect ran", and a screen that decides
-// what to do from `!loading && !data` acts in that window. That is not hypothetical: it sent
-// somebody who had just joined a circle straight back to the sign-in screen, because the shell
-// asked whether there was a principal in the one render where the answer was "not yet" rather than
-// "no". Comparing the run the state came from against the run the render is in has no such window.
+// Neither decides what a screen SEES either. That is `./resource.ts`, which is pure, takes no
+// dependency on React or on the transport, and is driven directly by `resource.test.ts`. What is
+// left here is the glue: when to fire a request, when to abandon one, and where to keep the tag a
+// poll revalidates with.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { toError } from '../api'
-import { markAsOf, type AsOf } from '../lib/asof'
+import type { AsOf } from '../lib/asof'
+import { nextSettled, runOf, view, type HasAsOf, type Run, type Settled } from './resource'
 
 export interface Resource<T> {
   data: T | null
@@ -28,30 +27,6 @@ export interface Resource<T> {
   /** asOf is the instant the CURRENT data was computed by the server, pinned monotonically. */
   asOf: AsOf | null
   reload: () => void
-}
-
-/** withAsOf is the shape every derived response in this API has. */
-interface HasAsOf {
-  as_of?: string
-}
-
-/** settled is one completed run, tagged with the run it answered. */
-interface Settled<T> {
-  key: string
-  data: T | null
-  error: Error | null
-  asOf: AsOf | null
-}
-
-/**
- * runKey names the run a render is in: the dependencies, plus the reload counter.
- *
- * It is compared against the key the settled state carries, which is what makes `loading` a
- * derivation rather than a second piece of state that can lag behind the first.
- */
-function runKey(deps: readonly unknown[], nonce: number): string {
-  const parts = deps.map((dep) => (typeof dep === 'object' && dep !== null ? JSON.stringify(dep) : String(dep)))
-  return `${parts.join('|')}#${nonce}`
 }
 
 /**
@@ -76,39 +51,31 @@ export function useResource<T extends HasAsOf>(
     loadRef.current = load
   })
 
-  const key = runKey(deps, nonce)
+  const run = runOf(deps, nonce)
+  const { deps: depsKey } = run
 
   useEffect(() => {
     const controller = new AbortController()
     let live = true
+    const effectRun: Run = { deps: depsKey, nonce }
     loadRef
       .current(controller.signal)
       .then((data) => {
         if (!live) return
-        setSettled({ key, data, error: null, asOf: markAsOf(data?.as_of ?? '') })
+        setSettled((prev) => nextSettled(prev, effectRun, { kind: 'data', data }))
       })
       .catch((error: unknown) => {
         if (!live || controller.signal.aborted) return
-        setSettled({ key, data: null, error: toError(error), asOf: null })
+        setSettled((prev) => nextSettled(prev, effectRun, { kind: 'error', error: toError(error) }))
       })
     return () => {
       live = false
       controller.abort()
     }
-  }, [key])
+  }, [depsKey, nonce])
 
   const reload = useCallback(() => setNonce((n) => n + 1), [])
-  const current = settled?.key === key ? settled : null
-  return {
-    // The PREVIOUS answer is kept while a new one is in flight. Blanking a board somebody is
-    // reading because a poll started is worse than showing them a value one tick old, and
-    // `loading` is what says which they are looking at.
-    data: current?.data ?? settled?.data ?? null,
-    error: current?.error ?? null,
-    loading: current === null,
-    asOf: current?.asOf ?? settled?.asOf ?? null,
-    reload,
-  }
+  return { ...view(settled, run), reload }
 }
 
 /**
@@ -132,19 +99,21 @@ export function usePoll<T extends HasAsOf>(
   deps: readonly unknown[],
 ): Resource<T> & { stale: boolean } {
   const [nonce, setNonce] = useState(0)
-  const [settled, setSettled] = useState<(Settled<T> & { stale: boolean }) | null>(null)
+  const [settled, setSettled] = useState<Settled<T> | null>(null)
   const etagRef = useRef<string | null>(null)
   const loadRef = useRef(load)
   useEffect(() => {
     loadRef.current = load
   })
 
-  const key = runKey(deps, nonce)
+  const run = runOf(deps, nonce)
+  const { deps: depsKey } = run
 
   useEffect(() => {
     const controller = new AbortController()
     let live = true
-    // A new run is a new resource: the tag from the previous filter set would revalidate a
+    const effectRun: Run = { deps: depsKey, nonce }
+    // A new query is a new resource: the tag from the previous filter set would revalidate a
     // response for rows this one is not asking for, and the server would honestly answer 304.
     etagRef.current = null
 
@@ -154,29 +123,18 @@ export function usePoll<T extends HasAsOf>(
         .then((result) => {
           if (!live) return
           etagRef.current = result.etag ?? etagRef.current
-          setSettled((prev) => {
-            if (result.notModified && prev) {
-              // Nothing moved. The data stands and so does its `as_of`: re-pinning it would claim
-              // the server had recomputed when it had not.
-              return { ...prev, key, error: null, stale: false }
-            }
-            return {
-              key,
-              data: result.data,
-              error: null,
-              asOf: markAsOf(result.data?.as_of ?? ''),
-              stale: false,
-            }
-          })
+          setSettled((prev) =>
+            nextSettled(
+              prev,
+              effectRun,
+              result.notModified ? { kind: 'notModified' } : { kind: 'data', data: result.data },
+            ),
+          )
         })
         .catch((error: unknown) => {
           if (!live || controller.signal.aborted) return
-          // A poll that fails keeps showing what it last had, and SAYS it is stale. Blanking the
-          // board because one request failed is how somebody loses the window they were watching.
           setSettled((prev) =>
-            prev?.data
-              ? { ...prev, key, stale: true }
-              : { key, data: null, error: toError(error), asOf: null, stale: false },
+            nextSettled(prev, effectRun, { kind: 'error', error: toError(error) }),
           )
         })
     }
@@ -188,18 +146,10 @@ export function usePoll<T extends HasAsOf>(
       controller.abort()
       window.clearInterval(timer)
     }
-  }, [key, intervalMs])
+  }, [depsKey, nonce, intervalMs])
 
   const reload = useCallback(() => setNonce((n) => n + 1), [])
-  const current = settled?.key === key ? settled : null
-  return {
-    data: current?.data ?? settled?.data ?? null,
-    error: current?.error ?? null,
-    loading: current === null,
-    asOf: current?.asOf ?? settled?.asOf ?? null,
-    stale: current?.stale ?? false,
-    reload,
-  }
+  return { ...view(settled, run), reload }
 }
 
 /**
