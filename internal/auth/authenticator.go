@@ -84,11 +84,22 @@ func (c Credentials) Present() bool {
 	return c.Authorization != "" || c.SessionCookie != ""
 }
 
+// InstanceGrants answers which instance-realm permissions an identity currently holds.
+//
+// It is an interface here rather than a concrete service so that internal/auth does not import the
+// ledger: the authorization path needs an answer, not a table. `*instancegrant.Service` is the
+// implementation, and ADR-0012 is why the question is asked of an identity rather than a
+// membership.
+type InstanceGrants interface {
+	Effective(ctx context.Context, identityID core.IdentityID) (authz.Set, error)
+}
+
 // Authenticator resolves a credential into a [Principal].
 type Authenticator struct {
 	db      *store.DB
 	minter  *Minter
 	codec   *SessionCodec
+	grants  InstanceGrants
 	clock   clock.Clock
 	log     *slog.Logger
 	stepUp  time.Duration
@@ -98,9 +109,13 @@ type Authenticator struct {
 // NewAuthenticator wires an authenticator. Every dependency is explicit: there is no default clock
 // and no default logger, because a component that silently invents either is one that behaves
 // differently in a test than in production.
+//
+// `grants` is required for the same reason, and refusing a nil one is what stops an instance
+// permission from being silently unreachable: an authenticator that treated a missing ledger as
+// "no grants" would 403 every instance-realm route with nothing to point at.
 func NewAuthenticator(
-	db *store.DB, minter *Minter, codec *SessionCodec, clk clock.Clock, log *slog.Logger,
-	stepUpWindow time.Duration,
+	db *store.DB, minter *Minter, codec *SessionCodec, grants InstanceGrants, clk clock.Clock,
+	log *slog.Logger, stepUpWindow time.Duration,
 ) (*Authenticator, error) {
 	switch {
 	case db == nil:
@@ -109,6 +124,8 @@ func NewAuthenticator(
 		return nil, errors.New("new authenticator: minter is nil")
 	case codec == nil:
 		return nil, errors.New("new authenticator: session codec is nil")
+	case grants == nil:
+		return nil, errors.New("new authenticator: instance grant reader is nil")
 	case clk == nil:
 		return nil, errors.New("new authenticator: clock is nil")
 	case log == nil:
@@ -117,7 +134,7 @@ func NewAuthenticator(
 		return nil, errors.New("new authenticator: step-up window must be positive")
 	}
 	return &Authenticator{
-		db: db, minter: minter, codec: codec, clock: clk, log: log,
+		db: db, minter: minter, codec: codec, grants: grants, clock: clk, log: log,
 		stepUp: stepUpWindow, touchAt: touchInterval,
 	}, nil
 }
@@ -199,12 +216,16 @@ func (a *Authenticator) authenticateToken(ctx context.Context, header string) (P
 	if err != nil {
 		return Principal{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
+	// No instance grants are read here, and that is the rule rather than an optimisation: a token
+	// is bound to a membership (ADR-0005) and an instance grant belongs to an identity, so a leaked
+	// token reaches none of them however the ledger reads. See [authz.EffectiveForToken].
 	p := Principal{
 		Kind:         KindPAT,
 		MembershipID: member.id,
 		CircleID:     member.circleID,
 		Role:         member.role,
 		DisplayName:  member.displayName,
+		IdentityID:   member.identityID,
 		Scopes:       scopes,
 		TokenID:      tokenID,
 		TokenPrefix:  row.TokenPrefix,
@@ -226,20 +247,35 @@ func (a *Authenticator) authenticateSession(ctx context.Context, value string) (
 	if err != nil {
 		return Principal{}, err
 	}
+	// Read on EVERY request, for the same reason the membership is: a revoked instance grant takes
+	// effect on the caller's very next request rather than when their session happens to expire.
+	// One indexed read behind a session, which is the cheapest thing on this path that matters.
+	grants, err := a.grants.Effective(ctx, member.identityID)
+	if err != nil {
+		// A ledger that cannot be read grants nothing and fails the request. Falling back to an
+		// empty set would answer 403 on an instance route and look exactly like a missing grant,
+		// which is the confidently wrong answer this project is built against.
+		return Principal{}, apierr.Wrap(apierr.CodeInternalError, err, "")
+	}
 	return Principal{
-		Kind:         KindSession,
-		MembershipID: member.id,
-		CircleID:     member.circleID,
-		Role:         member.role,
-		DisplayName:  member.displayName,
-		SteppedUpAt:  s.SteppedUpAt,
+		Kind:           KindSession,
+		MembershipID:   member.id,
+		CircleID:       member.circleID,
+		Role:           member.role,
+		DisplayName:    member.displayName,
+		IdentityID:     member.identityID,
+		InstanceGrants: grants,
+		SteppedUpAt:    s.SteppedUpAt,
 	}, nil
 }
 
 // resolvedMembership is the live membership behind a credential.
 type resolvedMembership struct {
-	id          core.MembershipID
-	circleID    core.CircleID
+	id       core.MembershipID
+	circleID core.CircleID
+	// identityID is the person behind a human membership, and is ZERO for a service one — a bot
+	// has no identity, it has an owner. It is the key an instance grant hangs off.
+	identityID  core.IdentityID
 	role        authz.Role
 	displayName string
 }
@@ -289,9 +325,17 @@ func (a *Authenticator) membership(ctx context.Context, id string) (resolvedMemb
 		// migration into a privilege escalation.
 		return resolvedMembership{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	return resolvedMembership{
+	resolved := resolvedMembership{
 		id: membershipID, circleID: circleID, role: role, displayName: row.DisplayName,
-	}, nil
+	}
+	if row.IdentityID != nil {
+		identityID, err := core.ParseID[core.Identity](*row.IdentityID)
+		if err != nil {
+			return resolvedMembership{}, apierr.Wrap(apierr.CodeInternalError, err, "")
+		}
+		resolved.identityID = identityID
+	}
+	return resolved, nil
 }
 
 // touch records that a token was used, at most once every [touchInterval].

@@ -11,6 +11,8 @@ locals {
   check_circle_timer_override_window_kind = "window_kind IN ('fixed', 'variance', 'unknown')"
   check_identity_link_method              = "method IN ('officer_asserted', 'provider_verified')"
   check_identity_provider_kind            = "kind IN ('discord', 'oidc', 'local')"
+  check_instance_grant_decision           = "decision IN ('granted', 'revoked')"
+  check_instance_grant_permission         = "permission IN ('catalogue.manage', 'ops.read', 'instance.circle.create', 'instance.security.manage', 'instance.owner')"
   check_invite_minted_by_kind             = "minted_by_kind IN ('session', 'pat')"
   check_invite_role                       = "role IN ('owner', 'officer', 'member', 'observer')"
   check_membership_kind                   = "kind IN ('human', 'service')"

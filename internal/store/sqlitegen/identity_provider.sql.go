@@ -86,6 +86,19 @@ func (q *Queries) CreateIdentityProvider(ctx context.Context, arg CreateIdentity
 	return i, err
 }
 
+const deleteIdentityProvider = `-- name: DeleteIdentityProvider :exec
+DELETE FROM identity_provider WHERE id = ?1
+`
+
+// Foreign keys are NO ACTION everywhere, so this is REFUSED once any identity, auth flow,
+// credential ticket or circle references the row. That is the correct outcome: removing a provider
+// people joined through would orphan their identities, and disabling it is the operation that
+// actually stops new joins.
+func (q *Queries) DeleteIdentityProvider(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, deleteIdentityProvider, id)
+	return err
+}
+
 const getIdentityProvider = `-- name: GetIdentityProvider :one
 SELECT id, "key", kind, display_name, enabled, verifiable_subject, issuer, authorization_endpoint, jwks_uri, subject_claim, client_id, client_secret, redirect_uri, token_endpoint, created_at, updated_at FROM identity_provider WHERE id = ?1
 `
@@ -245,6 +258,79 @@ type SetIdentityProviderEnabledParams struct {
 
 func (q *Queries) SetIdentityProviderEnabled(ctx context.Context, arg SetIdentityProviderEnabledParams) (IdentityProvider, error) {
 	row := q.db.QueryRowContext(ctx, setIdentityProviderEnabled, arg.Enabled, arg.UpdatedAt, arg.ID)
+	var i IdentityProvider
+	err := row.Scan(
+		&i.ID,
+		&i.Key,
+		&i.Kind,
+		&i.DisplayName,
+		&i.Enabled,
+		&i.VerifiableSubject,
+		&i.Issuer,
+		&i.AuthorizationEndpoint,
+		&i.JwksUri,
+		&i.SubjectClaim,
+		&i.ClientID,
+		&i.ClientSecret,
+		&i.RedirectUri,
+		&i.TokenEndpoint,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateIdentityProvider = `-- name: UpdateIdentityProvider :one
+UPDATE identity_provider
+SET display_name = ?1,
+    enabled = ?2,
+    issuer = ?3,
+    authorization_endpoint = ?4,
+    jwks_uri = ?5,
+    subject_claim = ?6,
+    client_id = ?7,
+    client_secret = ?8,
+    redirect_uri = ?9,
+    token_endpoint = ?10,
+    updated_at = ?11
+WHERE id = ?12
+RETURNING id, "key", kind, display_name, enabled, verifiable_subject, issuer, authorization_endpoint, jwks_uri, subject_claim, client_id, client_secret, redirect_uri, token_endpoint, created_at, updated_at
+`
+
+type UpdateIdentityProviderParams struct {
+	DisplayName           string
+	Enabled               int64
+	Issuer                *string
+	AuthorizationEndpoint *string
+	JwksUri               *string
+	SubjectClaim          *string
+	ClientID              *string
+	ClientSecret          *string
+	RedirectUri           *string
+	TokenEndpoint         *string
+	UpdatedAt             int64
+	ID                    string
+}
+
+// `key` and `kind` are absent on purpose: kind decides verifiable_subject through a CHECK, and a
+// circle's revocation strength hangs off that, so changing it under a circle that already accepts
+// the provider would silently restate what revocation means there. The edge answers
+// 422 field_immutable instead.
+func (q *Queries) UpdateIdentityProvider(ctx context.Context, arg UpdateIdentityProviderParams) (IdentityProvider, error) {
+	row := q.db.QueryRowContext(ctx, updateIdentityProvider,
+		arg.DisplayName,
+		arg.Enabled,
+		arg.Issuer,
+		arg.AuthorizationEndpoint,
+		arg.JwksUri,
+		arg.SubjectClaim,
+		arg.ClientID,
+		arg.ClientSecret,
+		arg.RedirectUri,
+		arg.TokenEndpoint,
+		arg.UpdatedAt,
+		arg.ID,
+	)
 	var i IdentityProvider
 	err := row.Scan(
 		&i.ID,

@@ -1,6 +1,143 @@
 {
   "components": {
     "schemas": {
+      "AdminIdentityProvider": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization_endpoint": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "client_secret_set": {
+            "type": "boolean"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "jwks_uri": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "redirect_uri": {
+            "type": "string"
+          },
+          "subject_claim": {
+            "type": "string"
+          },
+          "token_endpoint": {
+            "type": "string"
+          },
+          "verifiable_subject": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "kind",
+          "display_name",
+          "enabled",
+          "verifiable_subject",
+          "issuer",
+          "authorization_endpoint",
+          "jwks_uri",
+          "subject_claim",
+          "client_id",
+          "client_secret_set",
+          "redirect_uri",
+          "token_endpoint"
+        ],
+        "type": "object"
+      },
+      "AdminIdentityProviderResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "authorization_endpoint": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "client_secret_set": {
+            "type": "boolean"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "jwks_uri": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "redirect_uri": {
+            "type": "string"
+          },
+          "subject_claim": {
+            "type": "string"
+          },
+          "token_endpoint": {
+            "type": "string"
+          },
+          "verifiable_subject": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "as_of",
+          "id",
+          "key",
+          "kind",
+          "display_name",
+          "enabled",
+          "verifiable_subject",
+          "issuer",
+          "authorization_endpoint",
+          "jwks_uri",
+          "subject_claim",
+          "client_id",
+          "client_secret_set",
+          "redirect_uri",
+          "token_endpoint"
+        ],
+        "type": "object"
+      },
       "Alternative": {
         "additionalProperties": false,
         "properties": {
@@ -569,6 +706,75 @@
         "required": [
           "name",
           "server"
+        ],
+        "type": "object"
+      },
+      "CreateIdentityProviderInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledge_weak_revocation": {
+            "description": "Required to ENABLE a provider with no verifiable subject: revocation through one is advisory",
+            "type": "boolean"
+          },
+          "authorization_endpoint": {
+            "description": "OIDC only",
+            "type": "string"
+          },
+          "client_id": {
+            "description": "The operator's own OAuth application. Required for discord and oidc, forbidden for local",
+            "type": "string"
+          },
+          "client_secret": {
+            "description": "Write-only: it is never returned by any operation",
+            "type": "string"
+          },
+          "display_name": {
+            "description": "What a join page calls it. Defaults to the key",
+            "maxLength": 80,
+            "type": "string"
+          },
+          "enabled": {
+            "description": "Defaults to false, so a half-configured application is never briefly live",
+            "type": "boolean"
+          },
+          "issuer": {
+            "description": "OIDC only: the issuer, an absolute https URL",
+            "type": "string"
+          },
+          "jwks_uri": {
+            "description": "OIDC only: where the signing keys live",
+            "type": "string"
+          },
+          "key": {
+            "description": "The wire key /join dispatches on",
+            "maxLength": 40,
+            "type": "string"
+          },
+          "kind": {
+            "description": "discord, oidc or local. Immutable: it decides verifiable_subject",
+            "enum": [
+              "discord",
+              "oidc",
+              "local"
+            ],
+            "type": "string"
+          },
+          "redirect_uri": {
+            "description": "Where the provider sends the browser back",
+            "type": "string"
+          },
+          "subject_claim": {
+            "description": "OIDC only: the claim that carries the subject. Defaults to sub",
+            "type": "string"
+          },
+          "token_endpoint": {
+            "description": "Where the authorization code is exchanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "kind"
         ],
         "type": "object"
       },
@@ -1782,6 +1988,41 @@
         ],
         "type": "object"
       },
+      "PageAdminIdentityProvider": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdminIdentityProvider"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "has_more",
+          "as_of"
+        ],
+        "type": "object"
+      },
       "PageBoardEntry": {
         "additionalProperties": false,
         "properties": {
@@ -2284,7 +2525,6 @@
               "server_mismatch",
               "died_at_in_future",
               "died_at_too_old",
-              "report_immutable",
               "already_retracted",
               "retract_not_permitted",
               "unknown_target",
@@ -4243,6 +4483,56 @@
         },
         "type": "object"
       },
+      "UpdateIdentityProviderInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledge_weak_revocation": {
+            "description": "Required when this change ENABLES a provider with no verifiable subject",
+            "type": "boolean"
+          },
+          "authorization_endpoint": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "client_secret": {
+            "description": "Write-only. Send it to rotate; omit it to leave the stored one alone",
+            "type": "string"
+          },
+          "display_name": {
+            "maxLength": 80,
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "jwks_uri": {
+            "type": "string"
+          },
+          "key": {
+            "description": "Rejected with 422 field_immutable",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Rejected with 422 field_immutable: kind decides verifiable_subject",
+            "type": "string"
+          },
+          "redirect_uri": {
+            "type": "string"
+          },
+          "subject_claim": {
+            "type": "string"
+          },
+          "token_endpoint": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "UpdateMemberInputBody": {
         "additionalProperties": false,
         "properties": {
@@ -4401,6 +4691,492 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/admin/identity-providers": {
+      "get": {
+        "operationId": "listAdminIdentityProviders",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageAdminIdentityProvider"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "The instance's identity providers, secrets excluded",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "instance.security.manage",
+              "realm": "instance",
+              "requires_step_up": true,
+              "roles": [],
+              "scopes": [],
+              "summary": "Add, change or remove the instance's identity providers"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      },
+      "post": {
+        "operationId": "createIdentityProvider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateIdentityProviderInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminIdentityProviderResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Add an identity provider",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": true,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "handler",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "instance.security.manage",
+              "realm": "instance",
+              "requires_step_up": true,
+              "roles": [],
+              "scopes": [],
+              "summary": "Add, change or remove the instance's identity providers"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      }
+    },
+    "/api/v1/admin/identity-providers/{provider_id}": {
+      "delete": {
+        "operationId": "deleteIdentityProvider",
+        "parameters": [
+          {
+            "description": "The provider",
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "description": "The provider",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminIdentityProviderResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Remove an identity provider",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "instance.security.manage",
+              "realm": "instance",
+              "requires_step_up": true,
+              "roles": [],
+              "scopes": [],
+              "summary": "Add, change or remove the instance's identity providers"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      },
+      "patch": {
+        "operationId": "updateIdentityProvider",
+        "parameters": [
+          {
+            "description": "The provider",
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "description": "The provider",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The ETag a previous read returned",
+            "in": "header",
+            "name": "If-Match",
+            "schema": {
+              "description": "The ETag a previous read returned",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateIdentityProviderInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminIdentityProviderResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition Failed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition Required"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Change an identity provider",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": true,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": true,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "instance.security.manage",
+              "realm": "instance",
+              "requires_step_up": true,
+              "roles": [],
+              "scopes": [],
+              "summary": "Add, change or remove the instance's identity providers"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      }
+    },
     "/api/v1/circles": {
       "get": {
         "operationId": "listCircles",

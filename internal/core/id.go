@@ -27,6 +27,8 @@ type (
 	IdentityProvider struct{}
 	// IdentityLink marks an identity_link id.
 	IdentityLink struct{}
+	// InstanceGrant marks an instance_grant id — one instance-level authorization decision.
+	InstanceGrant struct{}
 	// AuthFlow marks an auth_flow id — one in-flight browser OAuth authorization.
 	AuthFlow struct{}
 	// CredentialTicket marks a credential_ticket id. It is not the ticket secret; see [Secret].
@@ -57,6 +59,7 @@ func (InviteRedemption) entity() string  { return "invite_redemption" }
 func (Identity) entity() string          { return "identity" }
 func (IdentityProvider) entity() string  { return "identity_provider" }
 func (IdentityLink) entity() string      { return "identity_link" }
+func (InstanceGrant) entity() string     { return "instance_grant" }
 func (AuthFlow) entity() string          { return "auth_flow" }
 func (CredentialTicket) entity() string  { return "credential_ticket" }
 func (TodReport) entity() string         { return "tod_report" }
@@ -86,6 +89,7 @@ type (
 	IdentityID          = ID[Identity]
 	IdentityProviderID  = ID[IdentityProvider]
 	IdentityLinkID      = ID[IdentityLink]
+	InstanceGrantID     = ID[InstanceGrant]
 	AuthFlowID          = ID[AuthFlow]
 	CredentialTicketID  = ID[CredentialTicket]
 	TodReportID         = ID[TodReport]

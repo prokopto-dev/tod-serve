@@ -181,14 +181,65 @@ func TestEffectiveForToken_EveryRoleAndScope_NeverExceedsEither(t *testing.T) {
 	}
 }
 
-func TestEffectiveForSession_Role_IsTheWholeRole(t *testing.T) {
+func TestEffectiveForSession_NoInstanceGrants_IsTheWholeRoleAndNothingElse(t *testing.T) {
 	t.Parallel()
 	for _, role := range authz.Roles() {
-		if diff := cmp.Diff(authz.RolePermissions(role), authz.EffectiveForSession(role)); diff != "" {
+		got := authz.EffectiveForSession(role, authz.Set{})
+		if diff := cmp.Diff(authz.RolePermissions(role), got); diff != "" {
 			t.Errorf("session capability for %q (-role +session):\n%s", role, diff)
 		}
 	}
 	// A session is not narrowed by scopes; it is narrowed by step-up, asked per operation.
-	require.True(t, authz.EffectiveForSession(authz.RoleOwner).Has(authz.PermissionTokenMint))
+	owner := authz.EffectiveForSession(authz.RoleOwner, authz.Set{})
+	require.True(t, owner.Has(authz.PermissionTokenMint))
 	require.True(t, authz.RequiresStepUp(authz.PermissionTokenMint))
+
+	// And an owner with no instance grant reaches no instance-realm permission at all. This is the
+	// hole ADR-0012 closes, from the side that must STAY closed: the grant is what opens it, and a
+	// role never does.
+	for _, p := range authz.InstancePermissions() {
+		require.False(t, owner.Has(p), "an owner with no instance grant reaches %q", p)
+	}
+}
+
+// The instance set widens a session and nothing else does. The failure this catches is a union
+// that quietly reached into the role matrix, which would make a grant of `ops.read` hand over
+// whatever the granted identity's circle role also happened to imply.
+func TestEffectiveForSession_AnInstanceGrant_AddsExactlyThatPermission(t *testing.T) {
+	t.Parallel()
+	grants := authz.NewSet(authz.PermissionCatalogueManage)
+	for _, role := range authz.Roles() {
+		got := authz.EffectiveForSession(role, grants)
+		want := authz.RolePermissions(role).Union(grants)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("session capability for %q with a grant (-want +got):\n%s", role, diff)
+		}
+		require.True(t, got.Has(authz.PermissionCatalogueManage))
+		// The other four instance keys were not granted, so they are not held. A ledger is not a
+		// role: holding one instance permission implies none of the rest.
+		for _, p := range authz.InstancePermissions() {
+			if p == authz.PermissionCatalogueManage {
+				continue
+			}
+			require.False(t, got.Has(p), "granting catalogue.manage also handed over %q", p)
+		}
+	}
+}
+
+// A token is bound to a membership and an instance grant belongs to an identity, so a leaked token
+// reaches no instance-realm permission however the ledger reads. This is the arithmetic behind
+// that claim, checked over every role and EVERY scope at once rather than over a chosen pair.
+func TestEffectiveForToken_EveryScopeAtOnce_ReachesNoInstancePermission(t *testing.T) {
+	t.Parallel()
+	every := make([]authz.Scope, 0, len(authz.Scopes()))
+	for _, def := range authz.Scopes() {
+		every = append(every, def.Key)
+	}
+	for _, role := range authz.Roles() {
+		got := authz.EffectiveForToken(role, every)
+		for _, p := range authz.InstancePermissions() {
+			require.False(t, got.Has(p),
+				"a %q token holding every scope reaches the instance-realm %q", role, p)
+		}
+	}
 }

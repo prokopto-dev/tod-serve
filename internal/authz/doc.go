@@ -21,8 +21,17 @@
 //
 // A permission is granted either by a circle membership's role or by an instance-level grant.
 // [RolePermissions] covers the first. The second — `catalogue.manage`, `ops.read` and the
-// `instance.*` keys — has no role matrix here, because there is no instance role enum in the
-// canonical conventions and inventing one would put a second authorization model in the codebase.
-// TestPermissions_InstanceRealm_IsNotGrantedByAnyRole pins that boundary so the hole is visible
-// rather than assumed; the mechanism that fills it lands with the auth subsystem.
+// `instance.*` keys — has no role matrix here and never will: there is no instance role enum in
+// the canonical conventions, and inventing one would put a second authorization model in the
+// codebase. TestPermissions_InstanceRealm_IsNotGrantedByAnyRoleMatrix keeps that boundary.
+//
+// What grants them instead is `instance_grant`, an append-only ledger of decisions keyed on an
+// IDENTITY rather than a membership (ADR-0012). This package owns the value set — see
+// [InstancePermissions] and [InstancePermissionEnum], which generate the column's CHECK — and does
+// not read the table: which grants an identity holds is a question for the store, and
+// [EffectiveForSession] takes the answer as an argument.
+//
+// A token reaches none of them at any scope. That is not a rule stated here so much as an
+// arithmetic consequence: no scope in [Scopes] grants an instance-realm key, so the intersection
+// in [EffectiveForToken] is empty however the ledger reads.
 package authz

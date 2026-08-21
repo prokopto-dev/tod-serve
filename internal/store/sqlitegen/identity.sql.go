@@ -144,6 +144,62 @@ func (q *Queries) GetIdentityByProviderSubject(ctx context.Context, arg GetIdent
 	return i, err
 }
 
+const listIdentities = `-- name: ListIdentities :many
+SELECT i.id, i.provider_id, i.subject, i.display_name, i.blocked_at, i.blocked_by_membership_id, i.block_reason, i.created_at, i.updated_at, p.key AS provider_key
+FROM identity i
+JOIN identity_provider p ON p.id = i.provider_id
+ORDER BY p.key, i.subject
+`
+
+type ListIdentitiesRow struct {
+	ID                    string
+	ProviderID            string
+	Subject               string
+	DisplayName           string
+	BlockedAt             *int64
+	BlockedByMembershipID *string
+	BlockReason           *string
+	CreatedAt             int64
+	UpdatedAt             int64
+	ProviderKey           string
+}
+
+// The console listing: which people this instance knows, so an operator can find the id an
+// instance grant hangs off. Ordered by provider then subject so two runs diff cleanly.
+func (q *Queries) ListIdentities(ctx context.Context) ([]ListIdentitiesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listIdentities)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIdentitiesRow{}
+	for rows.Next() {
+		var i ListIdentitiesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProviderID,
+			&i.Subject,
+			&i.DisplayName,
+			&i.BlockedAt,
+			&i.BlockedByMembershipID,
+			&i.BlockReason,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ProviderKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const unblockIdentity = `-- name: UnblockIdentity :one
 UPDATE identity
 SET blocked_at = NULL, blocked_by_membership_id = NULL, block_reason = NULL,

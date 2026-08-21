@@ -168,6 +168,19 @@ type Instance struct {
 	UpdatedAt                 int64
 }
 
+type InstanceGrant struct {
+	ID                  string
+	IdentityID          string
+	Permission          string
+	Decision            string
+	SupersedesID        *string
+	DecidedByIdentityID *string
+	Reason              string
+	PrevHash            []byte
+	Hash                []byte
+	DecidedAt           int64
+}
+
 type Invite struct {
 	ID                    string
 	CircleID              string

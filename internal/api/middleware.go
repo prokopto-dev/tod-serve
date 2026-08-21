@@ -173,11 +173,16 @@ func checkTenancy(ctx huma.Context, p auth.Principal) error {
 	return nil
 }
 
-// checkPermission applies `role permissions ∩ token scopes`, reporting which half failed.
+// checkPermission applies `granted permissions ∩ token scopes`, reporting which half failed.
 //
-// The two halves have different fixes — ask an officer for a role, versus mint a token with the
-// scope — so they have different codes. A single `forbidden` for both would send half the people
-// who hit it to the wrong person.
+// The two halves have different fixes — ask an officer for a role, or an instance owner for a
+// grant, versus mint a token with the scope — so they have different codes. A single `forbidden`
+// for both would send half the people who hit it to the wrong person.
+//
+// What granted the permission is [auth.Principal.Holds]'s business: a circle-realm key comes from
+// the membership's role and an instance-realm one from the identity's `instance_grant` rows
+// (ADR-0012). The distinction does not reach here, because the answer to "may you" is the same
+// shape either way.
 func checkPermission(p auth.Principal, r Route) error {
 	if r.Auth == AuthSelf {
 		// `self` operations are about the caller's own principal, so there is no permission to
@@ -185,15 +190,16 @@ func checkPermission(p auth.Principal, r Route) error {
 		// its absence means the operation alters authentication state and needs a session.
 		return nil
 	}
-	holdsRole := false
+	granted := false
 	for _, perm := range r.Permissions {
-		if p.RoleHolds(perm) {
-			holdsRole = true
+		if p.Holds(perm) {
+			granted = true
 			break
 		}
 	}
-	if !holdsRole {
-		return apierr.New(apierr.CodeForbidden, "your role does not hold the required permission")
+	if !granted {
+		return apierr.New(apierr.CodeForbidden,
+			"you have not been granted the required permission")
 	}
 	for _, perm := range r.Permissions {
 		if p.Can(perm) {

@@ -25,6 +25,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/identity/identitysql"
+	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
 	"github.com/prokopto-dev/tod-serve/internal/projection"
@@ -66,6 +67,7 @@ type harness struct {
 	catalogue   *catalogue.Service
 	tods        *tod.Service
 	states      *projection.Service
+	grants      *instancegrant.Service
 	invalidator *recordingInvalidator
 }
 
@@ -85,9 +87,10 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, err)
 	codec, err := auth.NewSessionCodec(testSessionKey)
 	require.NoError(t, err)
-	authn, err := auth.NewAuthenticator(db, minter, codec, clk, log, auth.DefaultStepUpWindow)
-	require.NoError(t, err)
 	svc := newServices(t, db, clk, ids, minter, log)
+	authn, err := auth.NewAuthenticator(
+		db, minter, codec, svc.grants, clk, log, auth.DefaultStepUpWindow)
+	require.NoError(t, err)
 	// The recorder WRAPS the real projection rather than standing in for it. Both questions are
 	// worth answering in this suite: "did the route push the invalidation" needs the record, and
 	// "did the board actually stop serving the old window" needs the real thing behind it.
@@ -120,7 +123,7 @@ func newHarness(t *testing.T) *harness {
 		t: t, server: server, store: db, clock: clk, ids: ids,
 		minter: minter, codec: codec, handler: server.Handler(),
 		circles: svc.circles, invites: svc.invites, members: svc.members,
-		catalogue: svc.catalogue, tods: svc.tods, states: svc.states,
+		catalogue: svc.catalogue, tods: svc.tods, states: svc.states, grants: svc.grants,
 		invalidator: invalidator,
 	}
 }
@@ -136,6 +139,7 @@ type wiredServices struct {
 	catalogue  *catalogue.Service
 	tods       *tod.Service
 	states     *projection.Service
+	grants     *instancegrant.Service
 }
 
 func newServices(
@@ -180,9 +184,16 @@ func newServices(
 	})
 	require.NoError(t, err)
 
+	// The real ledger over the real table. There is no fake: what an instance-realm route answers
+	// depends on rows, and a stub that returned a set would test the middleware against itself.
+	grants, err := instancegrant.New(instancegrant.Config{
+		Store: db, Clock: clk, IDs: ids, Log: log,
+	})
+	require.NoError(t, err)
+
 	return wiredServices{
 		circles: circles, invites: invites, members: members, identities: identities,
-		catalogue: catalogues, tods: tods, states: states,
+		catalogue: catalogues, tods: tods, states: states, grants: grants,
 	}
 }
 
@@ -192,10 +203,10 @@ func newHarnessWithoutMetrics(t *testing.T) *harness {
 	t.Helper()
 	h := newHarness(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	authn, err := auth.NewAuthenticator(
-		h.store, h.minter, h.codec, h.clock, log, auth.DefaultStepUpWindow)
-	require.NoError(t, err)
 	svc := newServices(t, h.store, h.clock, h.ids, h.minter, log)
+	authn, err := auth.NewAuthenticator(
+		h.store, h.minter, h.codec, svc.grants, h.clock, log, auth.DefaultStepUpWindow)
+	require.NoError(t, err)
 
 	server, err := api.New(api.Config{
 		Version:             "0.0.0-test",
@@ -370,6 +381,47 @@ func (h *harness) revokeMembership(circle core.CircleID, membership core.Members
 		UpdatedAt:             at,
 		CircleID:              circle.String(),
 		ID:                    membership.String(),
+	})
+	require.NoError(h.t, err)
+}
+
+// identityOf returns the identity behind a human membership, which is the key an instance grant
+// hangs off. A service membership has none and this fails rather than returning a zero id: a test
+// that granted an instance permission to nobody would pass for the wrong reason.
+func (h *harness) identityOf(member core.MembershipID) core.IdentityID {
+	h.t.Helper()
+	row, err := h.store.Queries().GetMembershipByID(h.t.Context(), member.String())
+	require.NoError(h.t, err)
+	require.NotNil(h.t, row.IdentityID, "membership %s has no identity", member)
+	id, err := core.ParseID[core.Identity](*row.IdentityID)
+	require.NoError(h.t, err)
+	return id
+}
+
+// grantInstance records `granted` for the identity behind a membership, through the real ledger
+// over the real table. There is no shortcut past the service here on purpose: an instance-realm
+// route's answer depends on rows, and inserting them by hand would let the test pass against a
+// schema the service could not actually write.
+func (h *harness) grantInstance(member core.MembershipID, perms ...authz.Permission) {
+	h.t.Helper()
+	identity := h.identityOf(member)
+	for _, p := range perms {
+		_, err := h.grants.Decide(h.t.Context(), instancegrant.DecideRequest{
+			IdentityID: identity, Permission: p,
+			Decision: instancegrant.DecisionGranted,
+			Reason:   "fixture",
+		})
+		require.NoError(h.t, err)
+	}
+}
+
+// revokeInstance records `revoked` for the identity behind a membership.
+func (h *harness) revokeInstance(member core.MembershipID, perm authz.Permission) {
+	h.t.Helper()
+	_, err := h.grants.Decide(h.t.Context(), instancegrant.DecideRequest{
+		IdentityID: h.identityOf(member), Permission: perm,
+		Decision: instancegrant.DecisionRevoked,
+		Reason:   "fixture",
 	})
 	require.NoError(h.t, err)
 }

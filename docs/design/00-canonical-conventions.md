@@ -95,6 +95,7 @@ raid_target.state:             active retired
 raid_target_timer.window_kind: fixed variance unknown
 circle.revocation_strength:    durable weak
 identity_link.method:          officer_asserted provider_verified
+instance_grant.decision:       granted revoked
 ```
 
 **`target_state.confidence` and `membership.role` are ordered, and the order is the rule.**
@@ -263,12 +264,17 @@ The replacement is three gates, not a promise:
 | `TestTenancy_CrossCircle_EveryOperationDenies` | Derived from the route registry, so coverage cannot be forgotten |
 
 The instance-scoped allowlist is explicit and short: `tod_meta`, `instance`, `identity_provider`,
-`identity`, `identity_link`, `auth_flow`, `credential_ticket`, `raid_target`, `raid_target_alias`,
-`raid_target_timer`, `api_token`, `idempotency_record`, `event_outbox`. Adding a table to it is a
-reviewed decision, not a convenience.
+`identity`, `identity_link`, `instance_grant`, `auth_flow`, `credential_ticket`, `raid_target`,
+`raid_target_alias`, `raid_target_timer`, `api_token`, `idempotency_record`, `event_outbox`. Adding
+a table to it is a reviewed decision, not a convenience.
 
-The two newest entries are on it because **no circle owns them** — not because a circle cannot be
-identified before redemption:
+`instance_grant` is on it because a grant is about an identity and **the whole instance**
+([ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md)). `circle_id` there would not be
+a missing column; it would be a false one, and the ledger's whole point is that
+`instance.security.manage` is not a permission any circle can confer.
+
+Two more are on it because **no circle owns them** — not because a circle cannot be identified
+before redemption:
 
 - `auth_flow` holds the OAuth `state` and the server-side PKCE verifier. It may record a
   **nullable** `circle_id` so the authorization request can be parameterised before the browser
@@ -299,8 +305,8 @@ in each direction — exactly the drift this repository gates against elsewhere.
 ## 10. The report log — non-negotiable
 
 - **Append-only, enforced by database trigger.** `tod_report`, `quake_event`, `invite_redemption`,
-  `identity_link`, `audit_log` and `event_outbox` are never `UPDATE`d or `DELETE`d, in Go, in SQL, or
-  in a migration. `BEFORE UPDATE OR DELETE … RAISE(ABORT)`.
+  `identity_link`, `instance_grant`, `audit_log` and `event_outbox` are never `UPDATE`d or `DELETE`d,
+  in Go, in SQL, or in a migration. `BEFORE UPDATE OR DELETE … RAISE(ABORT)`.
 - **Corrections are new rows.** A retraction is a row with `retracts_report_id` set. The original
   stays visible. A retraction of a retraction is not supported — post a fresh report.
 - **Derived state is a cache.** `target_state_cache` is droppable, rebuilt lazily on read-miss and

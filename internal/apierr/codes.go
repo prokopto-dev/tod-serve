@@ -61,7 +61,6 @@ const (
 	CodeServerMismatch              Code = "server_mismatch"
 	CodeDiedAtInFuture              Code = "died_at_in_future"
 	CodeDiedAtTooOld                Code = "died_at_too_old"
-	CodeReportImmutable             Code = "report_immutable"
 	CodeAlreadyRetracted            Code = "already_retracted"
 	CodeRetractNotPermitted         Code = "retract_not_permitted"
 	CodeUnknownTarget               Code = "unknown_target"
@@ -153,7 +152,6 @@ func codes() []Def {
 		{CodeServerMismatch, http.StatusUnprocessableEntity, "Server does not match the circle", false},
 		{CodeDiedAtInFuture, http.StatusUnprocessableEntity, "died_at is in the future", false},
 		{CodeDiedAtTooOld, http.StatusUnprocessableEntity, "died_at is too old", false},
-		{CodeReportImmutable, http.StatusConflict, "Reports are immutable", false},
 		{CodeAlreadyRetracted, http.StatusConflict, "Already retracted", false},
 		{CodeRetractNotPermitted, http.StatusForbidden, "Retraction not permitted", false},
 		{CodeUnknownTarget, http.StatusUnprocessableEntity, "Unknown raid target", false},

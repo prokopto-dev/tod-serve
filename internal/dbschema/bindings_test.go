@@ -10,6 +10,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
 
+	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/canondoc"
 	"github.com/prokopto-dev/tod-serve/internal/dbschema"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
@@ -49,18 +50,23 @@ func TestEnumsHCL_Generated_MatchesTheCheckedInFile(t *testing.T) {
 // The binding table is the only thing standing between the catalogue and a column nobody
 // constrained, so it is checked in both directions: every binding names a real enum, and every
 // enum is either bound or recorded as deliberately unstored.
+//
+// The catalogue it walks is [dbschema.CatalogueEnums], not internal/schemaenum's, because two of
+// the value sets are owned by internal/authz — a copy of the permission keys in the enum catalogue
+// would be the second permission list canonical §6 forbids. An enum outside this walk is an enum
+// with no coverage at all, which is what this test exists to prevent.
 func TestEnumBindings_EveryCatalogueEnum_IsBoundOrExplicitlyUnstored(t *testing.T) {
 	t.Parallel()
 
 	bound := map[string]bool{}
 	for _, b := range dbschema.Bindings() {
-		_, ok := schemaenum.Lookup(b.Enum)
+		_, ok := dbschema.LookupEnum(b.Enum)
 		require.True(t, ok, "%s.%s binds %q, which is not in the catalogue", b.Table, b.Column, b.Enum)
 		bound[b.Enum] = true
 	}
 
 	unstored := dbschema.UnstoredEnums()
-	for _, e := range schemaenum.All() {
+	for _, e := range dbschema.CatalogueEnums() {
 		reason, recorded := unstored[e.Name]
 		require.NotEqual(t, bound[e.Name], recorded,
 			"enum %s must be either bound to a column or recorded as unstored, not both or neither",
@@ -70,8 +76,42 @@ func TestEnumBindings_EveryCatalogueEnum_IsBoundOrExplicitlyUnstored(t *testing.
 		}
 	}
 	for name := range unstored {
-		_, ok := schemaenum.Lookup(name)
+		_, ok := dbschema.LookupEnum(name)
 		require.True(t, ok, "%q is recorded as unstored but is not in the catalogue", name)
+	}
+}
+
+// Every enum internal/schemaenum owns reaches [dbschema.CatalogueEnums]. Without this the walk
+// above could silently shrink to the authz-owned pair and keep passing, which is the same "green
+// over nothing" this file's other tests are built against.
+func TestCatalogueEnums_Contains_TheWholeSchemaenumCatalogue(t *testing.T) {
+	t.Parallel()
+	for _, e := range schemaenum.All() {
+		_, ok := dbschema.LookupEnum(e.Name)
+		require.True(t, ok, "enum %s is in internal/schemaenum and not in CatalogueEnums", e.Name)
+	}
+}
+
+// And the instance-realm permission keys reach the generated CHECK, in both directions. The
+// failure this catches is a permission that is instance-realm in the catalogue and unrepresentable
+// in the column that grants it — a permission nobody could ever be given.
+func TestInstanceGrantPermissions_TheGeneratedCheck_IsTheInstanceRealm(t *testing.T) {
+	t.Parallel()
+	enum, ok := dbschema.LookupEnum(authz.InstanceGrantEnumName)
+	require.True(t, ok)
+
+	var want []string
+	for _, p := range authz.InstancePermissions() {
+		want = append(want, string(p))
+	}
+	require.NotEmpty(t, want)
+	if diff := cmp.Diff(want, enum.Values); diff != "" {
+		t.Errorf("instance_grant.permission differs from the instance realm (-catalogue +enum):\n%s", diff)
+	}
+	for _, def := range authz.Permissions() {
+		require.Equal(t, def.Realm == authz.RealmInstance, enum.Contains(string(def.Key)),
+			"%q is realm %q and the instance_grant CHECK %s it", def.Key, def.Realm,
+			map[bool]string{true: "permits", false: "refuses"}[enum.Contains(string(def.Key))])
 	}
 }
 

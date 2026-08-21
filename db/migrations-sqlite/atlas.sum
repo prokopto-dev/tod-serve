@@ -1,6 +1,8 @@
-h1:g0VlMqpfkPtK2CzsxzWmjDqA9WWYRuL95WRakJPv4HY=
+h1:n5yJY7f+VbZfm8Y4Gkt3LYzwQXUDg1sGu3ghEFjCsds=
 000001_initial_schema.sql h1:Eho8UgfiInMLnh5woH+FNpDAncrS3pAdi7SAVWBf+TQ=
 000002_invariant_triggers.sql h1:a76H6kvdc9f1xc1wOw0CO4eMw5+r/3wdLc8vtB682K0=
 000003_identity_provider_client_id_matches_kind.sql h1:UwIOCNZYpJSnk8LeZ2goRrXJZUx5wIVsFvczF0DQn+c=
 000004_add_circle_deleted_at.sql h1:rVTSXKGmv/c4+zwEBX1yexOPEjj5WYHAj9cbhXRbnhM=
 000005_raid_target_name_namespace.sql h1:7jfWhbj1epcqKWuUOQvkwyJbU0y0HN4cx20v21lDpUE=
+000006_add_instance_grant.sql h1:+ajbgvK8VPTYRzbl5+Wo+hzt5dKxPu+OC7a5BNKGNW0=
+000007_instance_grant_append_only.sql h1:b7xJPdEey2gOh/MvVpfXNdAEqzowP6VFUWEukfpbIQE=

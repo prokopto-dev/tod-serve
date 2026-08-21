@@ -29,6 +29,7 @@ const (
 	NameRaidTargetTimerWindow    = "raid_target_timer.window_kind"
 	NameCircleRevocationStrength = "circle.revocation_strength"
 	NameIdentityLinkMethod       = "identity_link.method"
+	NameInstanceGrantDecision    = "instance_grant.decision"
 )
 
 // The values themselves. Untyped constants on purpose: a domain package declares its own type
@@ -115,6 +116,9 @@ const (
 
 	IdentityLinkMethodOfficerAsserted  = "officer_asserted"
 	IdentityLinkMethodProviderVerified = "provider_verified"
+
+	InstanceGrantDecisionGranted = "granted"
+	InstanceGrantDecisionRevoked = "revoked"
 )
 
 // All returns the catalogue, in the order canonical conventions §5 lists it.
@@ -225,6 +229,12 @@ func All() []Enum {
 			Name: NameIdentityLinkMethod,
 			Values: []string{
 				IdentityLinkMethodOfficerAsserted, IdentityLinkMethodProviderVerified,
+			},
+		},
+		{
+			Name: NameInstanceGrantDecision,
+			Values: []string{
+				InstanceGrantDecisionGranted, InstanceGrantDecisionRevoked,
 			},
 		},
 	}

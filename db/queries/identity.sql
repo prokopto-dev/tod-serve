@@ -32,3 +32,11 @@ SET blocked_at = NULL, blocked_by_membership_id = NULL, block_reason = NULL,
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
 RETURNING *;
+
+-- name: ListIdentities :many
+-- The console listing: which people this instance knows, so an operator can find the id an
+-- instance grant hangs off. Ordered by provider then subject so two runs diff cleanly.
+SELECT i.*, p.key AS provider_key
+FROM identity i
+JOIN identity_provider p ON p.id = i.provider_id
+ORDER BY p.key, i.subject;

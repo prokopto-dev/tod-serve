@@ -103,6 +103,78 @@ func (s *Store) EnabledProviders(ctx context.Context) ([]identity.Provider, erro
 	return out, nil
 }
 
+func (s *Store) AllProviders(ctx context.Context) ([]identity.Provider, error) {
+	rows, err := s.q.ListIdentityProviders(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list providers: %w", err)
+	}
+	out := make([]identity.Provider, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toProvider(row))
+	}
+	return out, nil
+}
+
+func (s *Store) CreateProvider(
+	ctx context.Context, p identity.Provider, at core.Micros,
+) (identity.Provider, error) {
+	row, err := s.q.CreateIdentityProvider(ctx, sqlitegen.CreateIdentityProviderParams{
+		ID:                    p.ID,
+		Key:                   p.Key,
+		Kind:                  string(p.Kind),
+		DisplayName:           p.DisplayName,
+		Enabled:               boolToInt(p.Enabled),
+		VerifiableSubject:     boolToInt(p.VerifiableSubject),
+		Issuer:                nullable(p.Issuer),
+		AuthorizationEndpoint: nullable(p.AuthorizationEndpoint),
+		JwksUri:               nullable(p.JWKSURI),
+		SubjectClaim:          nullable(p.SubjectClaim),
+		ClientID:              nullable(p.ClientID),
+		ClientSecret:          nullable(string(p.ClientSecret)),
+		RedirectUri:           nullable(p.RedirectURI),
+		TokenEndpoint:         nullable(p.TokenEndpoint),
+		CreatedAt:             int64(at),
+		UpdatedAt:             int64(at),
+	})
+	if err != nil {
+		return identity.Provider{}, fmt.Errorf("create provider %q: %w", p.Key, err)
+	}
+	return toProvider(row), nil
+}
+
+func (s *Store) UpdateProvider(
+	ctx context.Context, p identity.Provider, at core.Micros,
+) (identity.Provider, error) {
+	row, err := s.q.UpdateIdentityProvider(ctx, sqlitegen.UpdateIdentityProviderParams{
+		DisplayName:           p.DisplayName,
+		Enabled:               boolToInt(p.Enabled),
+		Issuer:                nullable(p.Issuer),
+		AuthorizationEndpoint: nullable(p.AuthorizationEndpoint),
+		JwksUri:               nullable(p.JWKSURI),
+		SubjectClaim:          nullable(p.SubjectClaim),
+		ClientID:              nullable(p.ClientID),
+		ClientSecret:          nullable(string(p.ClientSecret)),
+		RedirectUri:           nullable(p.RedirectURI),
+		TokenEndpoint:         nullable(p.TokenEndpoint),
+		UpdatedAt:             int64(at),
+		ID:                    p.ID,
+	})
+	if store.IsNotFound(err) {
+		return identity.Provider{}, fmt.Errorf("provider %s: %w", p.ID, identity.ErrNotFound)
+	}
+	if err != nil {
+		return identity.Provider{}, fmt.Errorf("update provider %s: %w", p.ID, err)
+	}
+	return toProvider(row), nil
+}
+
+func (s *Store) DeleteProvider(ctx context.Context, id string) error {
+	if err := s.q.DeleteIdentityProvider(ctx, id); err != nil {
+		return fmt.Errorf("delete provider %s: %w", id, err)
+	}
+	return nil
+}
+
 func toProvider(row sqlitegen.IdentityProvider) identity.Provider {
 	return identity.Provider{
 		ID:                    row.ID,
@@ -369,6 +441,14 @@ func nullable(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// boolToInt renders a boolean the way canonical §8 stores one: INTEGER, CHECK (x IN (0,1)).
+func boolToInt(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // The compiler holds this to the port set, so a method added to identity.Store is a build failure

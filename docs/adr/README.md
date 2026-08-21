@@ -22,6 +22,7 @@ directions linked.
 | [0009](0009-circle-pinned-to-one-server.md) | A circle is pinned to one server, permanently | accepted |
 | [0010](0010-sse-over-websockets.md) | SSE, not WebSockets | accepted |
 | [0011](0011-operator-registered-discord-application.md) | Each operator registers their own Discord application | accepted |
+| [0012](0012-instance-grants-are-a-capability-ledger.md) | Instance permissions are a capability ledger on an identity | accepted |
 
 ## Where this project diverges from Dragon Kill Party
 
