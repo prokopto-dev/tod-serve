@@ -67,7 +67,7 @@ func (q *Queries) AppendInstanceGrant(ctx context.Context, arg AppendInstanceGra
 	return i, err
 }
 
-const getInstanceGrantDecision = `-- name: GetInstanceGrantDecision :one
+const getInstanceGrantDecision = `-- name: GetInstanceGrantDecision :many
 SELECT id, identity_id, permission, decision, supersedes_id, decided_by_identity_id, reason, prev_hash, hash, decided_at FROM instance_grant AS g
 WHERE g.identity_id = ?1
   AND g.permission = ?2
@@ -82,24 +82,41 @@ type GetInstanceGrantDecisionParams struct {
 // The CURRENT decision for one identity and one permission: the row nothing supersedes.
 //
 // ux_instance_grant_supersedes and ux_instance_grant_head make that row unique by construction, so
-// this needs no ORDER BY and no tie-break. A LIMIT here would hide a forked chain rather than let
-// the caller find out about it.
-func (q *Queries) GetInstanceGrantDecision(ctx context.Context, arg GetInstanceGrantDecisionParams) (InstanceGrant, error) {
-	row := q.db.QueryRowContext(ctx, getInstanceGrantDecision, arg.IdentityID, arg.Permission)
-	var i InstanceGrant
-	err := row.Scan(
-		&i.ID,
-		&i.IdentityID,
-		&i.Permission,
-		&i.Decision,
-		&i.SupersedesID,
-		&i.DecidedByIdentityID,
-		&i.Reason,
-		&i.PrevHash,
-		&i.Hash,
-		&i.DecidedAt,
-	)
-	return i, err
+// this needs no ORDER BY and no tie-break. It returns MANY rather than one on purpose: a :one
+// query is a QueryRow, which scans the first row and discards the rest, so a forked chain would be
+// resolved by silently picking a branch. The caller asserts the count instead.
+func (q *Queries) GetInstanceGrantDecision(ctx context.Context, arg GetInstanceGrantDecisionParams) ([]InstanceGrant, error) {
+	rows, err := q.db.QueryContext(ctx, getInstanceGrantDecision, arg.IdentityID, arg.Permission)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []InstanceGrant{}
+	for rows.Next() {
+		var i InstanceGrant
+		if err := rows.Scan(
+			&i.ID,
+			&i.IdentityID,
+			&i.Permission,
+			&i.Decision,
+			&i.SupersedesID,
+			&i.DecidedByIdentityID,
+			&i.Reason,
+			&i.PrevHash,
+			&i.Hash,
+			&i.DecidedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getLatestInstanceGrant = `-- name: GetLatestInstanceGrant :one

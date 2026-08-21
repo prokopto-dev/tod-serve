@@ -345,6 +345,19 @@ override a circle had set.
 
 ## Instance administration
 
+**Every permission in this table is instance-realm: no circle role grants one, and no PAT reaches
+one at any scope.** They come from an `instance_grant` on the caller's identity
+([ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md)), written by `tod-serve
+instance grant` at the console — which is also the recovery path, and the reason an instance needs
+no `last_owner` rule. Four of the five are in the capability floor and need a re-authenticated
+session; `ops.read` is not.
+
+On `/admin/identity-providers`, `client_secret` is **write-only**: it goes in and never comes back
+out, and the representation says only whether one is `client_secret_set`. `key` and `kind` are
+immutable (`422 field_immutable`) because `kind` decides `verifiable_subject`, and a delete is
+refused (`409 conflict`) once anybody has joined through the provider — **disabling** it is the
+operation that stops new joins.
+
 | Method | Path | OperationID | Permission | Scope |
 |---|---|---|---|---|
 | GET | `/admin/identity-providers` | `listAdminIdentityProviders` | `instance.security.manage` | — step-up |

@@ -18,12 +18,13 @@ RETURNING *;
 -- whole table: an instance grant belongs to no circle, so there is nothing to partition it by.
 SELECT * FROM instance_grant ORDER BY id DESC LIMIT 1;
 
--- name: GetInstanceGrantDecision :one
+-- name: GetInstanceGrantDecision :many
 -- The CURRENT decision for one identity and one permission: the row nothing supersedes.
 --
 -- ux_instance_grant_supersedes and ux_instance_grant_head make that row unique by construction, so
--- this needs no ORDER BY and no tie-break. A LIMIT here would hide a forked chain rather than let
--- the caller find out about it.
+-- this needs no ORDER BY and no tie-break. It returns MANY rather than one on purpose: a :one
+-- query is a QueryRow, which scans the first row and discards the rest, so a forked chain would be
+-- resolved by silently picking a branch. The caller asserts the count instead.
 SELECT * FROM instance_grant AS g
 WHERE g.identity_id = sqlc.arg(identity_id)
   AND g.permission = sqlc.arg(permission)

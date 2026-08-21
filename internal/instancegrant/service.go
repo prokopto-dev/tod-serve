@@ -281,19 +281,26 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (Grant, error) 
 func (s *Service) tail(
 	ctx context.Context, q *sqlitegen.Queries, identityID core.IdentityID, p authz.Permission,
 ) (*Grant, error) {
-	row, err := q.GetInstanceGrantDecision(ctx, sqlitegen.GetInstanceGrantDecisionParams{
+	rows, err := q.GetInstanceGrantDecision(ctx, sqlitegen.GetInstanceGrantDecisionParams{
 		IdentityID: identityID.String(), Permission: string(p),
 	})
-	switch {
-	case store.IsNotFound(err):
-		return nil, nil
-	case err != nil:
-		// The query has no LIMIT, so a forked chain surfaces here as "more than one row" rather
-		// than as a silently chosen answer. Both unique indexes would have to be gone for that.
+	if err != nil {
 		return nil, fmt.Errorf("read the current decision for %q on identity %s: %w",
-			p, identityID, errors.Join(ErrForkedChain, err))
+			p, identityID, err)
 	}
-	g, err := convertOne(row)
+	switch len(rows) {
+	case 0:
+		return nil, nil
+	case 1:
+	default:
+		// Two tails for one pair is a FORKED chain, which two unique indexes make unrepresentable
+		// — so reaching this means one of them is gone. The query returns many rather than one
+		// precisely so this is reachable: a `:one` query scans the first row and discards the
+		// rest, which would resolve the fork by silently picking a branch.
+		return nil, fmt.Errorf("%q on identity %s has %d current decisions: %w",
+			p, identityID, len(rows), ErrForkedChain)
+	}
+	g, err := convertOne(rows[0])
 	if err != nil {
 		return nil, err
 	}
