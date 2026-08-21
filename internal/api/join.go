@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
+	"github.com/prokopto-dev/tod-serve/internal/auth"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
@@ -62,7 +64,17 @@ type redeemInviteInput struct {
 	}
 }
 
-type redeemInviteOutput struct{ Body membership.Joined }
+// redeemInviteOutput carries the minted PAT in the body and a browser session in a `Set-Cookie`.
+//
+// Both, from one operation, because both kinds of client come through this door. A plugin reads
+// the token and never looks at the cookie; a browser is handed the one credential that reaches
+// the capability floor, which no token reaches at any scope. Neither client has to know the other
+// exists — and there is no second, browser-only route to redeem an invite, which is exactly the
+// back door the API-parity gate exists to refuse.
+type redeemInviteOutput struct {
+	SetCookie http.Cookie `header:"Set-Cookie"`
+	Body      membership.Joined
+}
 
 type authenticateIdentityInput struct {
 	Body struct {
@@ -78,7 +90,10 @@ type authenticateIdentityInput struct {
 	}
 }
 
-type authenticateIdentityOutput struct{ Body membership.Joined }
+type authenticateIdentityOutput struct {
+	SetCookie http.Cookie `header:"Set-Cookie"`
+	Body      membership.Joined
+}
 
 // registerJoin attaches the two public operations that mint a token.
 //
@@ -102,7 +117,11 @@ func (s *Server) registerJoin() error {
 				if err != nil {
 					return nil, err
 				}
-				return &redeemInviteOutput{Body: joined}, nil
+				cookie, err := s.sessionCookie(joined)
+				if err != nil {
+					return nil, err
+				}
+				return &redeemInviteOutput{SetCookie: cookie, Body: joined}, nil
 			})),
 
 		registerFailure(OpAuthenticateIdentity, Register(s.api, OpAuthenticateIdentity,
@@ -127,7 +146,11 @@ func (s *Server) registerJoin() error {
 				if err != nil {
 					return nil, err
 				}
-				return &authenticateIdentityOutput{Body: joined}, nil
+				cookie, err := s.sessionCookie(joined)
+				if err != nil {
+					return nil, err
+				}
+				return &authenticateIdentityOutput{SetCookie: cookie, Body: joined}, nil
 			})),
 	)
 }
@@ -143,4 +166,30 @@ func clientName(c ClientBody) string {
 	default:
 		return c.Name + " " + c.Version
 	}
+}
+
+// sessionCookie mints the browser session for a caller who has just proved their identity.
+//
+// `SteppedUpAt` is now, and that is the definition rather than a convenience: step-up asks whether
+// the identity was proved recently, and a credential verified inside this request is the strongest
+// answer that question can have. It decays on the same five-minute window every other session
+// does, so an operator who leaves the console open still re-authenticates before revoking anybody.
+//
+// The cookie is set for every caller, including one that will never send it back. A plugin
+// ignoring a `Set-Cookie` costs it nothing, and branching on a guess about what the client is —
+// a `User-Agent` sniff, an `Accept` header — would make the two clients travel different code
+// paths through the operation that mints credentials, which is the last place that should happen.
+func (s *Server) sessionCookie(joined membership.Joined) (http.Cookie, error) {
+	now := s.cfg.Clock.Now()
+	expires := now.Add(auth.DefaultSessionTTL)
+	value, err := s.cfg.Sessions.Encode(auth.Session{
+		MembershipID: joined.Membership.ID.String(),
+		IssuedAt:     now,
+		ExpiresAt:    expires,
+		SteppedUpAt:  now,
+	})
+	if err != nil {
+		return http.Cookie{}, apierr.Wrap(apierr.CodeInternalError, err, "")
+	}
+	return *s.cfg.Sessions.Cookie(value, expires), nil
 }

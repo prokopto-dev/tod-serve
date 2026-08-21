@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <!-- No favicon request to a host that will not answer: a strict deployment has no CDN, and a
+         404 on every page load is noise in the access log an operator has to learn to ignore. -->
+    <link rel="icon" href="data:," />
+    <title>tod-serve</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

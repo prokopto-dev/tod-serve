@@ -10,8 +10,10 @@ import (
 
 	"github.com/prokopto-dev/tod-serve/internal/api"
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
+	"github.com/prokopto-dev/tod-serve/internal/auth"
 	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/membership"
 )
 
 // adminSession seeds an owner in a circle and returns a stepped-up session for them, plus their
@@ -416,37 +418,69 @@ func TestAdminIdentityProviders_AnUnknownProvider_Is404(t *testing.T) {
 	h.requireProblem(got, apierr.CodeNotFound)
 }
 
-// TestSessionMinting_NoRouteMintsOne_IsStillTrue is a SCHEDULED DELETION, and it is the honest
-// half of ADR-0012's operator story.
+// The scheduled deletion this replaces asserted that NO route minted a session, and named the
+// operation that would: `completeAuthorization`. It was half right. The callback cannot mint one —
+// it holds a verified subject and no membership, and which circle the subject lands in is settled
+// at redemption — so the two operations that CAN are `/join` and `/sessions`, which are the two
+// that verify a credential and know the membership.
 //
-// The instance-realm routes are session-only, and `completeAuthorization` — the OAuth callback —
-// is the operation that will set `__Host-tod_session`. It is in the route registry and served by
-// nothing, so today the only way to hold a session is to encode one with the server's own codec,
-// which is exactly what the end-to-end test in cmd/tod-serve does and says.
-//
-// This pins that gap so it is visible rather than assumed. When the OAuth flow lands, this goes
-// red, and whoever lands it is sent to TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider
-// to replace the minted cookie with the real one.
-func TestSessionMinting_NoRouteMintsOne_IsStillTrue(t *testing.T) {
+// This is the positive half: a browser that redeems a code gets a session, that session is stepped
+// up because a credential was just proved, and it reaches the capability floor that no token
+// reaches at any scope.
+func TestRedeemInvite_SetsASteppedUpSession_ThatReachesTheCapabilityFloor(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
+	code := h.seedJoinableCircle()
 
-	unimplemented := map[api.OperationID]bool{}
-	for _, id := range h.server.Unimplemented() {
-		unimplemented[id] = true
-	}
-	require.True(t, unimplemented[api.OpCompleteAuthorization],
-		"completeAuthorization is served now, so a browser can obtain a real session: replace the "+
-			"codec-minted cookie in the cmd/tod-serve end-to-end test and delete this test")
+	got := h.do(request{
+		Method: http.MethodPost, Path: api.BasePath + "/join",
+		Headers: map[string]string{api.IdempotencyKeyHeader: "join-once"},
+		Body: `{"invite_code":"` + code + `","provider":"` + localProviderKey + `",` +
+			`"credential":{"kind":"none"},"display_name":"Operator"}`,
+	})
+	require.Equal(t, http.StatusOK, got.Status, got.Body)
 
-	// And the routes that need one are registered, so the gap is about the credential rather than
-	// about the surface.
-	registered := map[api.OperationID]bool{}
-	for _, id := range h.server.Registered() {
-		registered[id] = true
+	var cookie *http.Cookie
+	for _, c := range (&http.Response{Header: got.Header}).Cookies() {
+		if c.Name == auth.SessionCookie {
+			cookie = c
+		}
 	}
-	require.True(t, registered[api.OpListAdminIdentityProviders])
-	require.True(t, registered[api.OpCreateIdentityProvider])
+	require.NotNil(t, cookie, "/join set no session cookie; a browser has no way to reach the floor")
+	require.True(t, cookie.Secure, "__Host- requires Secure")
+	require.True(t, cookie.HttpOnly, "no script has any reason to read a session")
+	require.Equal(t, http.SameSiteLaxMode, cookie.SameSite,
+		"a cross-site POST must not carry the session")
+
+	// A capability-floor operation, reached with the cookie the response set and with nothing
+	// else. `listInvites` is not the floor; `revokeInvite` is, and it is what an officer actually
+	// does from the console.
+	var joined membership.Joined
+	require.NoError(t, json.Unmarshal([]byte(got.Body), &joined))
+	minted := h.do(request{
+		Method: http.MethodPost, Session: cookie.Value,
+		Path:    api.BasePath + "/circles/" + joined.Circle.ID.String() + "/invites",
+		Headers: map[string]string{api.IdempotencyKeyHeader: "mint-from-the-console"},
+		Body:    `{"role":"member"}`,
+	})
+	require.Equal(t, http.StatusOK, minted.Status, minted.Body)
+
+	// And the same request with the PAT the same operation minted is refused, with the code that
+	// says which half failed. Both credentials come from one door; only one of them opens the floor.
+	byToken := h.do(request{
+		Method: http.MethodPost, Token: core.Secret(joined.Token.Secret),
+		Path:    api.BasePath + "/circles/" + joined.Circle.ID.String() + "/invites",
+		Headers: map[string]string{api.IdempotencyKeyHeader: "mint-by-token"},
+		Body:    `{"role":"member"}`,
+	})
+	require.Equal(t, http.StatusOK, byToken.Status, "invite.create is deliberately NOT in the floor")
+
+	revoke := h.do(request{
+		Method: http.MethodDelete, Token: core.Secret(joined.Token.Secret),
+		Path: api.BasePath + "/circles/" + joined.Circle.ID.String() +
+			"/invites/" + newID[core.Invite](h).String(),
+	})
+	h.requireProblem(revoke, apierr.CodeSessionRequired)
 }
 
 // `/me` is how a client discovers what it may do, and an instance grant has to reach it: an admin
