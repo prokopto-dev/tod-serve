@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/store"
 )
 
 // AddProviderRequest is one new row of the instance's provider registry.
@@ -133,8 +134,7 @@ func (s *Service) AddProvider(ctx context.Context, req AddProviderRequest) (Prov
 	}
 
 	if _, err := s.store.ProviderByKey(ctx, key); err == nil {
-		return Provider{}, NewError(CodeConflict,
-			"a provider with that key already exists on this instance", nil)
+		return Provider{}, duplicateKeyError(nil)
 	} else if !errors.Is(err, ErrNotFound) {
 		return Provider{}, err
 	}
@@ -151,6 +151,18 @@ func (s *Service) AddProvider(ctx context.Context, req AddProviderRequest) (Prov
 
 	created, err := s.store.CreateProvider(ctx, candidate, now)
 	if err != nil {
+		// The two preflight reads above are outside this write, so a second request that passed
+		// them a moment earlier can commit first and leave this one losing on
+		// `ux_identity_provider_key` or one of the two partial kind indexes. The database is the
+		// authority either way; what must not happen is the documented `409` becoming a `500`
+		// because the loser's answer depended on which of two identical requests was slower.
+		//
+		// Coded HERE rather than in the adapter because the CONFLICT is this function's rule —
+		// the adapter knows a constraint was violated and not which of them means "already
+		// exists".
+		if store.IsUniqueViolation(err) {
+			return Provider{}, duplicateProviderError(candidate, err)
+		}
 		return Provider{}, err
 	}
 	// The key and the kind, never the secret. An operator reading a log to find out what changed
@@ -235,6 +247,26 @@ func (s *Service) RemoveProvider(ctx context.Context, id string) (Provider, erro
 	s.log.InfoContext(ctx, "identity provider removed",
 		"provider_key", current.Key, "kind", string(current.Kind))
 	return current, nil
+}
+
+// duplicateProviderError is the answer to "something with these identifying values is already
+// there", whichever of the three unique indexes said so.
+//
+// It cannot tell which one from the driver's error without matching on a message, so it names both
+// possibilities. A caller who has just been told their key is taken and whose key is unique reads
+// the second half; the alternative is a 500.
+func duplicateProviderError(candidate Provider, cause error) *Error {
+	if candidate.Kind == KindDiscord || candidate.Kind == KindLocal {
+		return NewError(CodeConflict, fmt.Sprintf(
+			"a provider with that key, or another %q provider, already exists on this instance: "+
+				"there is at most one of each of those", candidate.Kind), cause)
+	}
+	return duplicateKeyError(cause)
+}
+
+func duplicateKeyError(cause error) *Error {
+	return NewError(CodeConflict,
+		"a provider with that key already exists on this instance", cause)
 }
 
 // checkKindIsFree refuses a second `discord` or a second `local` row.

@@ -277,6 +277,111 @@ func TestCreateIdentityProvider_AKindMismatch_SaysWhatIsMissing(t *testing.T) {
 	require.Contains(t, got.Problem.Detail, "client id")
 }
 
+// The idempotency hash covers every field the request carries, so a second request with the same
+// key and a DIFFERENT body is `idempotency_key_reused` rather than a replay of the first answer.
+//
+// It is driven field by field over the whole body rather than over a chosen one: the failure this
+// catches is a field left out of the hash, and any field left out looks exactly like every other
+// field that is in it until somebody changes that one. A replay here means an operator changed
+// `enabled` or an endpoint, got `200` and their original provider back, and believed the change
+// had landed.
+func TestCreateIdentityProvider_AReusedKeyWithADifferentBody_IsRefused(t *testing.T) {
+	t.Parallel()
+
+	const base = `{"key":"corp","kind":"oidc","display_name":"Corp SSO","enabled":false,
+	               "issuer":"https://a.example.com","authorization_endpoint":"https://a.example.com/authorize",
+	               "jwks_uri":"https://a.example.com/jwks","subject_claim":"sub",
+	               "client_id":"tod-a","client_secret":"secret-a",
+	               "redirect_uri":"https://tod.example.com/cb",
+	               "token_endpoint":"https://a.example.com/token",
+	               "acknowledge_weak_revocation":false}`
+
+	// Each entry changes exactly one field of the body above. The client secret is deliberately
+	// absent: it is elided from the hash to a presence marker, and the case below covers that.
+	changed := []struct {
+		field string
+		body  string
+	}{
+		{"key", strings.Replace(base, `"key":"corp"`, `"key":"other"`, 1)},
+		{"kind", strings.Replace(base, `"kind":"oidc"`, `"kind":"discord"`, 1)},
+		{"display_name", strings.Replace(base, `"Corp SSO"`, `"Corp SSO 2"`, 1)},
+		{"enabled", strings.Replace(base, `"enabled":false`, `"enabled":true`, 1)},
+		{"issuer", strings.Replace(base, `https://a.example.com"`, `https://b.example.com"`, 1)},
+		{"authorization_endpoint", strings.Replace(base, `a.example.com/authorize`, `b.example.com/authorize`, 1)},
+		{"jwks_uri", strings.Replace(base, `a.example.com/jwks`, `b.example.com/jwks`, 1)},
+		{"subject_claim", strings.Replace(base, `"subject_claim":"sub"`, `"subject_claim":"oid"`, 1)},
+		{"client_id", strings.Replace(base, `"tod-a"`, `"tod-b"`, 1)},
+		{"redirect_uri", strings.Replace(base, `/cb"`, `/callback"`, 1)},
+		{"token_endpoint", strings.Replace(base, `a.example.com/token`, `b.example.com/token`, 1)},
+		{"acknowledge_weak_revocation", strings.Replace(base,
+			`"acknowledge_weak_revocation":false`, `"acknowledge_weak_revocation":true`, 1)},
+		// The secret is elided to "one was sent" / "none was sent", so REMOVING it is a different
+		// request. Two different secrets are not, and that is the deliberate cost of keeping the
+		// value out of `idempotency_record`.
+		{"client_secret removed", strings.Replace(base, `"client_secret":"secret-a",`, ``, 1)},
+	}
+
+	for _, tt := range changed {
+		t.Run(tt.field, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			session, owner := h.adminSession(t)
+			h.grantInstance(owner, authz.PermissionInstanceSecurityManage)
+			const path = api.BasePath + "/admin/identity-providers"
+			headers := map[string]string{api.IdempotencyKeyHeader: "one-key"}
+
+			first := h.do(request{
+				Method: http.MethodPost, Path: path, Session: session,
+				Headers: headers, Body: base,
+			})
+			require.Equal(t, http.StatusOK, first.Status, first.Body)
+
+			require.NotEqual(t, base, tt.body, "the %s case changes nothing", tt.field)
+			second := h.do(request{
+				Method: http.MethodPost, Path: path, Session: session,
+				Headers: headers, Body: tt.body,
+			})
+			h.requireProblem(second, apierr.CodeIdempotencyKeyReused)
+		})
+	}
+
+	// And the other direction: the identical body with the same key REPLAYS, which is what makes
+	// the header worth sending at all. A retry carrying the same secret hashes the same way.
+	t.Run("an identical retry replays", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		session, owner := h.adminSession(t)
+		h.grantInstance(owner, authz.PermissionInstanceSecurityManage)
+		const path = api.BasePath + "/admin/identity-providers"
+		headers := map[string]string{api.IdempotencyKeyHeader: "retry-key"}
+
+		first := h.do(request{
+			Method: http.MethodPost, Path: path, Session: session, Headers: headers, Body: base,
+		})
+		require.Equal(t, http.StatusOK, first.Status, first.Body)
+		again := h.do(request{
+			Method: http.MethodPost, Path: path, Session: session, Headers: headers, Body: base,
+		})
+		require.Equal(t, http.StatusOK, again.Status, again.Body)
+		require.Equal(t, first.Body, again.Body)
+
+		// One `corp` row, not two: the replay answered from the record rather than writing again.
+		// (The instance's `local` provider is seeded by the harness and is beside the point here.)
+		listed := h.do(request{Method: http.MethodGet, Path: path, Session: session})
+		var page struct {
+			Items []api.AdminIdentityProvider `json:"items"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(listed.Body), &page))
+		corp := 0
+		for _, item := range page.Items {
+			if item.Key == "corp" {
+				corp++
+			}
+		}
+		require.Equal(t, 1, corp)
+	})
+}
+
 // A provider somebody has joined through cannot be deleted, because foreign keys are NO ACTION
 // everywhere and removing it would orphan their identities. The 409 says to disable it instead,
 // which is the operation that actually stops new joins.

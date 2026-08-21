@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/core"
@@ -187,11 +188,25 @@ func (s *Server) registerAdmin() error {
 					return nil, apierr.New(apierr.CodeUnauthenticated, "no principal on the request")
 				}
 				key, _ := IdempotencyKeyFrom(ctx)
-				// The client secret is deliberately absent from the request hash. A retry carrying
-				// the same secret hashes the same way without the secret ever reaching the
-				// idempotency record, which is a table read by more code than this handler.
-				hash := hashBody("createIdentityProvider", in.Body.Key, in.Body.Kind,
-					in.Body.DisplayName, in.Body.ClientID, in.Body.Issuer, in.Body.RedirectURI)
+				// EVERY field the request carries, because the hash is what decides whether a
+				// second request with the same key is a retry or a different request. A field
+				// left out of it is a field somebody can change while the key replays the first
+				// response — the change silently does nothing, and `idempotency_key_reused`,
+				// which exists to say exactly that, is never sent.
+				//
+				// The client secret is the one exception and is ELIDED rather than omitted: what
+				// is hashed is whether one was sent. A genuine retry carries the same body and so
+				// the same marker, and the secret never reaches `idempotency_record` — a table
+				// read by more code than this handler, and one whose stored hash would otherwise
+				// be an oracle for a guessed secret.
+				hash := hashBody("createIdentityProvider",
+					in.Body.Key, in.Body.Kind, in.Body.DisplayName,
+					strconv.FormatBool(in.Body.Enabled),
+					in.Body.Issuer, in.Body.AuthorizationEndpoint, in.Body.JWKSURI,
+					in.Body.SubjectClaim,
+					in.Body.ClientID, secretMarker(in.Body.ClientSecret),
+					in.Body.RedirectURI, in.Body.TokenEndpoint,
+					strconv.FormatBool(in.Body.AcknowledgeWeakRevocation))
 
 				out, _, err := runIdempotentHandler(ctx, s.api, p, key, hash,
 					func(ctx context.Context) (AdminIdentityProviderResponse, error) {
@@ -300,6 +315,15 @@ func (s *Server) registerAdmin() error {
 				}, nil
 			})),
 	)
+}
+
+// secretMarker renders a write-only field for the idempotency hash: whether one was sent, and
+// never what it was. See the call site for why the value itself must not be hashed.
+func secretMarker(secret string) string {
+	if secret == "" {
+		return "client_secret:absent"
+	}
+	return "client_secret:present"
 }
 
 // fromIdentityError renders internal/identity's coded error as the problem the edge sends.
