@@ -27,9 +27,11 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/identity/identitysql"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
+	"github.com/prokopto-dev/tod-serve/internal/projection"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
+	"github.com/prokopto-dev/tod-serve/internal/tod"
 )
 
 // The fixture's fixed instant. Every time-dependent assertion here is relative to it, so a test
@@ -62,6 +64,8 @@ type harness struct {
 	invites     *invite.Service
 	members     *membership.Service
 	catalogue   *catalogue.Service
+	tods        *tod.Service
+	states      *projection.Service
 	invalidator *recordingInvalidator
 }
 
@@ -77,7 +81,6 @@ func newHarness(t *testing.T) *harness {
 
 	clk := clock.NewTest(fixtureNow)
 	ids := core.NewGenerator(rand.Reader)
-	invalidator := &recordingInvalidator{}
 	minter, err := auth.NewMinter(testPepper, rand.Reader)
 	require.NoError(t, err)
 	codec, err := auth.NewSessionCodec(testSessionKey)
@@ -85,6 +88,10 @@ func newHarness(t *testing.T) *harness {
 	authn, err := auth.NewAuthenticator(db, minter, codec, clk, log, auth.DefaultStepUpWindow)
 	require.NoError(t, err)
 	svc := newServices(t, db, clk, ids, minter, log)
+	// The recorder WRAPS the real projection rather than standing in for it. Both questions are
+	// worth answering in this suite: "did the route push the invalidation" needs the record, and
+	// "did the board actually stop serving the old window" needs the real thing behind it.
+	invalidator := &recordingInvalidator{delegate: svc.states}
 
 	server, err := api.New(api.Config{
 		Version:     "0.0.0-test",
@@ -95,6 +102,8 @@ func newHarness(t *testing.T) *harness {
 		Invites:     svc.invites,
 		Identities:  svc.identities,
 		Catalogue:   svc.catalogue,
+		Tods:        svc.tods,
+		States:      svc.states,
 		Invalidator: invalidator,
 		Clock:       clk,
 		Log:         log,
@@ -111,7 +120,8 @@ func newHarness(t *testing.T) *harness {
 		t: t, server: server, store: db, clock: clk, ids: ids,
 		minter: minter, codec: codec, handler: server.Handler(),
 		circles: svc.circles, invites: svc.invites, members: svc.members,
-		catalogue: svc.catalogue, invalidator: invalidator,
+		catalogue: svc.catalogue, tods: svc.tods, states: svc.states,
+		invalidator: invalidator,
 	}
 }
 
@@ -124,6 +134,8 @@ type wiredServices struct {
 	members    *membership.Service
 	identities *identity.Service
 	catalogue  *catalogue.Service
+	tods       *tod.Service
+	states     *projection.Service
 }
 
 func newServices(
@@ -159,10 +171,18 @@ func newServices(
 	// so every test that does not deliberately seed one is exercising it.
 	catalogues, err := catalogue.New(catalogue.Config{Store: db, Clock: clk, IDs: ids, Log: log})
 	require.NoError(t, err)
+	tods, err := tod.New(tod.Config{
+		Store: db, Clock: clk, IDs: ids, Catalogue: catalogues, Log: log,
+	})
+	require.NoError(t, err)
+	states, err := projection.New(projection.Config{
+		Store: db, Clock: clk, Catalogue: catalogues, Log: log,
+	})
+	require.NoError(t, err)
 
 	return wiredServices{
 		circles: circles, invites: invites, members: members, identities: identities,
-		catalogue: catalogues,
+		catalogue: catalogues, tods: tods, states: states,
 	}
 }
 
@@ -186,6 +206,8 @@ func newHarnessWithoutMetrics(t *testing.T) *harness {
 		Invites:             svc.invites,
 		Identities:          svc.identities,
 		Catalogue:           svc.catalogue,
+		Tods:                svc.tods,
+		States:              svc.states,
 		Invalidator:         h.invalidator,
 		Clock:               h.clock,
 		Log:                 log,
@@ -502,29 +524,39 @@ type timerChange struct {
 type recordingInvalidator struct {
 	mu      sync.Mutex
 	changes []timerChange
-	// err, when set, is returned by both methods. A write whose invalidation failed must not
-	// report success, and that is only assertable if the fake can fail.
+	// delegate is the REAL projection. Recording and doing are both wanted: the record answers
+	// "did this route push the invalidation", and the delegate is what makes the next board read
+	// in the same test show the new window rather than the cached old one.
+	delegate api.TimerInvalidator
+	// err, when set, is returned by both methods INSTEAD of delegating. A write whose invalidation
+	// failed must not report success, and that is only assertable if the fake can fail.
 	err error
 }
 
 func (r *recordingInvalidator) OnTimerChange(
-	_ context.Context, circleID core.CircleID, targetID core.RaidTargetID,
+	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.changes = append(r.changes,
 		timerChange{Circle: circleID, Target: targetID, Scope: "circle"})
-	return r.err
+	if r.err != nil {
+		return r.err
+	}
+	return r.delegate.OnTimerChange(ctx, circleID, targetID)
 }
 
 func (r *recordingInvalidator) OnCatalogueTimerChange(
-	_ context.Context, server core.Server, targetID core.RaidTargetID,
+	ctx context.Context, server core.Server, targetID core.RaidTargetID,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.changes = append(r.changes,
 		timerChange{Server: server, Target: targetID, Scope: "instance"})
-	return r.err
+	if r.err != nil {
+		return r.err
+	}
+	return r.delegate.OnCatalogueTimerChange(ctx, server, targetID)
 }
 
 // recorded returns the pushes so far.

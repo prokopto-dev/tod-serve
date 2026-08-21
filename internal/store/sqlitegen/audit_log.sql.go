@@ -91,19 +91,22 @@ func (q *Queries) GetLatestAuditLogEntry(ctx context.Context, circleID string) (
 
 const listAuditLog = `-- name: ListAuditLog :many
 SELECT id, circle_id, actor_membership_id, "action", entity_type, entity_id, detail_json, prev_hash, hash, created_at FROM audit_log
-WHERE circle_id = ?1 AND id < ?2
+WHERE circle_id = ?1
+  AND (CAST(?2 AS TEXT) = '' OR id < ?2)
 ORDER BY id DESC
 LIMIT ?3
 `
 
 type ListAuditLogParams struct {
 	CircleID string
-	BeforeID string
+	AfterID  string
 	RowLimit int64
 }
 
+// Newest first. An empty cursor is the first page: a caller should not have to know a sentinel id
+// that sorts above every ULID in order to read the beginning of a collection.
 func (q *Queries) ListAuditLog(ctx context.Context, arg ListAuditLogParams) ([]AuditLog, error) {
-	rows, err := q.db.QueryContext(ctx, listAuditLog, arg.CircleID, arg.BeforeID, arg.RowLimit)
+	rows, err := q.db.QueryContext(ctx, listAuditLog, arg.CircleID, arg.AfterID, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}

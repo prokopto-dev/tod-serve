@@ -35,9 +35,19 @@ import (
 // **The fix is the one `audit.Append` already uses: take the writing transaction's query set, so
 // the derived row is written or rolled back with the change that caused it.** Doing that means
 // threading a `*sqlitegen.Queries` through the projection's `recompute`, `storeOrDrop`,
-// `revokedReporters` and `catalogue.ResolveTimer`, which is a refactor of a package this one does
-// not contain. It is named here rather than left implied, and it belongs to whoever wires
-// `internal/projection` — the same edit list [UnprojectedTimers] carries.
+// `revokedReporters` and `catalogue.ResolveTimer`.
+//
+// **It is still open, deliberately, and it is not a small edit.** The catalogue's write methods own
+// their own transactions — `PutOverride` opens one and appends the audit row inside it — so
+// threading the invalidation into that transaction means either the catalogue calling the
+// projection, which inverts a dependency that currently runs one way and which this port exists to
+// avoid, or the handler owning the transaction and passing it down through both packages, which is
+// a restructure of every catalogue write. Neither is a review-time change.
+//
+// What is closed: every push is idempotent and its FAILURE fails the request, so a retry converges
+// and no caller is told success over a stale board. What is left is the crashed process, whose
+// backstop is the nightly verify job — bounded, recorded as `TimerPushIsNotTransactional` in
+// docs/concepts/invariants.md, and owned rather than implied.
 type TimerInvalidator interface {
 	// OnTimerChange recomputes one target for ONE circle and records `timer_change` as the
 	// reason. It is what a circle-scoped override write calls.
@@ -50,31 +60,4 @@ type TimerInvalidator interface {
 	// server that has not overridden it — and leaves alone every circle that has. Collapsing the
 	// two into one signature would put that fan-out decision behind a nil check.
 	OnCatalogueTimerChange(ctx context.Context, server core.Server, targetID core.RaidTargetID) error
-}
-
-// UnprojectedTimers is a [TimerInvalidator] for a binary that has no projection to invalidate.
-//
-// **It is temporary and it is scheduled for deletion.** `internal/projection` maintains
-// `target_state_cache`; until it is wired into this binary there is no cache, nothing writes a
-// derived row, and so there is nothing a moved window could make stale. On THAT binary this type
-// is correct rather than a shortcut.
-//
-// The moment the projection lands it stops being correct, silently, which is precisely the shape
-// of failure this file exists to prevent. So it is not left to a comment:
-// TestWiring_TimerInvalidation_IsStillTheStub asserts this is what `cmd/tod-serve` passes and says
-// what to do the day it is wrong. Whoever lands the projection is sent here to delete this type
-// and pass the real service — the same way `uncoveredCircleRoutes` makes closing a tenancy gap an
-// edit somebody has to make rather than one they might.
-type UnprojectedTimers struct{}
-
-// OnTimerChange does nothing, because there is nothing to invalidate. See the type comment.
-func (UnprojectedTimers) OnTimerChange(context.Context, core.CircleID, core.RaidTargetID) error {
-	return nil
-}
-
-// OnCatalogueTimerChange does nothing, for the same reason.
-func (UnprojectedTimers) OnCatalogueTimerChange(
-	context.Context, core.Server, core.RaidTargetID,
-) error {
-	return nil
 }

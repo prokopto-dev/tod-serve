@@ -5,10 +5,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/tod-serve/internal/catalogue"
+	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
+	"github.com/prokopto-dev/tod-serve/internal/store"
+	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 )
 
 // The timer numbers in this file are invented and obviously so. They are not P99 data and must
@@ -220,4 +225,145 @@ func TestSeed_WithNoVerb_SaysWhichHalfShipsAndWhichDoesNot(t *testing.T) {
 	require.True(t,
 		strings.Contains(out, "do NOT") || strings.Contains(out, "tod-serve-p99-seed"),
 		"the help does not say that timer data ships from somewhere else: %s", out)
+}
+
+// TestSeedTimers_RecomputesEveryBoardTheWindowsMoved is the invalidation gate for the one write
+// path that has no route.
+//
+// `seed timers --file` writes `raid_target_timer`, which is instance-wide and per-server, so a
+// single run moves the window for every circle pinned to that server. It sits OUTSIDE the route
+// registry, so the architectural gate that holds every timer-writing ROUTE to pushing an
+// invalidation cannot see this command — and the failure it would miss is the largest one of its
+// kind: an operator seeds sixty windows and every board on that server goes on serving the old
+// ones until the nightly job catches it, up to twenty-four hours later.
+//
+// So the assertion is about the derived state, not about the timer row: the board must show the
+// seeded window on the very next read.
+func TestSeedTimers_RecomputesEveryBoardTheWindowsMoved(t *testing.T) {
+	t.Parallel()
+	db := migratedStore(t)
+	_, err := captureCLI(t, "seed", "targets", "--db", db.Path())
+	require.NoError(t, err)
+
+	circleID, targets, died := seedACircleWithAToD(t, db, "Naggy", "Vox")
+	targetID := targets[0]
+
+	// Before the seed there is no timer anywhere, so the cached board says `no_timer`.
+	before, err := db.Queries().GetTargetState(t.Context(), sqlitegen.GetTargetStateParams{
+		CircleID: circleID, TargetID: targetID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, schemaenum.TargetStateStatusNoTimer, before.Status)
+	require.Nil(t, before.WindowOpenAt)
+
+	const openOffsetSeconds = 4 * 60 * 60
+	path := writeSeed(t, `{
+	  "version": 1,
+	  "source": "`+testSeedSource+`",
+	  "timers": [
+	    {"target": "Naggy", "server": "blue", "window_kind": "variance",
+	     "window_open_offset_seconds": 14400, "window_close_offset_seconds": 28800},
+	    {"target": "Vox", "server": "blue", "window_kind": "variance",
+	     "window_open_offset_seconds": 14400, "window_close_offset_seconds": 28800}
+	  ]
+	}`)
+
+	out, err := captureCLI(t, "seed", "timers", "--db", db.Path(), "--file", path)
+	require.NoError(t, err)
+	require.Contains(t, out, "2 timers written")
+	// EVERY window this run moved, not merely one of them. The invariant the timer routes hold is
+	// "after a non-5xx answer the projection has been told", and the zero exit above is this
+	// command's version of that answer — so a run that recomputed 1 of 2 must not reach it.
+	require.Contains(t, out, "2 of 2 moved windows recomputed",
+		"a seed that wrote windows and invalidated nothing leaves every board on that server stale")
+
+	for _, id := range targets {
+		row, stateErr := db.Queries().GetTargetState(t.Context(), sqlitegen.GetTargetStateParams{
+			CircleID: circleID, TargetID: id,
+		})
+		require.NoError(t, stateErr)
+		require.NotEqual(t, schemaenum.TargetStateStatusNoTimer, row.Status,
+			"every board the seed moved was recomputed, not just the first")
+	}
+
+	after, err := db.Queries().GetTargetState(t.Context(), sqlitegen.GetTargetStateParams{
+		CircleID: circleID, TargetID: targetID,
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, schemaenum.TargetStateStatusNoTimer, after.Status,
+		"the board picked up the seeded window without waiting for the nightly job")
+	// Which window status it lands in depends on the wall clock — this verb runs on the system
+	// clock, deliberately, because it is a real command an operator runs. The bound below is the
+	// assertion that matters and it is exact.
+	require.NotNil(t, after.WindowOpenAt)
+	require.Equal(t, died+openOffsetSeconds*int64(core.MicrosPerSecond), *after.WindowOpenAt)
+	require.NotNil(t, after.ChangeReason)
+	require.Equal(t, schemaenum.TargetStateChangeReasonTimerChange, *after.ChangeReason,
+		"and says why, because nothing was reported")
+}
+
+// seedACircleWithAToD builds one circle with one member and a kill report about each of
+// `targetNames`, then derives its board once so there are cached rows for the seed to move. It
+// returns the circle id, the target ids and the `died_at` the windows are measured from.
+func seedACircleWithAToD(
+	t *testing.T, db *store.DB, targetNames ...string,
+) (string, []string, int64) {
+	t.Helper()
+	ctx := t.Context()
+	q := db.Queries()
+	const at = int64(1_755_483_247_000_000)
+	died := at - int64(time.Hour/time.Microsecond)
+
+	ids := []string{
+		"01K3TGT8N9M4X0Q7R2VB6C5E1E", "01K3TGT8N9M4X0Q7R2VB6C5E2F",
+		"01K3TGT8N9M4X0Q7R2VB6C5E3G", "01K3TGT8N9M4X0Q7R2VB6C5E4H",
+		"01K3TGT8N9M4X0Q7R2VB6C5E5J",
+	}
+	circleID, memberID, reportID, providerID, identityID := ids[0], ids[1], ids[2], ids[3], ids[4]
+
+	_, err := q.CreateCircle(ctx, sqlitegen.CreateCircleParams{
+		CircleID: circleID, Name: "Riot", NameNorm: "riot", Server: schemaenum.ServerBlue,
+		Timezone: "UTC", MinReportersToSupersede: 1, RevokeInvalidatesInvites: 1,
+		State: schemaenum.CircleStateActive, CreatedAt: at, UpdatedAt: at,
+	})
+	require.NoError(t, err)
+	_, err = q.CreateIdentityProvider(ctx, sqlitegen.CreateIdentityProviderParams{
+		ID: providerID, Key: "local", Kind: schemaenum.IdentityProviderKindLocal,
+		DisplayName: "Local", Enabled: 1, VerifiableSubject: 0, CreatedAt: at, UpdatedAt: at,
+	})
+	require.NoError(t, err)
+	_, err = q.CreateIdentity(ctx, sqlitegen.CreateIdentityParams{
+		ID: identityID, ProviderID: providerID, Subject: identityID,
+		DisplayName: "Tankguy", CreatedAt: at, UpdatedAt: at,
+	})
+	require.NoError(t, err)
+	_, err = q.CreateMembership(ctx, sqlitegen.CreateMembershipParams{
+		ID: memberID, CircleID: circleID, IdentityID: &identityID,
+		Kind: schemaenum.MembershipKindHuman, DisplayName: "Tankguy", DisplayNameNorm: "tankguy",
+		Role: schemaenum.MembershipRoleMember, JoinedAt: at, CreatedAt: at, UpdatedAt: at,
+	})
+	require.NoError(t, err)
+
+	targetIDs := make([]string, 0, len(targetNames))
+	for i, name := range targetNames {
+		target, lookupErr := q.GetRaidTargetByAliasNorm(ctx, core.Normalise(name))
+		require.NoError(t, lookupErr)
+		// The report ids differ only in their last character, which is enough for a fixture and
+		// keeps them readable beside each other in a failure.
+		_, err = q.CreateTodReport(ctx, sqlitegen.CreateTodReportParams{
+			ID:       reportID[:len(reportID)-1] + string(rune('A'+i)),
+			CircleID: circleID, TargetID: target.ID,
+			Kind: schemaenum.TodReportKindKill, DiedAt: died, ReportedAt: at,
+			ReporterMembershipID: memberID, Source: schemaenum.TodReportSourceLogLine,
+			SelfConfidence: schemaenum.TodReportSelfConfidenceCertain,
+		})
+		require.NoError(t, err)
+		targetIDs = append(targetIDs, target.ID)
+	}
+
+	// Derive once, so the seed has cached rows to move rather than an empty table that would make
+	// this test pass for the wrong reason.
+	_, err = captureCLI(t, "rebuild-states", "--db", db.Path())
+	require.NoError(t, err)
+	return circleID, targetIDs, died
 }

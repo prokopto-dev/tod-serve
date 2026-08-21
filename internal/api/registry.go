@@ -351,7 +351,7 @@ func routes() []Route {
 			Auth:         AuthPermission,
 			Permissions:  []authz.Permission{authz.PermissionCircleRead},
 			Scopes:       []authz.Scope{authz.ScopeCircleRead},
-			CircleScoped: true, ETag: true,
+			CircleScoped: true, ETag: true, ConditionalRead: true,
 			Summary: "Read the circle",
 		},
 		{
@@ -390,7 +390,7 @@ func routes() []Route {
 			Path: "/circles/{circle_id}/members/{member_id}", Versioned: true, Auth: AuthPermission,
 			Permissions:  []authz.Permission{authz.PermissionMemberRead},
 			Scopes:       []authz.Scope{authz.ScopeMemberRead},
-			CircleScoped: true, ETag: true,
+			CircleScoped: true, ETag: true, ConditionalRead: true,
 			Summary: "Read one member",
 		},
 		{
@@ -492,7 +492,7 @@ func routes() []Route {
 			Versioned: true, Auth: AuthPermission,
 			Permissions:  []authz.Permission{authz.PermissionTodRead},
 			Scopes:       []authz.Scope{authz.ScopeTodRead},
-			CircleScoped: true, ETag: true,
+			CircleScoped: true, ETag: true, ConditionalRead: true,
 			Summary: "The board: every target's derived state, window and evidence",
 		},
 		{
@@ -500,7 +500,7 @@ func routes() []Route {
 			Path: "/circles/{circle_id}/tods/{target_id}", Versioned: true, Auth: AuthPermission,
 			Permissions:  []authz.Permission{authz.PermissionTodRead},
 			Scopes:       []authz.Scope{authz.ScopeTodRead},
-			CircleScoped: true, ETag: true,
+			CircleScoped: true, ETag: true, ConditionalRead: true,
 			Summary: "One target: state, window, evidence and alternatives",
 		},
 		{

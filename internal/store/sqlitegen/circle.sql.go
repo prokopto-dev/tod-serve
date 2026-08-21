@@ -148,6 +148,94 @@ func (q *Queries) ListCirclesForIdentity(ctx context.Context, identityID *string
 	return items, nil
 }
 
+const listLiveCircles = `-- name: ListLiveCircles :many
+SELECT id, name, name_norm, description, server, timezone, min_reporters_to_supersede, revoke_invalidates_invites, state, deleted_at, created_at, updated_at FROM circle WHERE deleted_at IS NULL ORDER BY id
+`
+
+// tenancy: the projection's rebuild and its nightly verify job sweep every circle. They have no
+// caller and no tenant to be filtered by -- a maintenance job that could only see one circle would
+// leave every other circle's cache unverified, which is the whole thing the job exists to stop.
+func (q *Queries) ListLiveCircles(ctx context.Context) ([]Circle, error) {
+	rows, err := q.db.QueryContext(ctx, listLiveCircles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Circle{}
+	for rows.Next() {
+		var i Circle
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.NameNorm,
+			&i.Description,
+			&i.Server,
+			&i.Timezone,
+			&i.MinReportersToSupersede,
+			&i.RevokeInvalidatesInvites,
+			&i.State,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLiveCirclesOnServer = `-- name: ListLiveCirclesOnServer :many
+SELECT id, name, name_norm, description, server, timezone, min_reporters_to_supersede, revoke_invalidates_invites, state, deleted_at, created_at, updated_at FROM circle
+WHERE deleted_at IS NULL AND server = ?1
+ORDER BY id
+`
+
+// tenancy: a catalogue timer is instance-wide and PER SERVER, so writing one moves the window for
+// every circle pinned to that server. There is no single tenant to filter by -- the whole point of
+// this query is the fan-out, and a version that took a circle_id could not express it.
+func (q *Queries) ListLiveCirclesOnServer(ctx context.Context, server string) ([]Circle, error) {
+	rows, err := q.db.QueryContext(ctx, listLiveCirclesOnServer, server)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Circle{}
+	for rows.Next() {
+		var i Circle
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.NameNorm,
+			&i.Description,
+			&i.Server,
+			&i.Timezone,
+			&i.MinReportersToSupersede,
+			&i.RevokeInvalidatesInvites,
+			&i.State,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const softDeleteCircle = `-- name: SoftDeleteCircle :one
 UPDATE circle
 SET deleted_at = ?1, updated_at = ?2

@@ -13,8 +13,11 @@ INSERT INTO audit_log (
 RETURNING *;
 
 -- name: ListAuditLog :many
+-- Newest first. An empty cursor is the first page: a caller should not have to know a sentinel id
+-- that sorts above every ULID in order to read the beginning of a collection.
 SELECT * FROM audit_log
-WHERE circle_id = sqlc.arg(circle_id) AND id < sqlc.arg(before_id)
+WHERE circle_id = sqlc.arg(circle_id)
+  AND (CAST(sqlc.arg(after_id) AS TEXT) = '' OR id < sqlc.arg(after_id))
 ORDER BY id DESC
 LIMIT sqlc.arg(row_limit);
 

@@ -23,18 +23,20 @@ import (
 // the flag has to predict which of them answers `304`. A flag set on a route that does not
 // revalidate is red here, and so is a route that revalidates without declaring it.
 //
-// # The routes that do not revalidate, pinned rather than noted
+// # Every ETag-returning GET now revalidates, and by construction rather than by habit
 //
-// `getCircle` and `getMember` both declare `If-None-Match`, return an `ETag`, and never read the
-// header — so a client implementing conditional requests against either pays for a full body on
-// every read while believing it does not. Both are pre-existing and belong to routes this
-// milestone does not own, so they are recorded here as facts instead of being fixed in a PR that
-// would then carry a second concern.
+// `getCircle` and `getMember` were recorded here as routes that returned an `ETag`, declared
+// `If-None-Match` and never read it — so a client implementing conditional requests against either
+// paid for a full body on every read while believing it did not. They are closed, along with the
+// two the projection added, by [withConditionalGet]: one middleware turns any `200` whose ETag the
+// caller already holds into a `304`, so the behaviour is not something each handler has to
+// remember. `getRaidTarget` still branches in its own handler and is left alone — a handler that
+// answers `304` itself passes straight through, because the middleware only rewrites a `200`.
 //
-// TO CLOSE EITHER: give its output a `Status int`, branch on
-// `MatchesIfNoneMatch(in.IfNoneMatch, etag)` exactly as `getRaidTarget` does, and set
-// `ConditionalRead: true` on its registry row. This test then flips to asserting the 304 for it,
-// with no edit here at all — which is the point of driving the registry rather than a list.
+// That makes the pairing this test asserts total rather than per-route, which
+// TestRouteRegistry_EveryETagReturningGET_DeclaresItsConditionalRead states directly: with the
+// middleware in the chain, an ETag-returning GET whose row omits `ConditionalRead` emits a `304`
+// the document does not describe.
 func TestRouteRegistry_ConditionalRead_MatchesWhatTheRouteActuallyDoes(t *testing.T) {
 	t.Parallel()
 
@@ -62,6 +64,24 @@ func TestRouteRegistry_ConditionalRead_MatchesWhatTheRouteActuallyDoes(t *testin
 			token := h.seedToken(member, allScopes()...)
 			return api.BasePath + "/circles/" + circleID.String() +
 				"/members/" + member.String(), request{Token: token}
+		},
+		api.OpListTargetStates: func(t *testing.T, h *harness) (string, request) {
+			t.Helper()
+			circleID := h.seedCircle("Riot")
+			token := h.seedToken(h.seedMember(circleID, authz.RoleMember), allScopes()...)
+			// Driven with a target on the board, so the tag covers something: an empty board is
+			// the one shape where two different pages could hash alike for the wrong reason.
+			h.seedTarget("Vulak`Aerr", "Temple of Veeshan")
+			return api.BasePath + "/circles/" + circleID.String() + "/tods",
+				request{Token: token}
+		},
+		api.OpGetTargetState: func(t *testing.T, h *harness) (string, request) {
+			t.Helper()
+			circleID := h.seedCircle("Riot")
+			token := h.seedToken(h.seedMember(circleID, authz.RoleMember), allScopes()...)
+			target := h.seedTarget("Lord Nagafen", "Nagafen's Lair")
+			return api.BasePath + "/circles/" + circleID.String() + "/tods/" +
+				target.ID.String(), request{Token: token}
 		},
 	}
 
@@ -100,6 +120,21 @@ func TestRouteRegistry_ConditionalRead_MatchesWhatTheRouteActuallyDoes(t *testin
 						"declares a 304 nothing emits, and a client waits for a response that "+
 						"cannot arrive", route.ID, got.Status)
 				require.Empty(t, got.Body, "%s answered 304 with a body", route.ID)
+
+				// ONE SHAPE, for every route. RFC 9110 §15.4.5: a 304 carries the validators and
+				// not the representation headers, because there is no representation to describe.
+				// This is asserted rather than assumed because there used to be two shapes — a
+				// hand-rolled branch in `getRaidTarget` that sent `Content-Type: application/json`
+				// with no body, beside the middleware's. Collapsing them is only worth doing if
+				// something notices them diverging again, and a caching proxy notices before we do.
+				require.Empty(t, got.Header.Get("Content-Type"),
+					"%s answered 304 with a Content-Type, which describes a body it did not send",
+					route.ID)
+				require.Empty(t, got.Header.Get("Content-Length"),
+					"%s answered 304 with a Content-Length", route.ID)
+				require.Equal(t, etag, got.Header.Get(api.ETagHeader),
+					"%s answered 304 without repeating the ETag, so the next revalidation has "+
+						"nothing to send", route.ID)
 				return
 			}
 			require.Equal(t, http.StatusOK, got.Status,
@@ -129,4 +164,31 @@ func servedByHarness(t *testing.T, id api.OperationID) bool {
 		}
 	}
 	return false
+}
+
+// TestRouteRegistry_EveryETagReturningGET_DeclaresItsConditionalRead is the registry-level half of
+// the gate above, and it exists because [withConditionalGet] is a MIDDLEWARE rather than a habit.
+//
+// Revalidation is not opt-in per handler: one middleware turns any `200` whose entity tag the
+// caller already holds into a `304`, for every ETag-returning GET in the chain. So the day somebody
+// adds such a route and leaves `ConditionalRead` off, the route emits a `304` the document does not
+// describe — and a generated client treats it as an undocumented error. The behavioural test above
+// only sees routes with a driver; this one sees every row.
+//
+// The converse is deliberately NOT asserted here: a `ConditionalRead` on something that is not an
+// ETag-returning GET is caught by the behavioural test, which drives the route and finds no 304.
+func TestRouteRegistry_EveryETagReturningGET_DeclaresItsConditionalRead(t *testing.T) {
+	t.Parallel()
+	checked := 0
+	for _, route := range api.Routes() {
+		if route.Method != http.MethodGet || !route.ETag {
+			continue
+		}
+		checked++
+		require.True(t, route.ConditionalRead,
+			"%s returns an ETag on a GET, so withConditionalGet answers 304 to a caller holding "+
+				"it. Without ConditionalRead the document describes no 304 and a generated client "+
+				"treats a real one as an undocumented error", route.ID)
+	}
+	require.Positive(t, checked, "no ETag-returning GET was checked; the filter is wrong")
 }

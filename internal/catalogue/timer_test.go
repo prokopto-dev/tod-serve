@@ -348,9 +348,9 @@ func TestOverride_Writes_AreAudited(t *testing.T) {
 
 	rows, err := f.store.Queries().ListAuditLog(t.Context(), sqlitegen.ListAuditLogParams{
 		CircleID: circleID.String(),
-		// A ULID sorts as its text, so the highest possible one is the "before" that reads
-		// everything. There is no unbounded variant of this query, deliberately.
-		BeforeID: "ZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+		// An empty cursor is the first page. A caller should not have to know a sentinel id that
+		// sorts above every ULID in order to read the beginning of a collection.
+		AfterID:  "",
 		RowLimit: 100,
 	})
 	require.NoError(t, err)

@@ -76,6 +76,25 @@ type TimerSeedReport struct {
 	// Source is what the file said about itself, echoed back so an operator can see which seed
 	// they just applied rather than trusting the filename.
 	Source string
+	// Changed names every (target, server) window the file set, deduplicated.
+	//
+	// It is reported rather than kept private because a catalogue timer is instance-wide and
+	// per-server: writing one moves the window for every circle pinned to that server that has not
+	// overridden it, and something has to invalidate their derived state. The seed command is the
+	// caller that does it, the same way a route does — [SeededTimer] says why the caller rather
+	// than this function.
+	Changed []SeededTimer
+}
+
+// SeededTimer is one (target, server) window a seed run wrote.
+//
+// The invalidation it implies is pushed by the CALLER, not from inside [Service.ApplySeed], for
+// the same reason the API's `TimerInvalidator` lives beside the handlers: the consumer owns the
+// port. `internal/catalogue` knowing about `internal/projection` would invert a dependency that
+// currently runs one way, and the projection already reads this package for the effective timer.
+type SeededTimer struct {
+	TargetID core.RaidTargetID
+	Server   core.Server
 }
 
 // ParseSeed reads and validates a seed file WITHOUT touching the database.
@@ -245,9 +264,24 @@ func (s *Service) ApplySeed(ctx context.Context, file SeedFile) (TimerSeedReport
 		return TimerSeedReport{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
 
+	changed := make([]SeededTimer, 0, len(rows))
+	seen := make(map[SeededTimer]bool, len(rows))
+	for _, row := range rows {
+		pair := SeededTimer{TargetID: row.target.ID, Server: row.server}
+		if seen[pair] {
+			// A seed naming one (target, server) twice is a last-write-wins upsert, so the window
+			// moved once and the caller invalidates once.
+			continue
+		}
+		seen[pair] = true
+		changed = append(changed, pair)
+	}
+
 	s.log.InfoContext(ctx, "timer seed applied",
 		slog.Int("timers_written", len(rows)), slog.String("source", file.Source))
-	return TimerSeedReport{TimersWritten: len(rows), Source: file.Source}, nil
+	return TimerSeedReport{
+		TimersWritten: len(rows), Source: file.Source, Changed: changed,
+	}, nil
 }
 
 // resolveSeedTarget finds the target one seed row is about.

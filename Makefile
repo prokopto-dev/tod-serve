@@ -91,12 +91,13 @@ test-golden:
 # that stops running the first time somebody is in a hurry; this target is the focused re-run.
 .PHONY: test-integration
 test-integration:
-	$(GO) test -race -count=1 ./internal/store/... ./internal/identity/identitysql/... ./db/...
+	$(GO) test -race -count=1 ./internal/store/... ./internal/identity/identitysql/... ./db/... \
+	  ./internal/tod/... ./internal/projection/...
 
 ## test-tenancy: cross-circle isolation over the route registry
 # Walks the registry rather than a hand-written list, so a circle-scoped route added without
-# coverage is a red test. It is PARTIAL: the circles, members and invites handlers are covered and
-# the ToD, quake, audit, event and timer-override ones are not, so the test logs "N of 27" and
+# coverage is a red test. It is PARTIAL: the circles, members, invites, ToD, quake and audit
+# handlers are covered and the timer-override and event ones are not, so the test logs "N of 27" and
 # enumerates the remainder with the milestone that owns each. `-v` is deliberate — that count is
 # the whole point of running this on its own, and a green tick over a partial route set reported as
 # "the tenancy gate passes" is exactly the failure this repository is built against.

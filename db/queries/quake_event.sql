@@ -20,3 +20,13 @@ SELECT * FROM quake_event
 WHERE circle_id = sqlc.arg(circle_id)
 ORDER BY occurred_at DESC
 LIMIT 1;
+
+-- name: ListQuakeEventsPage :many
+-- The quake log, newest first by id. It pages on the id rather than on occurred_at because the
+-- cursor is the ULID and nothing else: occurred_at is game truth and may be backdated, so a cursor
+-- over it would skip a row that arrived after the page it belongs on.
+SELECT * FROM quake_event
+WHERE circle_id = sqlc.arg(circle_id)
+  AND (CAST(sqlc.arg(after_id) AS TEXT) = '' OR id < sqlc.arg(after_id))
+ORDER BY id DESC
+LIMIT sqlc.arg(row_limit);

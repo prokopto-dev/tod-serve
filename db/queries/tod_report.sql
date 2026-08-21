@@ -30,11 +30,38 @@ WHERE circle_id = sqlc.arg(circle_id)
   AND kind = 'kill';
 
 -- name: ListTodReports :many
--- The id is a ULID, so it is also the cursor: time-ordered, opaque, and free.
-SELECT * FROM tod_report
-WHERE circle_id = sqlc.arg(circle_id) AND id > sqlc.arg(after_id)
-ORDER BY id
+-- The report log, newest first. The id is a ULID, so it is also the cursor: time-ordered, opaque
+-- and free, and an empty cursor is the first page rather than a sentinel a caller has to know.
+--
+-- `retracted` is computed rather than stored, because the retraction is a SEPARATE ROW and the
+-- original is never touched. `include_retracted = 0` hides a retracted kill AND every retraction
+-- row: a retraction the caller can see pointing at a report they cannot is a dangling reference
+-- the client would have to explain.
+SELECT r.*,
+       EXISTS (SELECT 1 FROM tod_report x
+               WHERE x.circle_id = r.circle_id AND x.retracts_report_id = r.id) AS retracted
+FROM tod_report r
+WHERE r.circle_id = sqlc.arg(circle_id)
+  AND (CAST(sqlc.arg(after_id) AS TEXT) = '' OR r.id < sqlc.arg(after_id))
+  AND (CAST(sqlc.narg(target_id) AS TEXT) IS NULL OR r.target_id = sqlc.narg(target_id))
+  AND (CAST(sqlc.narg(died_after) AS INTEGER) IS NULL OR r.died_at >= sqlc.narg(died_after))
+  AND (CAST(sqlc.narg(died_before) AS INTEGER) IS NULL OR r.died_at <= sqlc.narg(died_before))
+  AND (CAST(sqlc.narg(reporter_membership_id) AS TEXT) IS NULL
+       OR r.reporter_membership_id = sqlc.narg(reporter_membership_id))
+  AND (CAST(sqlc.arg(include_retracted) AS INTEGER) = 1
+       OR (r.kind = 'kill'
+           AND NOT EXISTS (SELECT 1 FROM tod_report x
+                           WHERE x.circle_id = r.circle_id AND x.retracts_report_id = r.id)))
+ORDER BY r.id DESC
 LIMIT sqlc.arg(row_limit);
+
+-- name: ListTodReportsForCircle :many
+-- Every report in the circle, grouped by target, for `tod-serve rebuild-states` and the nightly
+-- verify job. One query rather than one per target: a rebuild that issued a query per target would
+-- be the slowest thing the binary does, and it runs on a schedule nobody watches.
+SELECT * FROM tod_report
+WHERE circle_id = sqlc.arg(circle_id)
+ORDER BY target_id, died_at, id;
 
 -- name: ListTodReportsForTarget :many
 -- Everything the derivation needs for one target, including retractions: consensus folds them, the
@@ -46,3 +73,11 @@ ORDER BY died_at, id;
 -- name: GetRetractionForReport :one
 SELECT * FROM tod_report
 WHERE circle_id = sqlc.arg(circle_id) AND retracts_report_id = sqlc.arg(retracts_report_id);
+
+-- name: ListTodReportTargets :many
+-- Every target this circle has reported anything about. It is what makes a read-miss rebuild
+-- bounded by the circle's activity rather than by the catalogue: a target nobody has reported has
+-- no cluster to derive and nothing worth a cache row, so the board answers it without a read.
+SELECT DISTINCT target_id FROM tod_report
+WHERE circle_id = sqlc.arg(circle_id)
+ORDER BY target_id;
