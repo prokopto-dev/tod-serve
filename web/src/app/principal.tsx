@@ -23,13 +23,26 @@ interface PrincipalState {
   loading: boolean
   /** error is non-null only for a failure that is NOT "you are signed out". */
   error: Error | null
+  /**
+   * stale and staleError say that the principal on hand is real but a later attempt to refresh it
+   * failed. It matters: the nav is drawn from `permissions`, so a stale principal can offer a
+   * section the caller no longer holds — and the 403 it earns explains nothing about why.
+   *
+   * The provider renders no UI of its own, so [Shell] renders these. That is what keeps every
+   * resource in this console accounted for rather than one of them quietly exempt.
+   */
+  stale: boolean
+  staleError: Error | null
   reload: () => void
 }
 
 const PrincipalContext = createContext<PrincipalState | null>(null)
 
+// stale: this provider renders no UI of its own. It hands `stale` and `staleError` to [Shell],
+// which draws the notice above the nav — where it belongs, because the nav is the thing a stale
+// principal would draw wrongly.
 export function PrincipalProvider({ children }: { children: ReactNode }) {
-  const { data, error, loading, reload } = useResource(
+  const { data, error, loading, stale, staleError, reload } = useResource(
     (signal) => api.getCurrentPrincipal({}, { signal }).then((r) => r.data),
     [],
   )
@@ -45,7 +58,7 @@ export function PrincipalProvider({ children }: { children: ReactNode }) {
         error.code === 'session_required')
 
     if (!data) {
-      return { principal: null, loading, error: signedOut ? null : error, reload }
+      return { principal: null, loading, error: signedOut ? null : error, stale, staleError, reload }
     }
     const held = new Set(data.permissions ?? [])
     return {
@@ -56,9 +69,11 @@ export function PrincipalProvider({ children }: { children: ReactNode }) {
       },
       loading,
       error: null,
+      stale,
+      staleError,
       reload,
     }
-  }, [data, error, loading, reload])
+  }, [data, error, loading, stale, staleError, reload])
 
   return <PrincipalContext.Provider value={state}>{children}</PrincipalContext.Provider>
 }

@@ -43,13 +43,29 @@ export interface Run {
   readonly nonce: number
 }
 
-/** Settled is one completed request, tagged with the run it answered. */
+/**
+ * Settled is one completed request, tagged with the run it answered.
+ *
+ * `error` and `staleError` are two DIFFERENT facts and neither implies the other:
+ *
+ *   - `error` means **there is nothing to show**. The attempt failed and nothing on hand answers
+ *     the question being asked.
+ *   - `staleError` means **what is on screen is real but out of date**. An earlier attempt at this
+ *     same query succeeded, a later one failed, and the older answer is still being displayed.
+ *
+ * Collapsing them loses one or the other, and both losses have happened here. Dropping `staleError`
+ * masked a failed refresh: a screen reloading after a write kept showing the state from BEFORE the
+ * write with no indication at all, which is stale data left actionable. Reporting it as `error`
+ * instead would put a failure banner over a board every time a background poll blipped.
+ */
 export interface Settled<T> extends Run {
   data: T | null
   error: Error | null
   asOf: AsOf | null
   /** stale marks data kept on screen after a later attempt at the SAME query failed. */
   stale: boolean
+  /** staleError is why that later attempt failed. Present exactly when `stale` is true. */
+  staleError: Error | null
 }
 
 /** Outcome is what one attempt produced. */
@@ -97,13 +113,15 @@ export function nextSettled<T extends HasAsOf>(
         error: null,
         asOf: markAsOf(outcome.data?.as_of ?? ''),
         stale: false,
+        staleError: null,
       }
 
     case 'notModified':
       if (carry) {
         // Nothing moved. The data stands and so does its `as_of`: re-pinning it would claim the
-        // server had recomputed when it had not.
-        return { ...carry, ...run, error: null, stale: false }
+        // server had recomputed when it had not. A successful revalidation also clears any
+        // staleness a previous failure left behind — the answer has just been confirmed current.
+        return { ...carry, ...run, error: null, stale: false, staleError: null }
       }
       // A `304` with nothing to apply it to. The first request for a new query carries no
       // `If-None-Match` — the tag is cleared with the query — so the API cannot have produced this
@@ -122,27 +140,42 @@ export function nextSettled<T extends HasAsOf>(
         ),
         asOf: null,
         stale: false,
+        staleError: null,
       }
 
     case 'error':
       if (carry?.data) {
-        // A later attempt at the SAME query failed. Keep what it has and say it is stale: blanking
-        // a board because one poll failed is how somebody loses the window they were watching.
-        return { ...carry, ...run, stale: true }
+        // A later attempt at the SAME query failed. Keep what it has — blanking a board because
+        // one poll failed is how somebody loses the window they were watching — and RECORD WHY.
+        // Keeping the rows silently is the part that was wrong: every explicit `reload()` in this
+        // console follows a write, so a swallowed failure leaves somebody looking at the state
+        // from before their own retraction, revocation or role change and believing it is current.
+        return { ...carry, ...run, stale: true, staleError: outcome.error }
       }
       // Nothing on hand that answers this query — either the first attempt at it, or a query that
       // has just changed. The failure is the answer, and the screen renders it.
-      return { ...run, data: null, error: outcome.error, asOf: null, stale: false }
+      return {
+        ...run,
+        data: null,
+        error: outcome.error,
+        asOf: null,
+        stale: false,
+        staleError: null,
+      }
   }
 }
 
 /** Viewed is what a screen sees: [Resource] without the reload it does not need to derive. */
 export interface Viewed<T> {
   data: T | null
+  /** error is set when there is NOTHING to show. See [Settled]. */
   error: Error | null
   loading: boolean
   asOf: AsOf | null
+  /** stale is set when what IS on screen is real but the latest attempt to refresh it failed. */
   stale: boolean
+  /** staleError is why that refresh failed. Present exactly when `stale` is true. */
+  staleError: Error | null
 }
 
 /**
@@ -161,5 +194,6 @@ export function view<T>(settled: Settled<T> | null, run: Run): Viewed<T> {
     loading: current === null,
     asOf: current?.asOf ?? carry?.asOf ?? null,
     stale: current?.stale ?? false,
+    staleError: current?.staleError ?? null,
   }
 }

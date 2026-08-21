@@ -16,7 +16,7 @@ import { useState } from 'react'
 import { api, body, type MintedInviteResponse, toError } from '../api'
 import { usePrincipal } from '../app/principal'
 import { useResource } from '../app/useResource'
-import { ProblemNotice } from '../components/Problem'
+import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { Banner, Button, Card, Empty, Field, Input, Mono, Select, Spinner, Td, Th } from '../components/ui'
 import { instant, plural } from '../lib/format'
 
@@ -57,6 +57,7 @@ export function Invites() {
         title="Invites"
         subtitle="Only the prefix is stored. A live invite can be revoked; a redeemed one stays in the list."
       >
+        <StaleNotice resource={invites} />
         {invites.error && (
           <div className="p-4">
             <ProblemNotice error={invites.error} onRetry={invites.reload} />

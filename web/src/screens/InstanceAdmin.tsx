@@ -18,7 +18,7 @@ import { useState } from 'react'
 import { api, type AdminIdentityProvider, type Circle, type ProviderView, toError } from '../api'
 import { usePrincipal } from '../app/principal'
 import { useResource } from '../app/useResource'
-import { ProblemNotice } from '../components/Problem'
+import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { RevocationBanner } from '../components/RevocationBanner'
 import { Banner, Button, Card, Empty, Field, Input, Mono, Select, Spinner, Td, Th } from '../components/ui'
 
@@ -48,6 +48,7 @@ export function InstanceAdmin() {
         subtitle="Instance-wide. A circle chooses which of these it accepts; this is what exists to choose from."
         actions={<Button onClick={() => setAdding((v) => !v)}>{adding ? 'Cancel' : 'Add provider'}</Button>}
       >
+        <StaleNotice resource={providers} />
         {providers.error && (
           <div className="p-4">
             <ProblemNotice error={providers.error} onRetry={providers.reload} />

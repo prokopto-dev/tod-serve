@@ -25,7 +25,7 @@ import { useState } from 'react'
 import { api, body, toError } from '../api'
 import { usePrincipal } from '../app/principal'
 import { useResource } from '../app/useResource'
-import { ProblemNotice } from '../components/Problem'
+import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { Button, Card, Empty, Field, Input, Select, Spinner, Td, Th } from '../components/ui'
 import { duration } from '../lib/asof'
 import { titleCase } from '../lib/format'
@@ -57,6 +57,7 @@ export function TimerOverrides() {
         subtitle="This circle's numbers, above the instance-wide catalogue. Nothing here is shipped with the software."
         actions={<Button onClick={() => setAdding(true)}>Add override</Button>}
       >
+        <StaleNotice resource={overrides} />
         {overrides.error && (
           <div className="p-4">
             <ProblemNotice error={overrides.error} onRetry={overrides.reload} />

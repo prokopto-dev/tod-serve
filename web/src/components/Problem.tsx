@@ -104,6 +104,49 @@ export function ProblemNotice({
   )
 }
 
+/**
+ * StaleNotice says that what is on screen is real but out of date.
+ *
+ * It is one component rather than a habit at each call site, because the habit is what failed: the
+ * staleness flag used to be polling-only, and every screen that reloaded after a write kept
+ * showing the state from BEFORE that write with nothing to say so. An officer who retracts a bad
+ * time of death, or revokes a member, and whose refresh then fails, is looking at a screen that
+ * disagrees with what they just did — and the dangerous reading is that their action did not take.
+ *
+ * It is deliberately NOT a [ProblemNotice]. The data below it is real and still worth reading, so
+ * this is a note on that data rather than a failure banner over it.
+ */
+export function StaleNotice({ resource }: { resource: Stale }) {
+  if (!resource.stale) return null
+  return (
+    <div className="border-b border-amber-900/60 bg-amber-950/30 px-4 py-2 text-[11px] text-amber-300">
+      <span className="font-semibold">Not refreshed.</span> What you are looking at is real, and it
+      is what the server last told us — but the most recent attempt to bring it up to date failed,
+      so anything changed since then is missing.
+      {resource.staleError ? (
+        <span className="ml-1 opacity-80">{resource.staleError.message}</span>
+      ) : null}
+      {resource.reload ? (
+        <Button className="ml-2 align-middle" onClick={resource.reload}>
+          Refresh
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * Stale is the part of a resource [StaleNotice] reads.
+ *
+ * Structural rather than importing `Resource<T>`, so the component does not have to be generic
+ * over data it never touches.
+ */
+export interface Stale {
+  stale: boolean
+  staleError: Error | null
+  reload?: () => void
+}
+
 /** isStepUp reports whether a caught error is the capability floor asking for a re-authentication. */
 export function isStepUp(error: unknown): boolean {
   return error instanceof ProblemError && error.code === 'step_up_required'

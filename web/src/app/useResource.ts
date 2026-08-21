@@ -14,18 +14,34 @@ import { toError } from '../api'
 import type { AsOf } from '../lib/asof'
 import { nextSettled, runOf, view, type HasAsOf, type Run, type Settled } from './resource'
 
+/**
+ * Resource is what every screen holds.
+ *
+ * `stale` and `staleError` are on the BASE type rather than on `usePoll` alone, which is the fix
+ * for a real defect: they used to be polling-only, so a failed `reload()` on a plain resource kept
+ * the old rows and dropped the failure on the floor. Every explicit reload in this console follows
+ * a write — a retraction, a revocation, a role change — so that swallowed failure left somebody
+ * looking at the state from before their own action and believing it was current. A field nobody
+ * can forget to look at beats a convention nobody remembers.
+ */
 export interface Resource<T> {
   data: T | null
   /**
-   * error is an Error rather than `unknown`, narrowed at the transport boundary by [toError].
-   * A screen holding `unknown` cannot render it without a cast at every call site, and a cast at
-   * every call site is a cast somebody eventually gets wrong.
+   * error is set when there is NOTHING to show.
+   *
+   * It is an Error rather than `unknown`, narrowed at the transport boundary by [toError]. A screen
+   * holding `unknown` cannot render it without a cast at every call site, and a cast at every call
+   * site is a cast somebody eventually gets wrong.
    */
   error: Error | null
   /** loading is true whenever the answer on hand is not the answer this render asked for. */
   loading: boolean
   /** asOf is the instant the CURRENT data was computed by the server, pinned monotonically. */
   asOf: AsOf | null
+  /** stale is set when what IS on screen is real but the latest attempt to refresh it failed. */
+  stale: boolean
+  /** staleError is why that refresh failed. Present exactly when `stale` is true. */
+  staleError: Error | null
   reload: () => void
 }
 
@@ -97,7 +113,7 @@ export function usePoll<T extends HasAsOf>(
   ) => Promise<{ data: T | null; etag: string | null; notModified: boolean }>,
   intervalMs: number,
   deps: readonly unknown[],
-): Resource<T> & { stale: boolean } {
+): Resource<T> {
   const [nonce, setNonce] = useState(0)
   const [settled, setSettled] = useState<Settled<T> | null>(null)
   const etagRef = useRef<string | null>(null)

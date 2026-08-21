@@ -8,7 +8,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useEffect } from 'react'
 
 import { api, type Circle } from '../api'
-import { ProblemNotice } from '../components/Problem'
+import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { RevocationBanner } from '../components/RevocationBanner'
 import { Spinner } from '../components/ui'
 import { classes } from '../lib/format'
@@ -34,7 +34,7 @@ const SECTIONS: Section[] = [
 ]
 
 export function Shell() {
-  const { principal, loading, error } = usePrincipalState()
+  const { principal, loading, error, stale, staleError, reload } = usePrincipalState()
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -84,6 +84,9 @@ export function Shell() {
       </nav>
 
       <div className="flex min-w-0 flex-1 flex-col">
+        {/* The principal's own staleness. The nav above is drawn from `permissions`, so a stale
+            one can offer a section the caller no longer holds. */}
+        <StaleNotice resource={{ stale, staleError, reload }} />
         <CircleHeader />
         <main className="min-h-0 flex-1 overflow-auto p-4">
           <Outlet />
@@ -103,13 +106,15 @@ export function Shell() {
 function CircleHeader() {
   const { principal } = usePrincipalState()
   const circleID = principal?.view.circle_id ?? ''
-  const { data } = useResource(
+  const circle = useResource(
     (signal) =>
       circleID
         ? api.getCircle({ circle_id: circleID }, { signal }).then((r) => r.data)
         : Promise.resolve(null as unknown as Circle & { as_of: string }),
     [circleID],
   )
+
+  const data = circle.data
 
   useEffect(() => {
     if (data) rememberCircle({ id: data.id, name: data.name, server: data.server })
@@ -119,6 +124,7 @@ function CircleHeader() {
 
   return (
     <header className="border-b border-ink-800 bg-ink-900/60">
+      <StaleNotice resource={circle} />
       <div className="flex items-baseline gap-3 px-4 py-2.5">
         <h1 className="text-sm font-semibold text-ink-100">{data.name}</h1>
         <span

@@ -19,7 +19,7 @@ import { api, type BoardEntry } from '../api'
 import { ConfidenceSteps } from '../components/Confidence'
 import { ContestedChip } from '../components/Contested'
 import { EvidenceCounts } from '../components/Evidence'
-import { ProblemNotice } from '../components/Problem'
+import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { STATUS_ORDER, StatusChip, statusLabel } from '../components/StatusChip'
 import { NoWindow, WindowBar, hasWindow } from '../components/WindowBar'
 import { Card, Empty, Input, Select, Spinner, Td, Th } from '../components/ui'
@@ -129,6 +129,7 @@ export function Board() {
           </form>
         }
       >
+        <StaleNotice resource={board} />
         {board.error && (
           <div className="p-4">
             <ProblemNotice error={board.error} onRetry={board.reload} />

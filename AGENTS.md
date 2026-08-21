@@ -73,7 +73,9 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    console calls with a scoped token: **a capability the browser has and a token cannot reach is a
    red build.** And `WEB002` bans the browser's clock — every countdown is a signed offset from the
    response's `as_of`, because a machine four minutes fast would otherwise render a window that is
-   wrong on screen and right in the database.
+   wrong on screen and right in the database. `WEB003` requires a module holding a resource to
+   render its staleness: every explicit reload here follows a write, so a refresh that fails
+   silently leaves somebody looking at the state from before their own action.
 8. **Migrations are forward-only and the report log is never rewritten.** `MIG001` fails a `Down`
    block containing DDL or a file out of sequence; `LOG001` fails an `UPDATE` or `DELETE` against an
    append-only table anywhere in `db/queries` or `db/migrations-sqlite`, which is every route Go has

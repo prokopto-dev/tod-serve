@@ -44,12 +44,18 @@ test('a filter change whose first request fails does not relabel the previous fi
   assert.equal(shown.data, null, 'the previous query’s rows were shown under the new filter')
   assert.equal(shown.loading, false, 'the failure IS the answer to this query')
   assert.equal(shown.stale, false, 'nothing is being kept, so nothing is stale')
+  assert.equal(shown.staleError, null, 'nothing is being kept, so nothing is out of date')
   assert.match(String(shown.error?.message), /did not reach the server/)
 })
 
-test('a failed poll of the SAME query keeps its rows and says they are stale', () => {
+test('a failed attempt at the SAME query keeps its rows and RECORDS why it failed', () => {
   // The other half, and the reason the carry exists at all: blanking a board because one poll
   // failed is how somebody loses the window they were watching.
+  //
+  // But keeping them SILENTLY was its own bug. Every explicit `reload()` in this console follows a
+  // write — a retraction, a revocation, a role change — so a swallowed failure leaves somebody
+  // looking at the state from before their own action and believing it is current. The rows stay;
+  // the reason they are not current is now on the resource, and `StaleNotice` renders it.
   const settled = settle(null, [
     [everything, { kind: 'data', data: board('T0', 'Vulak', 'Trakanon') }],
     [everything, { kind: 'error', error: new Error('the request did not reach the server') }],
@@ -58,8 +64,40 @@ test('a failed poll of the SAME query keeps its rows and says they are stale', (
   const shown = view(settled, everything)
   assert.deepEqual(shown.data?.rows, ['Vulak', 'Trakanon'])
   assert.equal(shown.stale, true, 'kept rows must say they are not current')
-  assert.equal(shown.error, null, 'the rows are the answer; the failure is a note on them')
+  assert.equal(shown.error, null, 'the rows ARE the answer; nothing is missing from the screen')
+  assert.match(String(shown.staleError?.message), /did not reach the server/,
+    'a failed refresh that nobody can see is a failed refresh nobody acts on')
   assert.equal(shown.loading, false)
+})
+
+test('a refresh that succeeds after a failed one clears the staleness', () => {
+  // Otherwise the notice outlives the problem, and a warning that is always on is a warning nobody
+  // reads.
+  const settled = settle(null, [
+    [everything, { kind: 'data', data: board('T0', 'Vulak') }],
+    [everything, { kind: 'error', error: new Error('the request did not reach the server') }],
+    [everything, { kind: 'data', data: board('T1', 'Vulak', 'Trakanon') }],
+  ])
+
+  const shown = view(settled, everything)
+  assert.equal(shown.stale, false)
+  assert.equal(shown.staleError, null)
+  assert.deepEqual(shown.data?.rows, ['Vulak', 'Trakanon'])
+})
+
+test('a 304 after a failed refresh also clears the staleness', () => {
+  // A revalidation that answers "nothing changed" has confirmed the rows are current, which is
+  // exactly what the stale notice was saying it could not confirm.
+  const settled = settle(null, [
+    [everything, { kind: 'data', data: board('T0', 'Vulak') }],
+    [everything, { kind: 'error', error: new Error('the request did not reach the server') }],
+    [everything, { kind: 'notModified' }],
+  ])
+
+  const shown = view(settled, everything)
+  assert.equal(shown.stale, false)
+  assert.equal(shown.staleError, null)
+  assert.equal(shown.asOf?.label, 'T0', 'a 304 must not move as_of')
 })
 
 test('a query in flight shows nothing from a DIFFERENT query', () => {

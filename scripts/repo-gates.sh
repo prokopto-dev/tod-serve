@@ -378,6 +378,40 @@ else
   vacant WEB002 "the console never reads the browser's clock"
 fi
 
+# --- WEB003 — a module that holds a resource renders its staleness ----------------------------
+# Every explicit reload in this console follows a WRITE — a retraction, a revocation, a role
+# change — so a refresh that fails silently leaves somebody looking at the state from before their
+# own action and believing it is current. That is stale data left actionable, and it is the
+# opposite of "never hide a row silently".
+#
+# `Resource` carries `stale` and `staleError`, so no HOOK can drop them. What a hook cannot force
+# is a SCREEN rendering them, and this is that half: a file that calls `useResource(` or `usePoll(`
+# must also render `<StaleNotice`.
+#
+# A module that holds a resource and renders no UI of its own carries a `// stale: <why>` line
+# naming what does render it. It is a WAIVER, not a default: it is counted and reported below, so a
+# directory that quietly filled up with them looks different from one that did not — the same shape
+# TEN001's `-- tenancy:` waiver has, and for the same reason.
+if [ -d "$WEB_SRC_DIR" ]; then
+  holders=$(grep -rl 'useResource(\|usePoll(' "$WEB_SRC_DIR" 2>/dev/null || true)
+  if [ -z "$holders" ]; then
+    report WEB003 "no resource holders were found; the parse of $WEB_SRC_DIR is wrong"
+  else
+    found=0; waived=0; renders=0
+    for f in $holders; do
+      if grep -q '<StaleNotice' "$f"; then renders=$((renders + 1))
+      elif grep -q '^[[:space:]]*//[[:space:]]*stale:' "$f"; then waived=$((waived + 1))
+      else
+        report WEB003 "$f holds a resource, renders no <StaleNotice and carries no \`// stale:\` waiver; a failed refresh there is invisible"
+        found=1
+      fi
+    done
+    [ $found -eq 0 ] && pass WEB003 "every module holding a resource accounts for its staleness ($renders render it, $waived explicitly waived)"
+  fi
+else
+  vacant WEB003 "a module that holds a resource renders its staleness"
+fi
+
 # --- SEED001 — no bundled timer data ----------------------------------------------------------
 # Target identity ships as our own literals. Timers are community-derived and disputed; they load
 # from the separate tod-serve-p99-seed repo. See canonical conventions §15.

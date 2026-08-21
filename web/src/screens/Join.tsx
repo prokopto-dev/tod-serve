@@ -15,7 +15,7 @@ import { useNavigate } from 'react-router-dom'
 import { api, body, ProblemError, type InvitePreview, type Joined, toError } from '../api'
 import { usePrincipalState } from '../app/principal'
 import { useResource } from '../app/useResource'
-import { ProblemNotice } from '../components/Problem'
+import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { RevocationBanner } from '../components/RevocationBanner'
 import { Banner, Button, Card, Field, Input, Mono, Spinner } from '../components/ui'
 import { takeFragment, type Fragment } from '../lib/hash'
@@ -193,6 +193,7 @@ export function Join() {
         </Banner>
       ) : null}
 
+      <StaleNotice resource={preview} />
       <ProblemNotice error={error ?? preview.error} />
       {failure instanceof ProblemError && failure.code === 'invite_invalid' ? (
         <p className="px-1 text-[11px] text-ink-500">

@@ -13,7 +13,7 @@ import { useState } from 'react'
 import { api } from '../api'
 import { usePrincipal } from '../app/principal'
 import { useResource } from '../app/useResource'
-import { ProblemNotice } from '../components/Problem'
+import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { Card, Empty, Mono, Spinner, Td, Th } from '../components/ui'
 import { instant, titleCase } from '../lib/format'
 
@@ -35,6 +35,7 @@ export function AuditLog() {
       title="Audit log"
       subtitle="Append-only and hash-chained. Reading it needs a re-authenticated browser session; no token reaches it."
     >
+      <StaleNotice resource={audit} />
       {audit.error && (
         <div className="p-4">
           <ProblemNotice error={audit.error} onRetry={audit.reload} />

@@ -15,7 +15,7 @@ import { useResource, useTick } from '../app/useResource'
 import { ConfidenceSteps } from '../components/Confidence'
 import { ContestedChip } from '../components/Contested'
 import { EvidenceCounts } from '../components/Evidence'
-import { ProblemNotice } from '../components/Problem'
+import { ProblemNotice, StaleNotice, type Stale } from '../components/Problem'
 import { StatusChip } from '../components/StatusChip'
 import { NoWindow, WindowBar, hasWindow } from '../components/WindowBar'
 import { Button, Card, Empty, Field, Input, Mono, Spinner, Td, Th } from '../components/ui'
@@ -63,6 +63,7 @@ export function TargetDetail() {
         ← Board
       </Link>
 
+      <StaleNotice resource={state} />
       <StateCard state={state.data} asOf={state.asOf} />
 
       {state.data.alternatives && state.data.alternatives.length > 0 && (
@@ -85,6 +86,7 @@ export function TargetDetail() {
         reports={reports.data?.items ?? []}
         loading={reports.loading}
         error={reports.error}
+        stale={reports}
         canRetractAny={principal.can('tod.retract.any')}
         canRetract={principal.can('tod.retract')}
         myMembership={principal.view.membership_id}
@@ -239,6 +241,7 @@ function ReportsCard({
   reports,
   loading,
   error,
+  stale,
   canRetract,
   canRetractAny,
   myMembership,
@@ -248,6 +251,7 @@ function ReportsCard({
   reports: Report[]
   loading: boolean
   error: Error | null
+  stale: Stale
   canRetract: boolean
   canRetractAny: boolean
   myMembership: string
@@ -259,6 +263,7 @@ function ReportsCard({
       title="Report history"
       subtitle="Append-only. A correction is a retraction plus a new report; nothing here is ever edited or removed."
     >
+      <StaleNotice resource={stale} />
       {error && (
         <div className="p-4">
           <ProblemNotice error={error} onRetry={onReload} />

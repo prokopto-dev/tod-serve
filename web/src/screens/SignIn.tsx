@@ -15,7 +15,7 @@ import { Link } from 'react-router-dom'
 
 import { api, body, toError } from '../api'
 import { useResource } from '../app/useResource'
-import { ProblemNotice } from '../components/Problem'
+import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { Banner, Button, Card, Empty, Field, Input, Select, Spinner } from '../components/ui'
 import { forgetCircle, rememberedCircles, setPendingJoin } from '../lib/storage'
 
@@ -88,6 +88,7 @@ export function SignIn() {
 
       {error && <ProblemNotice error={error} />}
       {(providers.loading || busy) && <Spinner label="Working" />}
+      <StaleNotice resource={providers} />
       {providers.error && <ProblemNotice error={providers.error} onRetry={providers.reload} />}
 
       {!busy && circles.length === 0 && (

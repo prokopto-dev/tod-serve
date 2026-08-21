@@ -14,7 +14,7 @@ import { useState } from 'react'
 import { api, body, type Member, type RevokedResponse, toError } from '../api'
 import { usePrincipal } from '../app/principal'
 import { useResource } from '../app/useResource'
-import { ProblemNotice } from '../components/Problem'
+import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { Banner, Button, Card, Empty, Field, Input, Mono, Select, Spinner, Td, Th } from '../components/ui'
 import { instant, plural } from '../lib/format'
 
@@ -58,6 +58,7 @@ export function Members() {
       {error && <ProblemNotice error={error} />}
 
       <Card title="Members" subtitle={`${plural(rows.length, 'membership')} in this circle`}>
+        <StaleNotice resource={members} />
         {members.error && (
           <div className="p-4">
             <ProblemNotice error={members.error} onRetry={members.reload} />

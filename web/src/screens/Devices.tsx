@@ -12,7 +12,7 @@ import { useState } from 'react'
 import { api, toError } from '../api'
 import { usePrincipal } from '../app/principal'
 import { useResource } from '../app/useResource'
-import { ProblemNotice } from '../components/Problem'
+import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { Button, Card, Empty, Mono, Spinner, Td, Th } from '../components/ui'
 import { hasInstant, instant } from '../lib/format'
 
@@ -80,6 +80,7 @@ export function Devices() {
             <ProblemNotice error={error} />
           </div>
         )}
+        <StaleNotice resource={tokens} />
         {tokens.error && (
           <div className="p-4">
             <ProblemNotice error={tokens.error} onRetry={tokens.reload} />
