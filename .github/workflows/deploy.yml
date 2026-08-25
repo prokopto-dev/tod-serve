@@ -41,6 +41,13 @@ on:
           main, which moves — prefer sha-<full> for anything you care about being reproducible.
         required: true
         default: main
+      image_digest:
+        description: >-
+          Optional sha256:… manifest digest to deploy. Given, it is what ships and the tag is used
+          only to find it. Omitted, the tag is resolved at deploy time — which pins whatever it
+          names NOW, not necessarily what the release built, and the run says so.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -61,7 +68,10 @@ jobs:
     # deploy publishes nothing and needs no write anywhere.
     permissions:
       contents: read
+      # For resolving a tag to a digest, when there is no release artifact to read one from.
       packages: read
+      # For reading the triggering Release run's artifact — the digest it actually published.
+      actions: read
 
     # Requires the `production` environment. Put a required reviewer on it in repository settings:
     # that is what makes a deploy a decision rather than a side effect of merging — and it is what
@@ -144,6 +154,27 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "deploying ${tag} from ${ref}"
 
+      # THE DIGEST THE APPROVED RELEASE ACTUALLY PUBLISHED.
+      #
+      # `Release` writes it to an artifact; this reads it back off the triggering run. That is the
+      # whole point: an environment approval has to mean the bytes that run built. Re-resolving the
+      # tag here would pin whatever it names at approval time, and the gap between the two is
+      # however long the approval sat in somebody's queue.
+      #
+      # `continue-on-error`, because there are two events. A `workflow_dispatch` of an older release
+      # has no triggering run to read, and the step below handles that honestly rather than this one
+      # failing the deploy.
+      - name: Read the digest the release published
+        id: released
+        if: github.event_name == 'workflow_run'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-digest
+          path: released
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       # `imagetools inspect` below talks to the registry rather than to a builder, but buildx is
       # set up explicitly rather than relied on being present: a deploy that fails on a missing
       # tool is a deploy that fails for a reason nobody reading the log would guess.
@@ -157,46 +188,85 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # RESOLVE THE TAG TO A MANIFEST DIGEST, and deploy that.
+      # DECIDE WHICH MANIFEST SHIPS, in one place, from three possible sources in order of how much
+      # they are worth:
       #
-      # `sha-<commit>` is still an OCI TAG. Its name is derived from a commit, which makes it look
-      # immutable and does not make it so: a later push can move it, and this workflow waits for a
-      # human on the production environment — so the approval and the pull are separated by however
-      # long that takes. A digest is the manifest's own content address; moving a tag cannot change
-      # what it names.
+      #   1. the artifact the triggering Release wrote      — the bytes the approval was FOR
+      #   2. an explicit `image_digest` dispatch input      — an operator naming exact bytes
+      #   3. the tag, resolved now                          — a fallback, and the run says so
       #
-      # It also closes a smaller window that exists on every deploy: `pull`, `run --rm migrate` and
-      # `up -d` each resolve the image reference independently, so three separate lookups of one
-      # mutable tag could in principle return three different images. Past this step there is one
-      # reference for the whole deploy, and for every `docker compose up` on the box afterwards,
-      # because it is what lands in `.env`.
+      # A `sha-<commit>` tag is still an OCI TAG: its name is derived from a commit, which makes it
+      # look immutable and does not make it so. Only (1) and (2) actually pin what was approved;
+      # (3) pins what the registry says at this moment, which is better than resolving the tag three
+      # more times but is not the same guarantee, so it is labelled rather than blurred.
       #
-      # `imagetools inspect` reads the registry and pulls no layers. The shape is checked strictly:
-      # this value is about to be written into `.env` on the droplet.
-      - name: Resolve the tag to a manifest digest
+      # Whatever is chosen becomes the ONE reference for the whole deploy — pull, migrate, `up -d`,
+      # and every `docker compose up` on the box afterwards, because it is what lands in `.env`.
+      # Without it those each resolve the reference independently.
+      - name: Decide which manifest to deploy
         id: digest
         env:
           TAGGED_IMAGE: ${{ steps.release.outputs.tagged_image }}
+          INPUT_DIGEST: ${{ github.event.inputs.image_digest }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          digest="$(docker buildx imagetools inspect "$TAGGED_IMAGE" --format '{{.Manifest.Digest}}')"
-          # Checked in three parts, the same way the dispatch inputs above are: this value is about
-          # to be written into `.env` on the droplet and handed to `docker pull`.
-          case "$digest" in
-            sha256:*) ;;
-            *) echo "FATAL: ${TAGGED_IMAGE} resolved to ${digest}, which is not a sha256 digest." >&2
-               exit 1 ;;
-          esac
-          hex="${digest#sha256:}"
-          case "$hex" in
-            *[!0-9a-f]*)
-              echo "FATAL: ${digest} is not lowercase hexadecimal." >&2; exit 1 ;;
-          esac
-          [ "${#hex}" -eq 64 ] || {
-            echo "FATAL: ${digest} is ${#hex} characters, not 64." >&2; exit 1; }
+
+          # valid_digest <value> — the shape check, in three parts, the same way the dispatch
+          # inputs above are checked. This value is about to be written into `.env` on the droplet
+          # and handed to `docker pull`.
+          valid_digest() {
+            case "$1" in sha256:*) ;; *) return 1 ;; esac
+            hex="${1#sha256:}"
+            case "$hex" in *[!0-9a-f]*) return 1 ;; esac
+            [ "${#hex}" -eq 64 ]
+          }
+
+          # Not `source`: that is a shell builtin, and a variable sharing its name reads as a
+          # command every time somebody skims this.
+          digest_source=""
+          digest=""
+          if [ -s released/image-digest.txt ]; then
+            digest="$(tr -d '[:space:]' < released/image-digest.txt)"
+            digest_source="the artifact the triggering Release published"
+          elif [ -n "${INPUT_DIGEST:-}" ]; then
+            digest="$INPUT_DIGEST"
+            digest_source="the image_digest input"
+          fi
+
+          if [ -n "$digest" ]; then
+            valid_digest "$digest" || {
+              echo "FATAL: ${digest_source} gave ${digest}, which is not a sha256:<64 hex> digest." >&2
+              exit 1; }
+            echo "deploying ${digest} — ${digest_source}"
+
+            # What the tag points at NOW, for information only. A disagreement means the tag moved
+            # after the release: a rebuild, or somebody else. Either way the approved bytes are what
+            # ships, so this is reported loudly and is not a failure — failing here would refuse to
+            # deploy the very thing that was approved.
+            current="$(docker buildx imagetools inspect "$TAGGED_IMAGE" \
+                       --format '{{.Manifest.Digest}}' 2>/dev/null || echo "unresolvable")"
+            if [ "$current" != "$digest" ]; then
+              echo "::warning::${TAGGED_IMAGE} now resolves to ${current}, not the approved ${digest}."
+              echo "WARNING: the tag has moved since this release was built."
+              echo "  approved: ${digest}"
+              echo "  tag now:  ${current}"
+              echo "Deploying the APPROVED digest. If that is not what you want, stop this run."
+            fi
+          else
+            # No artifact and no input. Resolve the tag, and say plainly that this is a weaker
+            # pairing rather than implying a guarantee it has not made.
+            echo "NOTE: no release digest was available, so ${TAGGED_IMAGE} is being resolved now."
+            echo "That pins what the tag names at this moment, which is not necessarily what the"
+            echo "release built. Pass -f image_digest=sha256:… to name exact bytes."
+            digest="$(docker buildx imagetools inspect "$TAGGED_IMAGE" --format '{{.Manifest.Digest}}')"
+            valid_digest "$digest" || {
+              echo "FATAL: ${TAGGED_IMAGE} resolved to ${digest}, which is not a sha256:<64 hex> digest." >&2
+              exit 1; }
+            echo "${TAGGED_IMAGE} is ${digest}"
+          fi
+
           echo "image=ghcr.io/${REPO}@${digest}" >> "$GITHUB_OUTPUT"
-          echo "${TAGGED_IMAGE} is ${digest}"
 
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
@@ -280,29 +350,25 @@ jobs:
           image_ref="$2"
           cd "$deploy_path"
 
-          # Adopt the compose file that shipped with this release, BEFORE anything is pulled.
+          # The compose file that shipped with this release is VALIDATED now and ADOPTED later.
           #
-          # It used to be hand-copied once at setup and never again, so a release could add a
-          # required variable the running stack never picked up.
+          # Validated first, because `config` resolves every interpolation and so fails here on a
+          # malformed file AND on any ${VAR:?} the .env is missing — both of which would otherwise
+          # surface during `up -d`, with the old container already stopped. Nothing on disk changes.
+          #
+          # Adopted later — after the old container has been stopped and snapshotted — because
+          # until then every `docker compose` command in this script is OPERATING THE OLD IMAGE, and
+          # it must be operated through the configuration it was released with. A new compose file
+          # can rename the service, rename the volume, or change a mount; driving the old container
+          # through it can stop the wrong thing, and could snapshot a DIFFERENT volume and report
+          # success. The image and the compose file are paired, and that pairing holds on the way
+          # out as well as on the way in.
           if [ ! -s compose.yaml.incoming ]; then
             echo "FATAL: compose.yaml.incoming did not arrive; the staging step should have sent it." >&2
             exit 1
           fi
-
-          # Validate the INCOMING file against this host's real .env. `config` resolves every
-          # interpolation, so it fails here on a malformed compose file AND on any ${VAR:?} the
-          # .env is missing — both of which would otherwise surface during `up -d`, with the old
-          # container already stopped.
           docker compose -f compose.yaml.incoming --env-file .env config -q
-
-          if [ -f compose.yaml ]; then
-            cp compose.yaml compose.yaml.prev
-          fi
-          # `cat >`, not `mv`: writing through the existing file keeps its owner and mode, which a
-          # rename from an scp-created file would silently replace.
-          cat compose.yaml.incoming > compose.yaml
-          rm -f compose.yaml.incoming
-          echo "compose.yaml is the one that shipped with this release"
+          echo "the compose file that shipped with this release resolves against this host's .env"
 
           # --- the snapshot, and its failure is FATAL ------------------------------------------
           #
@@ -382,7 +448,31 @@ jobs:
           # `daily-*.db` from the cron in docs/operations/backup.md lives here too and has its own
           # 30-day retention; a prune over the whole directory would delete most of it on every
           # deploy, which is a backup policy quietly overwritten by a different one.
-          ls -1t backups/pre-*.db 2>/dev/null | tail -n +11 | while read -r old; do rm -f -- "$old"; done
+          #
+          # `|| true` is load-bearing, not laziness: on the FIRST deploy there is no snapshot at all,
+          # `grep` matches nothing and exits non-zero, and under `set -o pipefail` that would abort
+          # the deploy here — before it ever started the service it was meant to install. The set is
+          # collected first and the loop is skipped when it is empty, so "nothing to prune" and
+          # "prune failed" are different outcomes rather than the same exit code.
+          old_snapshots="$(ls -1t backups/ 2>/dev/null | grep '^pre-.*\.db$' | tail -n +11 || true)"
+          if [ -n "$old_snapshots" ]; then
+            printf '%s\n' "$old_snapshots" | while read -r old; do rm -f -- "backups/$old"; done
+          fi
+
+          # --- from here on, the NEW release: its compose file and its image ----------------------
+          #
+          # Everything above operated the old container through the compose file it was released
+          # with. The swap happens here, in one place, once the old writer is stopped and its
+          # snapshot is on disk.
+          #
+          # `cat >`, not `mv`: writing through the existing file keeps its owner and mode, which a
+          # rename from an scp-created file would silently replace.
+          if [ -f compose.yaml ]; then
+            cp compose.yaml compose.yaml.prev
+          fi
+          cat compose.yaml.incoming > compose.yaml
+          rm -f compose.yaml.incoming
+          echo "compose.yaml is the one that shipped with this release"
 
           # Pin the exact manifest, so a manual `docker compose up` on the box brings up the bytes
           # CI last deployed — not whatever the tag it was built from names today.
@@ -395,7 +485,13 @@ jobs:
           # is the failure the whole rule exists for. Here it runs once, after a human approved it,
           # as the only process holding the database.
           if ! docker compose run --rm tod-serve migrate; then
-            echo "FATAL: the migration failed. Putting the previous image back." >&2
+            echo "FATAL: the migration failed. Putting the previous release back." >&2
+            # BOTH halves, because they are a pair: the old image has to come back up under the
+            # compose file it was released with, not under the one that shipped with the release
+            # that just failed.
+            if [ -f compose.yaml.prev ]; then
+              cat compose.yaml.prev > compose.yaml
+            fi
             sed -i "s|^TOD_DEPLOY_IMAGE=.*|TOD_DEPLOY_IMAGE=${previous_image}|" .env
             docker compose up -d --remove-orphans tod-serve || true
             echo "" >&2

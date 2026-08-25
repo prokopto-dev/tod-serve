@@ -103,6 +103,28 @@ jobs:
           build-args: |
             VERSION=${{ steps.vars.outputs.version }}
 
+      # The digest this release actually published, carried forward as an artifact.
+      #
+      # Deploy reads it and ships THAT manifest. Re-resolving the tag at deploy time would pin
+      # whatever the tag names then — and a deploy waits for a human on the production environment,
+      # so "then" is however long the approval took. The approval has to mean the bytes this run
+      # built, not the bytes that answer to its tag later.
+      - name: Record the digest this release published
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [ -n "$IMAGE_DIGEST" ] || { echo "FATAL: the build reported no digest." >&2; exit 1; }
+          printf '%s\n' "$IMAGE_DIGEST" > image-digest.txt
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-digest
+          path: image-digest.txt
+          if-no-files-found: error
+          # Long enough that a deploy sitting in the approval queue over a weekend still finds it.
+          retention-days: 30
+
       - name: Summary
         # Through `env:`, not interpolated (gate ACT001). A tag list is metadata this workflow
         # computed, and it is still a value reaching a shell from an expression.

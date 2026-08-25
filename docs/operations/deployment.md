@@ -71,6 +71,12 @@ scp deploy/env.example   deploy@tod.example.com:/opt/tod-serve/.env
 > Change `deploy/compose.yaml` in the repository instead — that is the copy that wins, and it is the
 > one anybody reviewing this service will read.
 >
+> One exception, and it follows from step 7 below: a release that **changes the `backups` mount or
+> the data volume's name** has to be hand-copied once first. The deploy snapshots the old container
+> through the compose file already on the box, deliberately, so a mount that only the incoming file
+> knows about is a mount the snapshot cannot use — and it fails loudly rather than backing up the
+> wrong thing.
+>
 > `.env` is the opposite and always will be: it holds secrets, so it stays on the host and no
 > pipeline ever writes it — except the one line naming the image. When a release needs a new
 > variable, the deploy fails on it *before* swapping anything, naming the variable.
@@ -248,14 +254,16 @@ before starting, or the log reads `permission denied` on `/data/tod.db`.
 
 1. Merge to `main`. `Release` builds and pushes `:edge` and `:sha-<full>`.
 2. `Deploy` is queued and waits for your approval on the `production` environment.
-3. It **resolves the release tag to a manifest digest** and deploys that, not the tag.
-   `sha-<commit>` is still an OCI tag: its name is derived from a commit, which makes it *look*
-   immutable and does not make it so. A deploy waits for a human, so the approval and the pull are
-   separated by however long that takes.
+3. It reads **the manifest digest that release actually published**, from an artifact `Release`
+   wrote, and deploys those bytes. `sha-<commit>` is still an OCI tag: its name is derived from a
+   commit, which makes it *look* immutable and does not make it so. An approval has to mean the
+   bytes the approved run built, and the gap between the two is however long the approval sat in
+   somebody's queue. If the tag has since moved, the run says so loudly and deploys the approved
+   digest anyway.
 4. It checks out **the commit that release was built from**, copies its `deploy/compose.yaml` to
-   the droplet, validates it against the host's `.env` (`docker compose config -q`, which fails on
-   a malformed file *and* on any required variable the `.env` is missing), and adopts it — keeping
-   `compose.yaml.prev`.
+   the droplet, and **validates** it against the host's `.env` (`docker compose config -q`, which
+   fails on a malformed file *and* on any required variable the `.env` is missing). Nothing on disk
+   changes yet.
 5. It **pulls first**, while nothing has changed, so a registry problem costs a red run and no
    downtime.
 6. It **stops the old container**, and only then snapshots the database with `tod-serve backup`
@@ -263,14 +271,22 @@ before starting, or the log reads `permission denied` on `/data/tod.db`.
    **the deploy stops and the old container is restarted**. Only "no volume at all — first deploy"
    proceeds without one. It prunes to the last ten `pre-*.db` and touches nothing else in that
    directory.
-7. It pins `TOD_DEPLOY_IMAGE` in `.env` to the digest, runs `migrate` **as the only process holding
-   the database**, and starts the new container.
-8. It polls `/healthz`, `/readyz`, `/api/v1/meta` and the console — **every check retries on a
+7. **Now** it adopts the new `compose.yaml` — keeping `compose.yaml.prev` — and pins
+   `TOD_DEPLOY_IMAGE` in `.env` to the digest. Everything before this point operated the OLD image,
+   and operated it through the compose file it was released with.
+8. It runs `migrate` **as the only process holding the database**, and starts the new container.
+9. It polls `/healthz`, `/readyz`, `/api/v1/meta` and the console — **every check retries on a
    bounded budget** — and then asserts the running build is the one just deployed.
 
 Steps 4 and 7 are what stop a release and the stack running it from drifting apart. The compose file
 used to be copied once, at setup, and never again — so a release that added a required variable
 started against a compose file that had never heard of it.
+
+**The adoption is in step 7 and not step 4 on purpose.** Everything before it is operating the OLD
+container, and an image and the compose file it was released with are a pair. A new compose file can
+rename the service, rename the volume or change a mount; stopping and snapshotting the old container
+through it can stop the wrong thing — or, worse, snapshot a *different, empty* volume and report
+success.
 
 **Step 6 is the one worth understanding.** The old container is stopped *before* anything else
 touches the volume, because this service is one SQLite writer
@@ -285,13 +301,16 @@ accepting reports, it is missing every report accepted between the snapshot and 
 exactly the window a rollback would silently discard. Taken after the writer is stopped, it is the
 complete state the migration is about to change.
 
-Step 8's last check is not ceremony either. Without it, a `pull` that silently changed nothing looks
+Step 9's last check is not ceremony either. Without it, a `pull` that silently changed nothing looks
 exactly like a successful deploy — every other check passes against the container already there.
 
 ### If the migration fails
 
-The workflow puts the previous image back in `.env` and starts it, then tells you which of two
-things happened, because the recovery differs:
+The workflow puts **both halves** of the previous release back — `compose.yaml.prev` over
+`compose.yaml`, and the previous image in `.env` — and starts it. They go back together because they
+are a pair; restoring one without the other is how you end up running an old binary against a
+configuration it has never seen. Then it tells you which of two things happened, because the
+recovery differs:
 
 - **The old container comes up.** The migration applied nothing and the service is back on the
   previous release. Fix the migration and deploy again.
@@ -321,6 +340,15 @@ Nothing about that failure looks wrong in the run log.
 | `edge` | `main` | No, and `edge` moves. Prefer `sha-<full>` for anything reproducible |
 
 Where it cannot verify the pairing, the run says so rather than implying a guarantee it never made.
+
+A manual deploy has **no release artifact to read a digest from**, so by default it resolves the tag
+at deploy time — which pins what the tag names *now*, not necessarily what the release built, and
+the run says exactly that. To name exact bytes, pass the digest:
+
+```bash
+gh workflow run Deploy -f image_tag=1.2.0 -f source_ref=v1.2.0 \
+  -f image_digest=sha256:<the digest the Release run printed>
+```
 
 ## Rolling back
 
