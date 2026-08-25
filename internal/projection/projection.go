@@ -141,6 +141,10 @@ func (s *Service) Board(
 	// board render in one would serialise the whole instance behind the slowest reader — the cost
 	// that pragma's own comment names. A deferred-transaction handle is a change to
 	// `internal/store` and a decision of its own; it is not this function's to make quietly.
+	//
+	// Tracked, with the whole causal chain and why optimistic retry is not the answer, at
+	// https://github.com/prokopto-dev/tod-serve/issues/17 — which is also where the next person to
+	// edit this line should look before assuming ADR-0013 introduced it.
 	q := s.db.Queries()
 	circle, err := s.circle(ctx, q, circleID)
 	if err != nil {
