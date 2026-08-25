@@ -71,7 +71,9 @@ type Reporter struct {
 func (s *Service) Get(
 	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID, attribution bool,
 ) (Derived, error) {
-	circle, err := s.circle(ctx, circleID)
+	// A derivation, not a write path: the pool, chosen at the call.
+	q := s.db.Queries()
+	circle, err := s.circle(ctx, q, circleID)
 	if err != nil {
 		return Derived{}, err
 	}
@@ -79,22 +81,22 @@ func (s *Service) Get(
 	if err != nil {
 		return Derived{}, err
 	}
-	timer, err := s.catalogue.ResolveTimer(ctx, circleID, targetID, core.Server(circle.Server))
+	timer, err := s.catalogue.ResolveTimer(ctx, q, circleID, targetID, core.Server(circle.Server))
 	if err != nil {
 		return Derived{}, err
 	}
-	quakes, err := s.latestQuake(ctx, circleID)
+	quakes, err := s.latestQuake(ctx, q, circleID)
 	if err != nil {
 		return Derived{}, err
 	}
-	rows, err := s.db.Queries().ListTodReportsForTarget(ctx,
+	rows, err := q.ListTodReportsForTarget(ctx,
 		sqlitegen.ListTodReportsForTargetParams{
 			CircleID: circleID.String(), TargetID: targetID.String(),
 		})
 	if err != nil {
 		return Derived{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	revoked, err := s.revokedReporters(ctx, circleID)
+	revoked, err := s.revokedReporters(ctx, q, circleID)
 	if err != nil {
 		return Derived{}, err
 	}
@@ -105,7 +107,8 @@ func (s *Service) Get(
 
 	now := s.clock.Now()
 	state := consensus.Derive(reports, quakes, timer.Timer, now, configOf(circle))
-	stored, err := s.storeOrDrop(ctx, circleID, targetID, state, rows, changeReason(state, rows, ""))
+	stored, err := s.storeOrDrop(ctx, q, circleID, targetID, state,
+		rows, changeReason(state, rows, ""))
 	if err != nil {
 		return Derived{}, err
 	}
@@ -201,19 +204,23 @@ func reportersOf(
 }
 
 // recompute derives one target and writes the row, for a read-miss on the board.
+//
+// It takes the query set because a `timer_change` recomputation runs inside the transaction that
+// moved the window — see [catalogue.TimerInvalidator] — and every read on this path has to see
+// what that transaction wrote. The board's own read-miss passes the pool.
 func (s *Service) recompute(
-	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID,
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID, targetID core.RaidTargetID,
 	circle sqlitegen.Circle, timers map[core.RaidTargetID]catalogue.ResolvedTimer,
 	quakes []consensus.Quake, reason string,
 ) (*sqlitegen.TargetStateCache, error) {
-	rows, err := s.db.Queries().ListTodReportsForTarget(ctx,
+	rows, err := q.ListTodReportsForTarget(ctx,
 		sqlitegen.ListTodReportsForTargetParams{
 			CircleID: circleID.String(), TargetID: targetID.String(),
 		})
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	revoked, err := s.revokedReporters(ctx, circleID)
+	revoked, err := s.revokedReporters(ctx, q, circleID)
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +239,8 @@ func (s *Service) recompute(
 		}
 	}
 	state := consensus.Derive(reports, quakes, timer.Timer, s.clock.Now(), configOf(circle))
-	return s.storeOrDrop(ctx, circleID, targetID, state, rows, changeReason(state, rows, reason))
+	return s.storeOrDrop(ctx, q, circleID, targetID, state,
+		rows, changeReason(state, rows, reason))
 }
 
 // storeOrDrop writes a derived state, or removes the row when there is nothing to cache.
@@ -252,11 +260,11 @@ func (s *Service) recompute(
 // ToD" is exactly what a cache is for. Dropping it would mean re-clustering that log on every
 // board render forever, and it would make an ordinary retraction fire the drift alert.
 func (s *Service) storeOrDrop(
-	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID,
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID, targetID core.RaidTargetID,
 	state consensus.State, rows []sqlitegen.TodReport, reason string,
 ) (*sqlitegen.TargetStateCache, error) {
 	if len(rows) == 0 {
-		if _, err := s.db.Queries().InvalidateTargetState(ctx,
+		if _, err := q.InvalidateTargetState(ctx,
 			sqlitegen.InvalidateTargetStateParams{
 				CircleID: circleID.String(), TargetID: targetID.String(),
 			}); err != nil {
@@ -264,7 +272,7 @@ func (s *Service) storeOrDrop(
 		}
 		return nil, nil
 	}
-	row, err := s.store(ctx, circleID, targetID, state, rows, reason)
+	row, err := s.store(ctx, q, circleID, targetID, state, rows, reason)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +285,7 @@ func (s *Service) storeOrDrop(
 // records what was true at a moment, and the verify job compares it against a recomputation at a
 // different one.
 func (s *Service) store(
-	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID,
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID, targetID core.RaidTargetID,
 	state consensus.State, rows []sqlitegen.TodReport, reason string,
 ) (sqlitegen.TargetStateCache, error) {
 	now := s.clock.Now()
@@ -318,7 +326,7 @@ func (s *Service) store(
 		params.LatestReportID = &latest
 	}
 
-	row, err := s.db.Queries().PutTargetState(ctx, params)
+	row, err := q.PutTargetState(ctx, params)
 	if err != nil {
 		return sqlitegen.TargetStateCache{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
@@ -399,19 +407,26 @@ func configOf(circle sqlitegen.Circle) consensus.CircleConfig {
 // from it with no row appended anywhere, and a board that changed for no visible reason is the
 // thing docs/design/03-consensus.md §8 says must not happen.
 //
-// **It returns its error, and the route that called it fails the request.** Both writes are
-// idempotent, so a retry converges; reporting success while the board goes on serving the old
-// window is the outcome worth avoiding, and it is the one a swallowed error produces.
+// **`q` is the writing transaction's query set, and everything below reads and writes through
+// it.** That is what makes this half of [catalogue.TimerInvalidator]: the recomputed board commits
+// with the window that moved it, or neither does. It is also why the reads matter as much as the
+// write — [catalogue.Service.ResolveTimer] on a pooled connection would resolve the OLD override
+// and cache a board derived from a window that no longer exists.
+//
+// **It returns its error, and the write that called it rolls back.** Reporting success while the
+// board goes on serving the old window is the outcome worth avoiding, and it is the one a
+// swallowed error produces.
 func (s *Service) OnTimerChange(
-	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID,
+	ctx context.Context, q *sqlitegen.Queries,
+	circleID core.CircleID, targetID core.RaidTargetID,
 ) error {
-	circle, err := s.circle(ctx, circleID)
+	circle, err := s.circle(ctx, q, circleID)
 	if err != nil {
 		return err
 	}
 	// Never skipped: this circle's OWN override is what just changed, so its effective timer
 	// moved whatever the resolved source now says.
-	_, err = s.recomputeForTimerChange(ctx, circle, targetID, false)
+	_, err = s.recomputeForTimerChange(ctx, q, circle, targetID, false)
 	return err
 }
 
@@ -430,17 +445,23 @@ func (s *Service) OnTimerChange(
 // counted and logged: a filter that drops something counts it somewhere visible.
 //
 // Every circle is attempted even after one fails, and the failures are joined. A partial
-// invalidation is the bad outcome, so the answer names all of it rather than the first circle that
-// happened to break — and the caller still fails, because a route or a seed that reported success
-// with three boards stale is exactly what this exists to prevent.
+// invalidation is unrepresentable now that this runs inside the writing transaction — one failure
+// rolls the timer write back with it — but the answer still names all of them rather than the
+// first circle that happened to break, because "which boards could not be recomputed" is what an
+// operator debugs from, and stopping early would cost them one retry per broken circle. The price
+// is the rest of the fan-out running under the write lock on a path that is already failing, which
+// is the cheaper half of that trade.
+//
+// The fan-out runs under the write lock, which is why the unit of atomicity for a SEED is one
+// window rather than the whole file: see [catalogue.Service.ApplySeed].
 func (s *Service) OnCatalogueTimerChange(
-	ctx context.Context, server core.Server, targetID core.RaidTargetID,
+	ctx context.Context, q *sqlitegen.Queries, server core.Server, targetID core.RaidTargetID,
 ) error {
 	if !server.Valid() {
 		return apierr.Newf(apierr.CodeValidationFailed,
 			"server must be one of %s", core.Servers())
 	}
-	circles, err := s.db.Queries().ListLiveCirclesOnServer(ctx, string(server))
+	circles, err := q.ListLiveCirclesOnServer(ctx, string(server))
 	if err != nil {
 		return apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
@@ -448,7 +469,7 @@ func (s *Service) OnCatalogueTimerChange(
 	recomputed, overridden := 0, 0
 	var failures []error
 	for _, circle := range circles {
-		moved, changeErr := s.recomputeForTimerChange(ctx, circle, targetID, true)
+		moved, changeErr := s.recomputeForTimerChange(ctx, q, circle, targetID, true)
 		switch {
 		case changeErr != nil:
 			failures = append(failures, fmt.Errorf("circle %s: %w", circle.ID, changeErr))
@@ -474,25 +495,25 @@ func (s *Service) OnCatalogueTimerChange(
 // recomputeForTimerChange is the one circle's worth of work both entry points do. It reports
 // whether it recomputed, which is false only when `skipOverridden` held it back.
 func (s *Service) recomputeForTimerChange(
-	ctx context.Context, circle sqlitegen.Circle, targetID core.RaidTargetID,
-	skipOverridden bool,
+	ctx context.Context, q *sqlitegen.Queries, circle sqlitegen.Circle,
+	targetID core.RaidTargetID, skipOverridden bool,
 ) (bool, error) {
 	circleID, err := core.ParseID[core.Circle](circle.ID)
 	if err != nil {
 		return false, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	timer, err := s.catalogue.ResolveTimer(ctx, circleID, targetID, core.Server(circle.Server))
+	timer, err := s.catalogue.ResolveTimer(ctx, q, circleID, targetID, core.Server(circle.Server))
 	if err != nil {
 		return false, err
 	}
 	if skipOverridden && timer.Source == catalogue.TimerSourceCircleOverride {
 		return false, nil
 	}
-	quakes, err := s.latestQuake(ctx, circleID)
+	quakes, err := s.latestQuake(ctx, q, circleID)
 	if err != nil {
 		return false, err
 	}
-	if _, err = s.recompute(ctx, circleID, targetID, circle,
+	if _, err = s.recompute(ctx, q, circleID, targetID, circle,
 		map[core.RaidTargetID]catalogue.ResolvedTimer{targetID: timer}, quakes,
 		schemaenum.TargetStateChangeReasonTimerChange); err != nil {
 		return false, err
@@ -507,7 +528,8 @@ func (s *Service) recomputeForTimerChange(
 // rebuild that ran a query per mob would be the slowest thing the binary does, on a schedule
 // nobody watches.
 func (s *Service) Rebuild(ctx context.Context, circleID core.CircleID) (int, error) {
-	circle, err := s.circle(ctx, circleID)
+	q := s.db.Queries()
+	circle, err := s.circle(ctx, q, circleID)
 	if err != nil {
 		return 0, err
 	}
@@ -521,7 +543,7 @@ func (s *Service) Rebuild(ctx context.Context, circleID core.CircleID) (int, err
 	// it stays true if that ever stops being so.
 	written := 0
 	for _, derived := range states {
-		row, storeErr := s.storeOrDrop(ctx, circleID, derived.targetID, derived.state,
+		row, storeErr := s.storeOrDrop(ctx, q, circleID, derived.targetID, derived.state,
 			derived.rows, derived.reason)
 		if storeErr != nil {
 			return 0, storeErr
@@ -581,19 +603,20 @@ func (s *Service) deriveAll(
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	rows, err := s.db.Queries().ListTodReportsForCircle(ctx, circle.ID)
+	q := s.db.Queries()
+	rows, err := q.ListTodReportsForCircle(ctx, circle.ID)
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	timers, err := s.catalogue.ResolveTimers(ctx, circleID, core.Server(circle.Server))
+	timers, err := s.catalogue.ResolveTimers(ctx, q, circleID, core.Server(circle.Server))
 	if err != nil {
 		return nil, err
 	}
-	quakes, err := s.latestQuake(ctx, circleID)
+	quakes, err := s.latestQuake(ctx, q, circleID)
 	if err != nil {
 		return nil, err
 	}
-	revoked, err := s.revokedReporters(ctx, circleID)
+	revoked, err := s.revokedReporters(ctx, q, circleID)
 	if err != nil {
 		return nil, err
 	}

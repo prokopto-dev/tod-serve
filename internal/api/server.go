@@ -78,11 +78,17 @@ type Config struct {
 	// ever append, and the other holds nothing but a cache it is allowed to throw away.
 	Tods   *tod.Service
 	States *projection.Service
-	// Invalidator is told when a route moved a respawn window. Required, and nil is a
-	// construction error like every other dependency here: an API that started with a missing
-	// invalidator would serve a board that silently stopped tracking timer edits, which is worse
-	// than not starting.
-	Invalidator TimerInvalidator
+	// Invalidator is handed to the write that moved a respawn window, and enlisted in that
+	// write's own transaction — it is not called from here. This layer holds it because this
+	// layer is where the wiring hands it in, and because a ROUTE is one of the two things that
+	// can move a window; the other is `tod-serve seed timers`, which hands the same port to
+	// [catalogue.Service.ApplySeed].
+	//
+	// Required, and nil is a construction error like every other dependency here: an API that
+	// started with a missing invalidator would serve a board that silently stopped tracking timer
+	// edits, which is worse than not starting. [catalogue.TimerInvalidator] refuses a nil one at
+	// the write as well, because construction is not the only way in.
+	Invalidator catalogue.TimerInvalidator
 	// Clock is the only reader of the wall clock.
 	Clock clock.Clock
 	// Log is where problems go. Nothing secret is ever written to it.

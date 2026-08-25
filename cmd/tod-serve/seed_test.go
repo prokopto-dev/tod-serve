@@ -270,10 +270,14 @@ func TestSeedTimers_RecomputesEveryBoardTheWindowsMoved(t *testing.T) {
 
 	out, err := captureCLI(t, "seed", "timers", "--db", db.Path(), "--file", path)
 	require.NoError(t, err)
-	require.Contains(t, out, "2 timers written")
+	require.Contains(t, out, "2 of 2 timers written")
 	// EVERY window this run moved, not merely one of them. The invariant the timer routes hold is
 	// "after a non-5xx answer the projection has been told", and the zero exit above is this
 	// command's version of that answer — so a run that recomputed 1 of 2 must not reach it.
+	//
+	// Both counts carry their denominator because since ADR-0013 a run CAN stop part-way: each
+	// window is written and recomputed in a transaction of its own, so "1 of 2" is a reachable
+	// and honest thing for this command to print, and a bare "1" would read as success.
 	require.Contains(t, out, "2 of 2 moved windows recomputed",
 		"a seed that wrote windows and invalidated nothing leaves every board on that server stale")
 

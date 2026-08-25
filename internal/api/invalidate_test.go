@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -11,8 +12,123 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/api"
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/catalogue"
 	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
+	"github.com/prokopto-dev/tod-serve/internal/store"
+	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 )
+
+// timerSubject is one window-moving route, prepared for driving: the world it needs, the request
+// that moves the window, and what it moves.
+//
+// Both registry gates below drive the SAME set, so a new flagged route needs exactly one entry and
+// gets both properties from it — that it pushes the invalidation, and that a failed invalidation
+// leaves nothing behind. Two driver lists would be two chances to cover a route in one gate and
+// not the other.
+type timerSubject struct {
+	req    request
+	target string
+	circle core.CircleID
+}
+
+func timerWrites() map[api.OperationID]func(*testing.T, *harness) timerSubject {
+	return map[api.OperationID]func(*testing.T, *harness) timerSubject{
+		api.OpPutCircleTimerOverride: func(t *testing.T, h *harness) timerSubject {
+			t.Helper()
+			reader, circleID := h.catalogueReader()
+			owner := h.seedMember(circleID, authz.RoleOwner)
+			id := h.resolveTargetID(reader, "Venril Sathir")
+			return timerSubject{
+				req: request{
+					Method: http.MethodPut,
+					Path: api.BasePath + "/circles/" + circleID.String() +
+						"/timer-overrides/" + id,
+					Session: h.session(owner, true),
+					Headers: map[string]string{api.IfMatchHeader: "*"},
+					Body: `{"window_kind": "variance", "window_open_offset_seconds": 300,
+					        "window_close_offset_seconds": 400}`,
+				},
+				target: id, circle: circleID,
+			}
+		},
+		api.OpDeleteCircleTimerOverride: func(t *testing.T, h *harness) timerSubject {
+			t.Helper()
+			reader, circleID := h.catalogueReader()
+			owner := h.seedMember(circleID, authz.RoleOwner)
+			session := h.session(owner, true)
+			id := h.resolveTargetID(reader, "Venril Sathir")
+			base := api.BasePath + "/circles/" + circleID.String() + "/timer-overrides/" + id
+			created := h.do(request{
+				Method: http.MethodPut, Path: base, Session: session,
+				Headers: map[string]string{api.IfMatchHeader: "*"},
+				Body:    `{"window_kind": "unknown"}`,
+			})
+			require.Equal(t, http.StatusOK, created.Status, created.Body)
+			return timerSubject{
+				req:    request{Method: http.MethodDelete, Path: base, Session: session},
+				target: id, circle: circleID,
+			}
+		},
+		api.OpPutRaidTargetTimer: func(t *testing.T, h *harness) timerSubject {
+			t.Helper()
+			// Driven through the edge like every other route here. It could not be until
+			// ADR-0012: `catalogue.manage` is instance-realm and nothing granted it, so this
+			// driver used to return early and the assertion below never ran for this route.
+			reader, circleID := h.catalogueReader()
+			owner := h.seedMember(circleID, authz.RoleOwner)
+			h.grantInstance(owner, authz.PermissionCatalogueManage)
+			id := h.resolveTargetID(reader, "Venril Sathir")
+			return timerSubject{
+				req: request{
+					Method:  http.MethodPut,
+					Path:    api.BasePath + "/raid-targets/" + id + "/timers/blue",
+					Session: h.session(owner, true),
+					Headers: map[string]string{api.IfMatchHeader: "*"},
+					Body: `{"window_kind": "variance", "window_open_offset_seconds": 300,
+					        "window_close_offset_seconds": 400}`,
+				},
+				target: id, circle: circleID,
+			}
+		},
+	}
+}
+
+// eachTimerWritingRoute drives fn once per route carrying `InvalidatesTimer`, and fails for a
+// flagged route with no driver — in both directions, so neither list can quietly shrink.
+func eachTimerWritingRoute(
+	t *testing.T, fn func(t *testing.T, h *harness, subject timerSubject, id api.OperationID),
+) {
+	t.Helper()
+	writes := timerWrites()
+	flagged := 0
+	for _, route := range api.Routes() {
+		if !route.InvalidatesTimer {
+			continue
+		}
+		flagged++
+		setup, ok := writes[route.ID]
+		require.True(t, ok,
+			"%s moves a respawn window and this test has no driver for it. A flagged route with "+
+				"no driver is a route nobody is checking", route.ID)
+
+		t.Run(string(route.ID), func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.seedCatalogue()
+			subject := setup(t, h)
+			require.NotEmpty(t, subject.target,
+				"%s has a driver that drove nothing, so the assertions below would pass over an "+
+					"unexercised route", route.ID)
+			fn(t, h, subject, route.ID)
+		})
+	}
+	require.Positive(t, flagged, "no route carries InvalidatesTimer; the filter is wrong")
+	for id := range writes {
+		require.True(t, routeByID(t, id).InvalidatesTimer,
+			"%s has a driver here and no longer carries InvalidatesTimer", id)
+	}
+}
 
 // TestRouteRegistry_EveryTimerWritingRoute_PushesTheInvalidation is the mechanism behind
 // `Route.InvalidatesTimer`, and it is derived from the registry rather than from a list here.
@@ -27,104 +143,53 @@ import (
 // return, and for a route added later that carries the flag and does nothing with it.
 func TestRouteRegistry_EveryTimerWritingRoute_PushesTheInvalidation(t *testing.T) {
 	t.Parallel()
+	eachTimerWritingRoute(t, func(
+		t *testing.T, h *harness, subject timerSubject, id api.OperationID,
+	) {
+		h.invalidator.reset()
+		got := h.do(subject.req)
+		require.Equal(t, http.StatusOK, got.Status, got.Body)
+		pushed := h.invalidator.recorded()
+		require.Len(t, pushed, 1,
+			"%s wrote a window and pushed %d invalidations; the board will go on serving the "+
+				"old one until the nightly verify job notices", id, len(pushed))
+		require.Equal(t, subject.target, pushed[0].Target.String())
+	})
+}
 
-	// Every route carrying the flag needs a driver here. The map is compared against the registry
-	// in BOTH directions below, so a new flagged route with no driver is a red test rather than a
-	// route this loop silently skips.
-	drivers := map[api.OperationID]func(*testing.T, *harness) string{
-		api.OpPutCircleTimerOverride: func(t *testing.T, h *harness) string {
-			t.Helper()
-			reader, circleID := h.catalogueReader()
-			owner := h.seedMember(circleID, authz.RoleOwner)
-			id := h.resolveTargetID(reader, "Venril Sathir")
-			h.invalidator.reset()
-			got := h.do(request{
-				Method: http.MethodPut,
-				Path: api.BasePath + "/circles/" + circleID.String() +
-					"/timer-overrides/" + id,
-				Session: h.session(owner, true),
-				Headers: map[string]string{api.IfMatchHeader: "*"},
-				Body: `{"window_kind": "variance", "window_open_offset_seconds": 300,
-				        "window_close_offset_seconds": 400}`,
-			})
-			require.Equal(t, http.StatusOK, got.Status, got.Body)
-			return id
-		},
-		api.OpDeleteCircleTimerOverride: func(t *testing.T, h *harness) string {
-			t.Helper()
-			reader, circleID := h.catalogueReader()
-			owner := h.seedMember(circleID, authz.RoleOwner)
-			session := h.session(owner, true)
-			id := h.resolveTargetID(reader, "Venril Sathir")
-			base := api.BasePath + "/circles/" + circleID.String() + "/timer-overrides/" + id
-			created := h.do(request{
-				Method: http.MethodPut, Path: base, Session: session,
-				Headers: map[string]string{api.IfMatchHeader: "*"},
-				Body:    `{"window_kind": "unknown"}`,
-			})
-			require.Equal(t, http.StatusOK, created.Status, created.Body)
+// TestRouteRegistry_EveryTimerWritingRoute_RollsBackWhenTheInvalidationFails is the mechanism
+// behind `TimerPushIsNotTransactional` being closed, and it is the gate ADR-0013 exists for.
+//
+// Failing the request was never the hard half — that was true before, and it left the crashed
+// process uncovered, because a crash produces no response for anybody to act on. What closes it
+// is that the window write and its recomputation are ONE transaction, so a push that does not
+// happen takes the write with it and there is no state in which the row moved and the projection
+// was not told.
+//
+// So the assertion is about the DATABASE and not about the status code: every row that existed
+// before the failed write still exists, unchanged, and nothing new was left behind. It is derived
+// from the route registry, so a fourth window-writing route inherits it.
+func TestRouteRegistry_EveryTimerWritingRoute_RollsBackWhenTheInvalidationFails(t *testing.T) {
+	t.Parallel()
+	eachTimerWritingRoute(t, func(
+		t *testing.T, h *harness, subject timerSubject, id api.OperationID,
+	) {
+		before := h.timerFingerprint(t, subject)
 
-			// Reset AFTER the setup write, so what this asserts is the DELETE's own push.
-			h.invalidator.reset()
-			got := h.do(request{Method: http.MethodDelete, Path: base, Session: session})
-			require.Equal(t, http.StatusOK, got.Status, got.Body)
-			return id
-		},
-		api.OpPutRaidTargetTimer: func(t *testing.T, h *harness) string {
-			t.Helper()
-			// Driven through the edge like every other route here. It could not be until
-			// ADR-0012: `catalogue.manage` is instance-realm and nothing granted it, so this
-			// driver used to return early and the assertion below never ran for this route.
-			reader, circleID := h.catalogueReader()
-			owner := h.seedMember(circleID, authz.RoleOwner)
-			h.grantInstance(owner, authz.PermissionCatalogueManage)
-			id := h.resolveTargetID(reader, "Venril Sathir")
-			h.invalidator.reset()
-			got := h.do(request{
-				Method:  http.MethodPut,
-				Path:    api.BasePath + "/raid-targets/" + id + "/timers/blue",
-				Session: h.session(owner, true),
-				Headers: map[string]string{api.IfMatchHeader: "*"},
-				Body: `{"window_kind": "variance", "window_open_offset_seconds": 300,
-				        "window_close_offset_seconds": 400}`,
-			})
-			require.Equal(t, http.StatusOK, got.Status, got.Body)
-			return id
-		},
-	}
+		h.invalidator.failWith(errors.New("the projection is unreachable"))
+		h.invalidator.reset()
+		got := h.do(subject.req)
+		require.GreaterOrEqual(t, got.Status, http.StatusInternalServerError,
+			"%s reported success while the projection was never told: %s", id, got.Body)
+		require.Len(t, h.invalidator.recorded(), 1,
+			"%s never reached the push at all, so this ran the wrong experiment: it would pass "+
+				"for a route that failed before writing anything", id)
 
-	flagged := 0
-	for _, route := range api.Routes() {
-		if !route.InvalidatesTimer {
-			continue
-		}
-		flagged++
-		drive, ok := drivers[route.ID]
-		require.True(t, ok,
-			"%s moves a respawn window and this test has no driver for it. A flagged route with "+
-				"no driver is a route nobody is checking pushes the invalidation", route.ID)
-
-		t.Run(string(route.ID), func(t *testing.T) {
-			t.Parallel()
-			h := newHarness(t)
-			h.seedCatalogue()
-			target := drive(t, h)
-			require.NotEmpty(t, target,
-				"%s has a driver that drove nothing, so the assertion below would pass over an "+
-					"unexercised route", route.ID)
-			pushed := h.invalidator.recorded()
-			require.Len(t, pushed, 1,
-				"%s wrote a window and pushed %d invalidations; the board will go on serving the "+
-					"old one until the nightly verify job notices", route.ID, len(pushed))
-			require.Equal(t, target, pushed[0].Target.String())
-		})
-	}
-	require.Positive(t, flagged, "no route carries InvalidatesTimer; the filter is wrong")
-
-	for id := range drivers {
-		require.True(t, routeByID(t, id).InvalidatesTimer,
-			"%s has a driver here and no longer carries InvalidatesTimer", id)
-	}
+		require.Equal(t, before, h.timerFingerprint(t, subject),
+			"%s answered %d and kept what it wrote. The push failed, so nothing recomputed the "+
+				"boards behind that window, and nothing ever will until the nightly job", id,
+			got.Status)
+	})
 }
 
 // TestRouteRegistry_EveryWindowWritingPath_CarriesTheFlag closes the other direction.
@@ -182,7 +247,7 @@ func TestPutCircleTimerOverride_AFailedInvalidation_FailsTheRequest(t *testing.T
 //
 // `putRaidTargetTimer` writes `raid_target_timer`, which is instance-wide and per-server, so it
 // moves the window for every circle on that server that has not overridden it. That is a different
-// fan-out from one circle's override, which is why [api.TimerInvalidator] has two methods rather
+// fan-out from one circle's override, which is why [catalogue.TimerInvalidator] has two methods rather
 // than a nullable circle id.
 //
 // It is asserted through the service and the port rather than through the edge because the route
@@ -202,9 +267,9 @@ func TestPutRaidTargetTimer_TheHandler_PushesInstanceWide(t *testing.T) {
 
 	// The port's shape is the contract the projection binds to. A single-method port would have
 	// forced this route to invent a circle id it does not have.
-	var invalidator api.TimerInvalidator = h.invalidator
+	var invalidator catalogue.TimerInvalidator = h.invalidator
 	require.NoError(t, invalidator.OnCatalogueTimerChange(
-		t.Context(), "blue", mustTargetID(t, id)))
+		t.Context(), h.store.Queries(), "blue", mustTargetID(t, id)))
 
 	pushed := h.invalidator.recorded()
 	require.Len(t, pushed, 1)
@@ -281,18 +346,20 @@ func routeByID(t *testing.T, id api.OperationID) api.Route {
 	return route
 }
 
-// TestDeleteCircleTimerOverride_AFailedInvalidation_IsRetryableToConvergence is the property that
-// distinguishes this route from the two PUTs beside it.
+// TestDeleteCircleTimerOverride_AFailedInvalidation_LeavesTheOverrideAndConverges is the property
+// that used to distinguish this route from the two PUTs beside it, and no longer does.
 //
-// A PUT converges on its own: the retry re-writes the same row and re-pushes. A DELETE has nothing
-// left to re-delete, so a push that failed once could never be attempted again — the retry would
-// answer 404 before reaching it, and the board would keep serving an override an officer removed
-// until the nightly verify job noticed. Up to twenty-four hours of a confidently wrong window,
-// caused by one transient failure.
+// A PUT converges on its own: the retry re-writes the same row and re-pushes. A DELETE had nothing
+// left to re-delete, so a push that failed once could never be attempted again — the retry
+// answered 404 before reaching it, and the board kept serving an override an officer removed until
+// the nightly verify job noticed. The handler compensated by pushing on the 404 as well.
 //
-// The invariant asserted here: after any non-5xx answer from this route, the projection has been
-// told.
-func TestDeleteCircleTimerOverride_AFailedInvalidation_IsRetryableToConvergence(t *testing.T) {
+// Since ADR-0013 the compensation is gone because the asymmetry is: the push runs inside the
+// delete's own transaction, so a push that fails takes the DELETE down with it and the row is
+// still there for the retry to remove. The invariant is unchanged and is now held by construction
+// — **after any non-5xx answer from this route, the projection has been told** — and this asserts
+// the mechanism it now rests on rather than the compensation it used to.
+func TestDeleteCircleTimerOverride_AFailedInvalidation_LeavesTheOverrideAndConverges(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.seedCatalogue()
@@ -309,36 +376,46 @@ func TestDeleteCircleTimerOverride_AFailedInvalidation_IsRetryableToConvergence(
 	})
 	require.Equal(t, http.StatusOK, created.Status, created.Body)
 
-	// The projection is unreachable. The row goes, the push does not, and the caller is told.
+	// The projection is unreachable. Neither half happens, and the caller is told.
 	h.invalidator.failWith(errors.New("the projection is unreachable"))
 	h.invalidator.reset()
 	failed := h.do(request{Method: http.MethodDelete, Path: path, Session: session})
 	require.GreaterOrEqual(t, failed.Status, http.StatusInternalServerError,
 		"the delete reported success while the board kept the override: %s", failed.Body)
 
-	// The retry. Before the fix this answered 404 without pushing, and the staleness was permanent
-	// until the nightly job: the row was already gone, so nothing could re-trigger the
-	// invalidation ever again.
+	// **The override is still there.** That is the whole difference: a DELETE that had committed
+	// would leave the retry nothing to act on, which is why this route needed a compensating push
+	// before the write became transactional. Asserted against the row rather than through a route,
+	// because a single override has no GET of its own.
+	_, err := h.store.Queries().GetCircleTimerOverride(t.Context(),
+		sqlitegen.GetCircleTimerOverrideParams{
+			CircleID: circleID.String(), TargetID: id,
+		})
+	require.NoError(t, err,
+		"the row went and the push did not; nothing can now tell the projection")
+
+	// The retry does both, and answers 200 rather than the 404 the old shape gave it.
 	h.invalidator.failWith(nil)
 	h.invalidator.reset()
 	retried := h.do(request{Method: http.MethodDelete, Path: path, Session: session})
-	require.Equal(t, http.StatusNotFound, retried.Status, retried.Body)
+	require.Equal(t, http.StatusOK, retried.Status, retried.Body)
 
 	pushed := h.invalidator.recorded()
-	require.Len(t, pushed, 1,
-		"the retry answered %d and pushed nothing; the board is stale until the nightly verify "+
-			"job and no request can fix it", retried.Status)
+	require.Len(t, pushed, 1)
 	require.Equal(t, id, pushed[0].Target.String())
 	require.Equal(t, circleID, pushed[0].Circle)
 }
 
-// TestDeleteCircleTimerOverride_ANonExistentOverride_StillPushesBeforeItAnswers.
+// TestDeleteCircleTimerOverride_ANonExistentOverride_TouchesTheProjectionNotAtAll.
 //
-// The 404 is answered only once the projection knows, which is what makes the retry above
-// converge. It costs one idempotent recompute on a genuinely spurious delete, which is far less
-// than the staleness it removes — and if that push fails, the 404 is withheld and the caller is
-// told to try again rather than being given a terminal answer that is not yet true.
-func TestDeleteCircleTimerOverride_ANonExistentOverride_StillPushesBeforeItAnswers(t *testing.T) {
+// The 404 used to push, deliberately, so that a retry after a failed push could still reach one.
+// Inside a transaction that case cannot arise, and the compensation became a recompute for a
+// window that did not move — which writes `timer_change` onto a board nothing changed, a small lie
+// in the one field that exists to explain why an answer changed.
+//
+// The invariant still holds, by a different route: a 404 here means the override is not there, and
+// whoever removed it recomputed the boards inside the transaction that removed it.
+func TestDeleteCircleTimerOverride_ANonExistentOverride_TouchesTheProjectionNotAtAll(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.seedCatalogue()
@@ -351,19 +428,17 @@ func TestDeleteCircleTimerOverride_ANonExistentOverride_StillPushesBeforeItAnswe
 	h.invalidator.reset()
 	got := h.do(request{Method: http.MethodDelete, Path: path, Session: session})
 	h.requireProblem(got, apierr.CodeNotFound)
-	require.Len(t, h.invalidator.recorded(), 1)
-
-	// And when the push itself fails, the 404 is withheld: a terminal answer that is not yet true
-	// is what stops the caller retrying.
-	h.invalidator.failWith(errors.New("the projection is unreachable"))
-	h.invalidator.reset()
-	failed := h.do(request{Method: http.MethodDelete, Path: path, Session: session})
-	require.GreaterOrEqual(t, failed.Status, http.StatusInternalServerError, failed.Body)
+	require.Empty(t, h.invalidator.recorded(),
+		"nothing moved, so nothing was recomputed and no board was told a window changed")
 }
 
-// TestTimerWritingRoutes_EveryNon5xxAnswer_HasPushedTheInvalidation states the invariant over the
-// registry rather than over the three handlers, so a fourth window-writing route inherits it.
-func TestTimerWritingRoutes_EveryNon5xxAnswer_HasPushedTheInvalidation(t *testing.T) {
+// TestTimerWritingRoutes_EveryTerminalOutcome_LeavesTheProjectionCurrent walks every terminal
+// outcome of the circle-scoped pair, which is the sequence the compensating push existed for.
+//
+// The invariant is unchanged: after any non-5xx answer, no board is serving a window this route
+// replaced. What changed is how each outcome satisfies it — a write pushes inside its own
+// transaction, and a 404 wrote nothing to push about.
+func TestTimerWritingRoutes_EveryTerminalOutcome_LeavesTheProjectionCurrent(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.seedCatalogue()
@@ -373,20 +448,23 @@ func TestTimerWritingRoutes_EveryNon5xxAnswer_HasPushedTheInvalidation(t *testin
 	id := h.resolveTargetID(reader, "Venril Sathir")
 	base := api.BasePath + "/circles/" + circleID.String() + "/timer-overrides/" + id
 
-	// Every terminal outcome of the circle-scoped pair: create, replace, delete, delete again.
 	steps := []struct {
 		name    string
 		method  string
 		headers map[string]string
 		body    string
+		pushes  int
 	}{
 		{
 			name: "create", method: http.MethodPut,
 			headers: map[string]string{api.IfMatchHeader: "*"},
 			body:    `{"window_kind": "unknown"}`,
+			pushes:  1,
 		},
-		{name: "delete", method: http.MethodDelete},
-		{name: "delete again", method: http.MethodDelete},
+		{name: "delete", method: http.MethodDelete, pushes: 1},
+		// Nothing to remove and nothing to recompute. Before ADR-0013 this pushed, because the
+		// push was the only thing that could rescue a failed one.
+		{name: "delete again", method: http.MethodDelete, pushes: 0},
 	}
 	for _, step := range steps {
 		h.invalidator.reset()
@@ -396,8 +474,60 @@ func TestTimerWritingRoutes_EveryNon5xxAnswer_HasPushedTheInvalidation(t *testin
 		})
 		require.Less(t, got.Status, http.StatusInternalServerError,
 			"%s answered %d: %s", step.name, got.Status, got.Body)
-		require.Len(t, h.invalidator.recorded(), 1,
-			"%s answered %d and pushed nothing; a non-5xx answer means the projection was told",
-			step.name, got.Status)
+		require.Len(t, h.invalidator.recorded(), step.pushes,
+			"%s answered %d and pushed %d invalidations, not %d",
+			step.name, got.Status, len(h.invalidator.recorded()), step.pushes)
 	}
+}
+
+// TestPutCircleTimerOverride_WhenTheProjectionsOwnWriteIsRefused_TheOverrideIsNotThere.
+//
+// The registry gate above fails the PORT, which proves the rollback for any error the invalidator
+// can return. This one fails the DATABASE: the hook issues the write the projection issues — a row
+// into `target_state_cache` — with a `status` the enum CHECK refuses, so the error comes back
+// through the driver from inside the transaction rather than from a fake.
+//
+// It is here because those two failures are not the same experiment. A sentinel returned by a fake
+// proves the Go control flow; a constraint violation proves that SQLite's own refusal, arriving
+// mid-transaction, still takes the timer write with it.
+func TestPutCircleTimerOverride_WhenTheProjectionsOwnWriteIsRefused_TheOverrideIsNotThere(
+	t *testing.T,
+) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedCatalogue()
+	reader, circleID := h.catalogueReader()
+	owner := h.seedMember(circleID, authz.RoleOwner)
+	id := h.resolveTargetID(reader, "Venril Sathir")
+
+	h.invalidator.observeInside(func(ctx context.Context, q *sqlitegen.Queries) error {
+		_, err := q.PutTargetState(ctx, sqlitegen.PutTargetStateParams{
+			CircleID: circleID.String(), TargetID: id,
+			ComputedAt: int64(fixtureNow),
+			// Not one of the six the enum catalogue defines, so `ck_target_state_cache_status`
+			// refuses it. This is the projection's own write, refused by the database.
+			Status:     "confidently-wrong",
+			Confidence: schemaenum.TargetStateConfidenceUnknown,
+			CreatedAt:  int64(fixtureNow), UpdatedAt: int64(fixtureNow),
+		})
+		return err
+	})
+
+	got := h.do(request{
+		Method:  http.MethodPut,
+		Path:    api.BasePath + "/circles/" + circleID.String() + "/timer-overrides/" + id,
+		Session: h.session(owner, true),
+		Headers: map[string]string{api.IfMatchHeader: "*"},
+		Body:    `{"window_kind": "unknown"}`,
+	})
+	require.GreaterOrEqual(t, got.Status, http.StatusInternalServerError,
+		"the override was reported as written while the projection's write was refused: %s",
+		got.Body)
+
+	_, err := h.store.Queries().GetCircleTimerOverride(t.Context(),
+		sqlitegen.GetCircleTimerOverrideParams{
+			CircleID: circleID.String(), TargetID: id,
+		})
+	require.True(t, store.IsNotFound(err),
+		"the override survived a transaction that could not write the board derived from it")
 }

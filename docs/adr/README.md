@@ -23,6 +23,7 @@ directions linked.
 | [0010](0010-sse-over-websockets.md) | SSE, not WebSockets | accepted |
 | [0011](0011-operator-registered-discord-application.md) | Each operator registers their own Discord application | accepted |
 | [0012](0012-instance-grants-are-a-capability-ledger.md) | Instance permissions are a capability ledger on an identity | accepted |
+| [0013](0013-the-timer-invalidation-joins-the-writing-transaction.md) | The timer invalidation joins the writing transaction | accepted |
 
 ## Where this project diverges from Dragon Kill Party
 

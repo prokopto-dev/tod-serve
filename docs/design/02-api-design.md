@@ -249,10 +249,13 @@ behaviourally over every driven route and structurally over every row, headers i
 A catalogue timer is instance-wide and **per server**, so `putRaidTargetTimer` and
 `tod-serve seed timers --file` move the window for every circle pinned to that server that has not
 overridden it — and leave alone every circle that has. The recomputation fans out over those
-circles and its failure **fails the write**: both are idempotent, so a retry converges, while a run
-that reported success with stale boards does not. The seed command is the only such write with no
-route, so the architectural gate over the registry cannot see it and
-`TestSeedTimers_RecomputesEveryBoardTheWindowsMoved` covers it instead.
+circles **inside the write's own transaction**, so its failure does not merely fail the request: it
+rolls the moved window back with it, and there is no instant — not even one a crash could land in —
+where the row moved and the boards derived from it did not.
+[ADR-0013](../adr/0013-the-timer-invalidation-joins-the-writing-transaction.md) has the shape and
+what it costs. The seed command is the only such write with no route, so the architectural gate
+over the registry cannot see it and `TestSeedTimers_RecomputesEveryBoardTheWindowsMoved` covers it
+instead.
 
 **`status` and every countdown are re-derived on each read** and are never served from the cache.
 A stored `pre_window` is stale the instant the window opens with no write in between, so the cache

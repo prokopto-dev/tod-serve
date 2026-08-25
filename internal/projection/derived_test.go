@@ -159,7 +159,7 @@ func TestOnTimerChange_RecordsTheOneReasonTheLogCannotShow(t *testing.T) {
 	require.Equal(t, schemaenum.TargetStateChangeReasonNewKill, *before.ChangeReason)
 
 	f.seedOverride(target, 6*time.Hour, 10*time.Hour)
-	require.NoError(t, f.states.OnTimerChange(t.Context(), f.circle, target.ID))
+	require.NoError(t, f.states.OnTimerChange(t.Context(), f.db.Queries(), f.circle, target.ID))
 
 	row, ok := f.cached(target)
 	require.True(t, ok)
@@ -340,7 +340,7 @@ func TestOnCatalogueTimerChange_FansOutToEveryCircleOnThatServerButNotTheOverrid
 	// The catalogue's blue window moves. Nothing is reported anywhere.
 	f.seedCatalogueTimer(target, movedOpen, 8*24*time.Hour)
 	require.NoError(t, f.states.OnCatalogueTimerChange(
-		t.Context(), core.Server(schemaenum.ServerBlue), target.ID))
+		t.Context(), f.db.Queries(), core.Server(schemaenum.ServerBlue), target.ID))
 
 	// EVERY circle without an override, not just the first one the loop reached. A missed circle
 	// is a silently stale board, which is the failure this fan-out exists to prevent.
@@ -373,9 +373,53 @@ func TestOnCatalogueTimerChange_ABadServer_IsRefusedRatherThanFanningOutToNothin
 	t.Parallel()
 	f := newFixture(t)
 	target := f.seedTarget("Trakanon", "Old Sebilis", false)
-	err := f.states.OnCatalogueTimerChange(t.Context(), core.Server("purple"), target.ID)
+	err := f.states.OnCatalogueTimerChange(t.Context(), f.db.Queries(), core.Server("purple"), target.ID)
 	require.Error(t, err)
 	got, ok := apierr.From(err)
 	require.True(t, ok)
 	require.Equal(t, apierr.CodeValidationFailed, got.Code())
+}
+
+// TestPutOverride_TheRecomputation_ReadsTheWindowItJustWrote is the half of ADR-0013 that a
+// rollback test cannot reach.
+//
+// The push joining the transaction is only half the fix. [Service.recompute] asks
+// `catalogue.ResolveTimer` what the effective window IS, and that read has to join the SAME
+// transaction: on a pooled connection it reads the snapshot from before the transaction opened, so
+// it would recompute every board from the window that was there BEFORE and cache the answer. The
+// write would be perfectly atomic and the board perfectly wrong — worse than the gap it replaced,
+// because the stale row now carries `timer_change` and reads as freshly derived.
+//
+// So this asserts the CONTENT, not the push: nothing here calls OnTimerChange. The override is
+// written the way a route writes one — through the catalogue, with this projection as its
+// invalidator — and the cached row must hold the override's window rather than the catalogue's.
+func TestPutOverride_TheRecomputation_ReadsTheWindowItJustWrote(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	target := f.seedTarget("Gorenaire", "The Dreadlands", false)
+	const catalogueOpen, overrideOpen = 24 * time.Hour, 6 * time.Hour
+	f.seedCatalogueTimer(target, catalogueOpen, 36*time.Hour)
+
+	died := fixtureNow.Add(-time.Hour)
+	f.report(target, died, schemaenum.TodReportSourceLogLine)
+	_, err := f.states.Get(t.Context(), f.circle, target.ID, false)
+	require.NoError(t, err)
+	before, ok := f.cached(target)
+	require.True(t, ok)
+	require.NotNil(t, before.WindowOpenAt)
+	require.Equal(t, int64(died.Add(catalogueOpen)), *before.WindowOpenAt,
+		"the board is not standing on the catalogue timer, so moving off it proves nothing")
+
+	// The write, and nothing else. Its own transaction recomputes the board.
+	f.seedOverride(target, overrideOpen, 10*time.Hour)
+
+	after, ok := f.cached(target)
+	require.True(t, ok)
+	require.NotNil(t, after.WindowOpenAt)
+	require.Equal(t, int64(died.Add(overrideOpen)), *after.WindowOpenAt,
+		"the recomputation resolved the timer on a connection that could not see the override "+
+			"the same transaction had just written, so it re-derived the board from the "+
+			"catalogue window and cached that as `timer_change`")
+	require.NotNil(t, after.ChangeReason)
+	require.Equal(t, schemaenum.TargetStateChangeReasonTimerChange, *after.ChangeReason)
 }

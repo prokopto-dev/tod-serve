@@ -124,7 +124,9 @@ type BoardFilter struct {
 func (s *Service) Board(
 	ctx context.Context, circleID core.CircleID, filter BoardFilter,
 ) ([]BoardEntry, bool, error) {
-	circle, err := s.circle(ctx, circleID)
+	// The board is a read: no transaction, and the pool said so at the call.
+	q := s.db.Queries()
+	circle, err := s.circle(ctx, q, circleID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -142,7 +144,7 @@ func (s *Service) Board(
 	if err != nil {
 		return nil, false, err
 	}
-	timers, err := s.catalogue.ResolveTimers(ctx, circleID, server)
+	timers, err := s.catalogue.ResolveTimers(ctx, q, circleID, server)
 	if err != nil {
 		return nil, false, err
 	}
@@ -150,7 +152,7 @@ func (s *Service) Board(
 	if err != nil {
 		return nil, false, err
 	}
-	quakes, err := s.latestQuake(ctx, circleID)
+	quakes, err := s.latestQuake(ctx, q, circleID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -167,7 +169,7 @@ func (s *Service) Board(
 		if _, hit := cached[id]; hit {
 			continue
 		}
-		row, rebuildErr := s.recompute(ctx, circleID, id, circle, timers, quakes, "")
+		row, rebuildErr := s.recompute(ctx, q, circleID, id, circle, timers, quakes, "")
 		if rebuildErr != nil {
 			return nil, false, rebuildErr
 		}
@@ -334,10 +336,15 @@ func upSince(timer consensus.Timer, quakes []consensus.Quake) *core.Micros {
 	return &at
 }
 
+// circle reads one circle row.
+//
+// Like every helper a window-moving transaction can reach, it takes the query set rather than
+// choosing one: inside such a transaction the pool is the snapshot from before it opened. Callers
+// that are NOT in one pass `s.db.Queries()` and say so at the call.
 func (s *Service) circle(
-	ctx context.Context, id core.CircleID,
+	ctx context.Context, q *sqlitegen.Queries, id core.CircleID,
 ) (sqlitegen.Circle, error) {
-	row, err := s.db.Queries().GetCircle(ctx, id.String())
+	row, err := q.GetCircle(ctx, id.String())
 	if store.IsNotFound(err) {
 		return sqlitegen.Circle{}, apierr.New(apierr.CodeNotFound, "no such circle")
 	}
@@ -386,9 +393,9 @@ func (s *Service) reportedTargets(
 }
 
 func (s *Service) latestQuake(
-	ctx context.Context, circleID core.CircleID,
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID,
 ) ([]consensus.Quake, error) {
-	row, err := s.db.Queries().GetLatestQuakeEvent(ctx, circleID.String())
+	row, err := q.GetLatestQuakeEvent(ctx, circleID.String())
 	if store.IsNotFound(err) {
 		return nil, nil
 	}
@@ -405,9 +412,9 @@ func (s *Service) latestQuake(
 // revokedReporters is the circle's revoked memberships, as a set. Their reports still count and
 // their retractions still apply; this only makes the fact visible.
 func (s *Service) revokedReporters(
-	ctx context.Context, circleID core.CircleID,
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID,
 ) (map[string]bool, error) {
-	rows, err := s.db.Queries().ListMemberships(ctx, circleID.String())
+	rows, err := q.ListMemberships(ctx, circleID.String())
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}

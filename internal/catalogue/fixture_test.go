@@ -1,10 +1,12 @@
 package catalogue_test
 
 import (
+	"context"
 	"crypto/rand"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -35,6 +37,11 @@ type fixture struct {
 	store *store.DB
 	clock *clock.Test
 	ids   *core.Generator
+	// inv is the port every window-moving write takes. It is a spy rather than the real
+	// projection because these are the CATALOGUE's tests: what they need to know is that the
+	// push happened, that it happened inside the transaction, and that its failure took the
+	// write down with it.
+	inv *spyInvalidator
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -49,7 +56,75 @@ func newFixture(t *testing.T) *fixture {
 	ids := core.NewGenerator(rand.Reader)
 	svc, err := catalogue.New(catalogue.Config{Store: db, Clock: clk, IDs: ids, Log: log})
 	require.NoError(t, err)
-	return &fixture{t: t, svc: svc, store: db, clock: clk, ids: ids}
+	return &fixture{t: t, svc: svc, store: db, clock: clk, ids: ids, inv: &spyInvalidator{}}
+}
+
+// invalidation is one push at the projection: which circle or which server, and which target.
+type invalidation struct {
+	Circle core.CircleID
+	Server core.Server
+	Target core.RaidTargetID
+	Scope  string
+}
+
+// spyInvalidator is the [catalogue.TimerInvalidator] this package's tests wire.
+//
+// It records rather than no-ops, because "did this write push the invalidation" is a question a
+// no-op fake would let every write pass. `err` makes the push fail, which is the only way to
+// assert that a failed push takes the write down with it. `inside` runs with the WRITING
+// TRANSACTION's own query set, which is how a test asks what is visible from inside it and what
+// is not.
+type spyInvalidator struct {
+	mu     sync.Mutex
+	calls  []invalidation
+	err    error
+	inside func(ctx context.Context, q *sqlitegen.Queries) error
+}
+
+func (s *spyInvalidator) OnTimerChange(
+	ctx context.Context, q *sqlitegen.Queries,
+	circleID core.CircleID, targetID core.RaidTargetID,
+) error {
+	return s.record(ctx, q, invalidation{Circle: circleID, Target: targetID, Scope: "circle"})
+}
+
+func (s *spyInvalidator) OnCatalogueTimerChange(
+	ctx context.Context, q *sqlitegen.Queries, server core.Server, targetID core.RaidTargetID,
+) error {
+	return s.record(ctx, q, invalidation{Server: server, Target: targetID, Scope: "instance"})
+}
+
+func (s *spyInvalidator) record(
+	ctx context.Context, q *sqlitegen.Queries, call invalidation,
+) error {
+	s.mu.Lock()
+	s.calls = append(s.calls, call)
+	inside, err := s.inside, s.err
+	s.mu.Unlock()
+	if inside != nil {
+		if insideErr := inside(ctx, q); insideErr != nil {
+			return insideErr
+		}
+	}
+	return err
+}
+
+func (s *spyInvalidator) recorded() []invalidation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]invalidation(nil), s.calls...)
+}
+
+func (s *spyInvalidator) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls, s.err, s.inside = nil, nil, nil
+}
+
+func (s *spyInvalidator) failWith(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
 }
 
 // seedEmbedded loads the shipped identity — and nothing else. No timer is written by this, ever:
