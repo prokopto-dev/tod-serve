@@ -248,27 +248,57 @@ before starting, or the log reads `permission denied` on `/data/tod.db`.
 
 1. Merge to `main`. `Release` builds and pushes `:edge` and `:sha-<full>`.
 2. `Deploy` is queued and waits for your approval on the `production` environment.
-3. On approval it checks out **the commit that release was built from**, copies its
-   `deploy/compose.yaml` to the droplet, validates it against the host's `.env`
-   (`docker compose config -q`, which fails on a malformed file *and* on any required variable the
-   `.env` is missing), and adopts it — keeping `compose.yaml.prev`.
-4. **It snapshots the database**, with `tod-serve backup`, into
-   `/opt/tod-serve/backups/pre-<timestamp>.db`. If that fails and a volume exists, **the deploy
-   stops**. Only "no volume at all — first deploy" proceeds without one.
-5. It pins `TOD_DEPLOY_IMAGE` in `.env` to the exact image, pulls, runs `migrate`, and restarts.
-6. It polls `/healthz`, `/readyz`, `/api/v1/meta` and the console — **every check retries on a
+3. It **resolves the release tag to a manifest digest** and deploys that, not the tag.
+   `sha-<commit>` is still an OCI tag: its name is derived from a commit, which makes it *look*
+   immutable and does not make it so. A deploy waits for a human, so the approval and the pull are
+   separated by however long that takes.
+4. It checks out **the commit that release was built from**, copies its `deploy/compose.yaml` to
+   the droplet, validates it against the host's `.env` (`docker compose config -q`, which fails on
+   a malformed file *and* on any required variable the `.env` is missing), and adopts it — keeping
+   `compose.yaml.prev`.
+5. It **pulls first**, while nothing has changed, so a registry problem costs a red run and no
+   downtime.
+6. It **stops the old container**, and only then snapshots the database with `tod-serve backup`
+   into `/opt/tod-serve/backups/pre-<timestamp>.db`. If the snapshot fails and a volume exists,
+   **the deploy stops and the old container is restarted**. Only "no volume at all — first deploy"
+   proceeds without one. It prunes to the last ten `pre-*.db` and touches nothing else in that
+   directory.
+7. It pins `TOD_DEPLOY_IMAGE` in `.env` to the digest, runs `migrate` **as the only process holding
+   the database**, and starts the new container.
+8. It polls `/healthz`, `/readyz`, `/api/v1/meta` and the console — **every check retries on a
    bounded budget** — and then asserts the running build is the one just deployed.
 
-Steps 3 and 5 are what stop a release and the stack running it from drifting apart. The compose file
+Steps 4 and 7 are what stop a release and the stack running it from drifting apart. The compose file
 used to be copied once, at setup, and never again — so a release that added a required variable
 started against a compose file that had never heard of it.
 
-Step 4 comes **before** the pull for the reason the whole workflow exists: after `compose up` the
-old container is gone, and migrations are forward-only, so a failure past that point is a failure
-with nothing to fall back on.
+**Step 6 is the one worth understanding.** The old container is stopped *before* anything else
+touches the volume, because this service is one SQLite writer
+([ADR-0001](../adr/0001-go-single-binary-and-sqlite.md)) and every assumption downstream of that
+depends on it. It is not a formality: migration `000003` rebuilds a **referenced** table, which
+SQLite's 12-step `ALTER` requires foreign keys to be off for — and `PRAGMA foreign_keys` is a no-op
+inside a transaction, so that migration opens its own and is not covered by goose's. A container
+still serving through that window can read and write against a table mid-rebuild.
 
-Step 6's last check is not ceremony. Without it, a `pull` that silently changed nothing looks
+Stopping first also fixes what the snapshot *means*. Taken while the old container is still
+accepting reports, it is missing every report accepted between the snapshot and the swap — which is
+exactly the window a rollback would silently discard. Taken after the writer is stopped, it is the
+complete state the migration is about to change.
+
+Step 8's last check is not ceremony either. Without it, a `pull` that silently changed nothing looks
 exactly like a successful deploy — every other check passes against the container already there.
+
+### If the migration fails
+
+The workflow puts the previous image back in `.env` and starts it, then tells you which of two
+things happened, because the recovery differs:
+
+- **The old container comes up.** The migration applied nothing and the service is back on the
+  previous release. Fix the migration and deploy again.
+- **It refuses to start**, and `/readyz` says the database is behind the migrations the binary
+  embeds. The migration applied **partially** — goose commits each one separately — so the schema is
+  ahead of the old binary. Restore `backups/pre-<timestamp>.db`, which the run names:
+  [Restoring](backup.md#restoring).
 
 Tagged releases (`v1.2.0`) publish `:1.2.0`, `:1.2` and `:latest`. To deploy one:
 
@@ -312,14 +342,19 @@ and it is the signal to restore the snapshot the deploy took just before the mig
 
 ## Downtime, and why it is acceptable
 
-`compose up -d` stops the old container before starting the new one, so there are a few seconds of
-502. There is no rolling restart, and there should not be: the service is one SQLite writer
-([ADR-0001](../adr/0001-go-single-binary-and-sqlite.md)), and two containers sharing that volume is
-precisely the situation the design assumes cannot happen.
+A deploy is down from the moment the old container stops until the new one answers: the snapshot,
+the migration, and the container start. On a database this size that is **seconds, not minutes** —
+a `VACUUM INTO` of a few hundred kilobytes and a migration that is usually a no-op — but it is a
+window that grows with the database, and it is deliberately not overlapped with serving.
 
-A few seconds is genuinely fine here. The console revalidates the board every fifteen seconds and
-leaves the rendered rows alone on a failure; the nParse+ plugin reports on a kill and retries.
-Nobody loses work, and nothing is written that a retry cannot write again.
+There is no rolling restart, and there should not be. The service is one SQLite writer
+([ADR-0001](../adr/0001-go-single-binary-and-sqlite.md)), and two processes on that volume is
+precisely the situation the design assumes cannot happen — which is why the migration gets the
+database to itself rather than running alongside the container it is about to replace.
+
+That is genuinely fine here. The console revalidates the board every fifteen seconds and leaves the
+rendered rows alone on a failure; the nParse+ plugin reports on a kill and retries. Nobody loses
+work, and nothing is written that a retry cannot write again.
 
 ---
 

@@ -57,6 +57,12 @@ jobs:
     name: deploy / production
     runs-on: ubuntu-24.04
 
+    # `packages: read` is here for one step: resolving the release tag to a manifest digest. The
+    # deploy publishes nothing and needs no write anywhere.
+    permissions:
+      contents: read
+      packages: read
+
     # Requires the `production` environment. Put a required reviewer on it in repository settings:
     # that is what makes a deploy a decision rather than a side effect of merging — and it is what
     # makes the migrate step below a deliberate act rather than an automatic one.
@@ -134,9 +140,63 @@ jobs:
           {
             echo "tag=${tag}"
             echo "source_ref=${ref}"
-            echo "image=ghcr.io/${REPO}:${tag}"
+            echo "tagged_image=ghcr.io/${REPO}:${tag}"
           } >> "$GITHUB_OUTPUT"
           echo "deploying ${tag} from ${ref}"
+
+      # `imagetools inspect` below talks to the registry rather than to a builder, but buildx is
+      # set up explicitly rather than relied on being present: a deploy that fails on a missing
+      # tool is a deploy that fails for a reason nobody reading the log would guess.
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # Read-only, and only so the tag below can be resolved to a digest. The deploy publishes
+      # nothing.
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # RESOLVE THE TAG TO A MANIFEST DIGEST, and deploy that.
+      #
+      # `sha-<commit>` is still an OCI TAG. Its name is derived from a commit, which makes it look
+      # immutable and does not make it so: a later push can move it, and this workflow waits for a
+      # human on the production environment — so the approval and the pull are separated by however
+      # long that takes. A digest is the manifest's own content address; moving a tag cannot change
+      # what it names.
+      #
+      # It also closes a smaller window that exists on every deploy: `pull`, `run --rm migrate` and
+      # `up -d` each resolve the image reference independently, so three separate lookups of one
+      # mutable tag could in principle return three different images. Past this step there is one
+      # reference for the whole deploy, and for every `docker compose up` on the box afterwards,
+      # because it is what lands in `.env`.
+      #
+      # `imagetools inspect` reads the registry and pulls no layers. The shape is checked strictly:
+      # this value is about to be written into `.env` on the droplet.
+      - name: Resolve the tag to a manifest digest
+        id: digest
+        env:
+          TAGGED_IMAGE: ${{ steps.release.outputs.tagged_image }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "$TAGGED_IMAGE" --format '{{.Manifest.Digest}}')"
+          # Checked in three parts, the same way the dispatch inputs above are: this value is about
+          # to be written into `.env` on the droplet and handed to `docker pull`.
+          case "$digest" in
+            sha256:*) ;;
+            *) echo "FATAL: ${TAGGED_IMAGE} resolved to ${digest}, which is not a sha256 digest." >&2
+               exit 1 ;;
+          esac
+          hex="${digest#sha256:}"
+          case "$hex" in
+            *[!0-9a-f]*)
+              echo "FATAL: ${digest} is not lowercase hexadecimal." >&2; exit 1 ;;
+          esac
+          [ "${#hex}" -eq 64 ] || {
+            echo "FATAL: ${digest} is ${#hex} characters, not 64." >&2; exit 1; }
+          echo "image=ghcr.io/${REPO}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "${TAGGED_IMAGE} is ${digest}"
 
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
@@ -208,7 +268,7 @@ jobs:
           HOST: ${{ vars.TOD_DEPLOY_HOST }}
           USER_NAME: ${{ vars.DEPLOY_USER }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
-          IMAGE_REF: ${{ steps.release.outputs.image }}
+          IMAGE_REF: ${{ steps.digest.outputs.image }}
         run: |
           set -euo pipefail
           # QUOTED heredoc, and values cross the wire as positional arguments to `bash -s`.
@@ -251,38 +311,65 @@ jobs:
           # schema change to the only copy of the report log with no way back.
           #
           # `tod-serve backup` rather than a `cp` of the file: the database is in WAL mode, so the
-          # bytes at /data/tod.db are not the database and copying them while the server runs
-          # captures a torn read. `VACUUM INTO` runs in a read transaction and produces a complete,
-          # integrity-checkable file against a server that is still taking reports.
+          # bytes at /data/tod.db are not the database — the committed tail is in the `-wal` file
+          # beside it — and copying the first alone is a torn read whether or not anything is
+          # writing. `VACUUM INTO` runs in a read transaction and produces a complete,
+          # integrity-checkable file. (The writer is stopped below before this runs, so nothing is
+          # racing it; the WAL argument is about the file layout, not about concurrency.)
           #
-          # It runs on the STILL-RUNNING OLD container, through the `backups` bind mount
-          # compose.yaml declares, so the file lands on the host in one step. Writing into the
-          # volume and copying it back out would work and then leave a full copy of the database
-          # inside the volume it is meant to protect on every deploy — this image has no shell to
-          # delete the leftover with. `docker cp` cannot reach a tmpfs, so /tmp is not a way round
-          # that; the bind mount is.
-          #
-          # The image in .env is still the OLD one here, so this is the binary that wrote the
-          # database taking its own snapshot.
+          # It writes through the `backups` bind mount compose.yaml declares, so the file lands on
+          # the host in one step. Writing into the data volume and copying it back out would work
+          # and then leave a full copy of the database inside the volume it is meant to protect on
+          # every deploy — this image has no shell to delete the leftover with. `docker cp` cannot
+          # reach a tmpfs, so /tmp is not a way round that; the bind mount is.
           if [ ! -d backups ]; then
             echo "FATAL: ${deploy_path}/backups does not exist." >&2
             echo "install -d -o 65532 -g deploy -m 770 ${deploy_path}/backups — see docs/operations/deployment.md" >&2
             exit 1
           fi
+
+          # Remember what is running now, so a failed migration can be put back.
+          previous_image="$(sed -n 's/^TOD_DEPLOY_IMAGE=//p' .env | head -n 1)"
+          [ -n "$previous_image" ] || { echo "FATAL: .env names no TOD_DEPLOY_IMAGE." >&2; exit 1; }
+
+          # Pull FIRST, while nothing has changed. A registry problem then costs a red run and no
+          # downtime, instead of a stopped service and a red run. By digest, so this is the same
+          # manifest every later command resolves.
+          docker pull "$image_ref"
+
+          # --- QUIESCE, and only then snapshot and migrate ---------------------------------------
+          #
+          # THIS SERVICE IS ONE SQLITE WRITER (ADR-0001), and everything downstream of that
+          # assumption is what makes the design work. So the old container is STOPPED before a
+          # second process touches the volume.
+          #
+          # It is not a formality. Migration 000003 rebuilds a REFERENCED table, which SQLite's
+          # 12-step ALTER requires foreign keys to be off for — and `PRAGMA foreign_keys` is a
+          # no-op inside a transaction, so that migration opens its own and is not covered by
+          # goose's. A container still serving through that window can read and write against a
+          # table mid-rebuild, and `internal/store/migrate.go` says as much where it pins the
+          # migration to a single connection for exactly this reason.
+          #
+          # Stopping first also fixes the snapshot's meaning: taken while the old container is
+          # still accepting reports, it is missing every report accepted between the snapshot and
+          # the swap — which is the window a rollback would silently discard. Taken after the
+          # writer is stopped, it is the complete state the migration is about to change.
+          #
+          # The cost is downtime that now spans the backup and the migration rather than just the
+          # container swap. That is the right trade for a service whose whole design is one writer,
+          # and docs/operations/deployment.md says how long and why.
+          docker compose stop tod-serve
+
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
           if docker volume inspect tod-serve_tod-data >/dev/null 2>&1; then
-            # `exec` needs something to exec into. Between deploys there always is one, because the
-            # previous deploy ended with `up -d`; a stack somebody stopped by hand is a refusal
-            # naming the fix, not a deploy that quietly skips its only undo.
-            if [ -z "$(docker compose ps --status running -q tod-serve)" ]; then
-              echo "FATAL: the data volume exists but no container is running, so nothing can" >&2
-              echo "take a snapshot. Start the stack with 'docker compose up -d' and re-run." >&2
-              exit 1
-            fi
-            if ! docker compose exec -T tod-serve \
-                 /usr/local/bin/tod-serve backup --to "/backups/pre-${stamp}.db"; then
+            # `run --rm`, not `exec`: there is deliberately nothing running to exec into. The image
+            # in .env is still the OLD one here, so this is the binary that wrote the database
+            # taking its own snapshot.
+            if ! docker compose run --rm tod-serve backup --to "/backups/pre-${stamp}.db"; then
               echo "FATAL: could not snapshot the database; refusing to deploy." >&2
               echo "Migrations are forward-only and this file is the only undo there is." >&2
+              echo "Restarting the old container; nothing has been changed." >&2
+              docker compose up -d --remove-orphans tod-serve || true
               exit 1
             fi
             echo "snapshot: backups/pre-${stamp}.db ($(wc -c < "backups/pre-${stamp}.db") bytes)"
@@ -290,24 +377,36 @@ jobs:
             # The ONLY case that proceeds without one. There is nothing to lose yet.
             echo "no data volume yet; first deploy"
           fi
-          # Keep ten. This is not a backup strategy — it only runs when you deploy. See
-          # docs/operations/backup.md for the daily one that copies them off the droplet.
-          ls -1t backups/ 2>/dev/null | tail -n +11 | while read -r old; do rm -f -- "backups/$old"; done
 
-          # Pin the exact image, so a manual `docker compose up` on the box brings up what CI last
-          # shipped rather than whatever a moving tag has become.
+          # Keep the last ten PRE-DEPLOY snapshots, and touch nothing else in this directory.
+          # `daily-*.db` from the cron in docs/operations/backup.md lives here too and has its own
+          # 30-day retention; a prune over the whole directory would delete most of it on every
+          # deploy, which is a backup policy quietly overwritten by a different one.
+          ls -1t backups/pre-*.db 2>/dev/null | tail -n +11 | while read -r old; do rm -f -- "$old"; done
+
+          # Pin the exact manifest, so a manual `docker compose up` on the box brings up the bytes
+          # CI last deployed — not whatever the tag it was built from names today.
           sed -i "s|^TOD_DEPLOY_IMAGE=.*|TOD_DEPLOY_IMAGE=${image_ref}|" .env
           grep '^TOD_DEPLOY_IMAGE=' .env
 
-          docker compose pull tod-serve
-
-          # --- migrate, as its own deliberate step ----------------------------------------------
+          # --- migrate, as its own deliberate step, with nothing else on the volume ---------------
           #
-          # AFTER the pull, so the migrations that run are the ones the NEW binary embeds; before
-          # `up -d`, because `serve` refuses to start against a database behind the migrations it
-          # carries and would otherwise crash-loop. A one-shot service in compose.yaml would do this
-          # on every restart, which is the failure the whole rule exists for.
-          docker compose run --rm tod-serve migrate
+          # A one-shot service in compose.yaml would do this on every `up`, restarts included, which
+          # is the failure the whole rule exists for. Here it runs once, after a human approved it,
+          # as the only process holding the database.
+          if ! docker compose run --rm tod-serve migrate; then
+            echo "FATAL: the migration failed. Putting the previous image back." >&2
+            sed -i "s|^TOD_DEPLOY_IMAGE=.*|TOD_DEPLOY_IMAGE=${previous_image}|" .env
+            docker compose up -d --remove-orphans tod-serve || true
+            echo "" >&2
+            echo "If the old container comes up, the migration applied NOTHING and the service is" >&2
+            echo "back on ${previous_image}." >&2
+            echo "If it refuses to start, the migration applied PARTIALLY: the old binary is now" >&2
+            echo "behind the schema and says so on /readyz. Restore" >&2
+            echo "  ${deploy_path}/backups/pre-${stamp}.db" >&2
+            echo "— docs/operations/backup.md#restoring." >&2
+            exit 1
+          fi
 
           docker compose up -d --remove-orphans tod-serve
           docker image prune -f --filter "until=168h"
