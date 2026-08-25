@@ -15,8 +15,17 @@ SHELL := /bin/bash
 GO        ?= go
 PKG       := ./...
 BIN       := tod-serve
-BUILD_DIR := ./bin
+BUILD_DIR ?= ./bin
 DB_PATH   ?= ./tod.db
+
+# The version the binary reports, and the link flags that stamp it.
+#
+# `0.0.0-dev` is what main.go already defaults to, so a developer's `make build` and a bare
+# `go build` disagree about nothing. deploy/Dockerfile overrides VERSION with the tag it is
+# building, and overrides nothing else — so the image and a laptop are produced by the same
+# recipe rather than by two spellings of it that drift.
+VERSION   ?= 0.0.0-dev
+LDFLAGS   ?= -s -w -X main.version=$(VERSION)
 
 # notyet <phase> <what> — a target that is declared but not yet implemented.
 # No leading '@': call sites add it, so this also works inside shell if/else blocks.
@@ -43,7 +52,7 @@ status:
 .PHONY: build
 build: build-web
 	@mkdir -p $(BUILD_DIR)
-	$(GO) build -trimpath -o $(BUILD_DIR)/$(BIN) ./cmd/$(BIN)
+	$(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(BIN) ./cmd/$(BIN)
 
 ## build-web: build the console and stage it where go:embed reads it
 # The staged copy lives at internal/ui/dist because `go:embed` cannot reach outside its own
@@ -54,14 +63,24 @@ build: build-web
 #
 # `ui.Available()` reports honestly when the placeholder is all there is, and `tod-serve serve`
 # logs a warning rather than serving a blank page that looks like a broken console.
+#
+# BUILDING and STAGING are two steps, not one, because deploy/Dockerfile has npm in a DIFFERENT
+# stage from the Go toolchain: `node:24` builds the console, the Go stage copies the result in as
+# `web/dist`, and this target stages it. Folding the two together would mean the image describing
+# how the binary is built a second time, in Dockerfile syntax, where it can drift from this file.
+# The three outcomes are told apart out loud — a message saying the console was skipped when it was
+# actually staged is exactly the confident mistake this repository is built against.
 .PHONY: build-web
 build-web:
 	@if command -v npm >/dev/null 2>&1; then \
 	  cd web && npm ci --silent --no-audit --no-fund && rm -rf dist && npm run build; \
-	  cd .. && find internal/ui/dist -mindepth 1 ! -name .gitkeep -delete \
+	 elif [ -f web/dist/index.html ]; then \
+	  printf '\033[33m  reusing\033[0m   npm is not on PATH; staging the console already built in web/dist\n'; \
+	 else printf '\033[33m  skipped\033[0m  npm is not on PATH and web/dist holds no console; the binary will serve the API with no console\n'; fi
+	@if [ -f web/dist/index.html ]; then \
+	  find internal/ui/dist -mindepth 1 ! -name .gitkeep -delete \
 	    && cp -R web/dist/. internal/ui/dist/ \
-	    && printf '\033[32m  built\033[0m     the console is staged in internal/ui/dist\n'; \
-	 else printf '\033[33m  skipped\033[0m  npm is not on PATH; the binary will serve the API with no console\n'; fi
+	    && printf '\033[32m  built\033[0m     the console is staged in internal/ui/dist\n'; fi
 
 ## fmt: format Go sources
 .PHONY: fmt
@@ -189,22 +208,31 @@ migrate:
 seed:
 	$(GO) run ./cmd/$(BIN) seed targets --db $(DB_PATH)
 
+## smoke: build the container image and drive a whole first deploy against it
+# The executed version of docs/operations/deployment.md, and the only thing in this repository that
+# runs the SHIPPED ARTEFACT rather than the source: migrate, init, seed, boot, redeem the one-time
+# owner code over HTTP, report a ToD, read the board, take a backup and check it.
+#
+# NOT part of `make check`, which has to stay runnable on a machine with no Docker — and a gate that
+# quietly skips when its toolchain is absent is a gate that reports success for a run that never
+# happened. CI runs it as its own job (deploy / smoke).
+.PHONY: smoke
+smoke:
+	@bash deploy/smoke.sh
+
 ## docs-check: every error code has a docs page, every ADR is within budget
 .PHONY: docs-check
 docs-check:
 	@bash scripts/docs-check.sh
 
-## verify-commands: every command named in AGENTS.md resolves to a real target
+## verify-commands: every `make` target and `tod-serve` verb the docs name actually exists
+# Two documents, two failure modes. A renamed Makefile target leaves stale prose; a runbook step
+# written from memory leaves an operator mid-incident typing a verb that never existed. The second
+# is resolved by ASKING THE BINARY rather than grepping for a `Use:` field, so nested verbs like
+# `seed targets` are covered too.
 .PHONY: verify-commands
 verify-commands:
-	@fail=0; \
-	for t in $$(grep -oE '^make [a-z-]+' AGENTS.md | awk '{print $$2}' | sort -u); do \
-	  if ! grep -qE "^## $$t:" $(MAKEFILE_LIST); then \
-	    printf '\033[31mAGENTS.md names `make %s`, which is not a documented target\033[0m\n' "$$t"; fail=1; \
-	  fi; \
-	done; \
-	if [ $$fail -eq 0 ]; then printf 'every command in AGENTS.md resolves\n'; fi; \
-	exit $$fail
+	@bash scripts/verify-commands.sh
 
 ## check: what CI runs
 .PHONY: check

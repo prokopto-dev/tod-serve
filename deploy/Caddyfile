@@ -1,0 +1,39 @@
+# The TLS front for deploy/compose.local.yaml's `tls` profile. It exists for ONE reason, and the
+# reason was measured rather than assumed.
+#
+# The console's session cookie is `__Host-tod_session` (internal/auth/session.go). Over plain HTTP:
+#
+#   Firefox 154   stores it on http://localhost
+#   Chromium      does NOT — it stores a plain `Secure` cookie on localhost and refuses the
+#                 `__Host-` prefix, which requires a CRYPTOGRAPHIC scheme; `localhost` is merely
+#                 trustworthy, which is a weaker thing
+#   Safari        does NOT — it refuses the `Secure` attribute over http outright
+#
+# and NONE of the three stores anything `Secure` when the origin is a LAN address rather than
+# localhost. So a home server reached at http://192.168.x.x serves a console nobody can sign into,
+# and the failure looks like "the login button does nothing". The full measurement is in
+# docs/operations/deployment.md.
+#
+# `tls internal` issues from Caddy's own CA. Browsers do not trust it until you install the root —
+# the runbook says how — but the scheme is https either way, which is the whole of what the cookie
+# prefix requires.
+#
+# Nothing here is used on the droplet: Traefik terminates TLS there, from a real certificate.
+
+{
+	# No admin API. It is an unauthenticated control plane on a container that exists to hold one
+	# reverse-proxy rule.
+	admin off
+}
+
+{$TOD_DEPLOY_HOST:localhost}:8443 {
+	tls internal
+
+	# The console and the API are one origin, deliberately — the browser never makes a
+	# cross-origin request and there is no CORS story anywhere in this project.
+	reverse_proxy tod-serve:8080
+
+	# HSTS is NOT set here, and that is the difference between this and the droplet. Sending it
+	# from a host whose certificate a browser does not trust pins `localhost` to https for a year,
+	# in that browser, for every other project that ever serves on it.
+}

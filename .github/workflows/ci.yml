@@ -35,8 +35,10 @@ jobs:
         run: make lint-repo
       - name: Documentation gates
         run: make docs-check
-      - name: Every command in AGENTS.md resolves
-        run: make verify-commands
+      # `make verify-commands` is NOT here. This job deliberately has no Go toolchain — that is
+      # what makes the greps in repo-gates.sh a genuine second mechanism for the rules the AST
+      # analysers own — and verify-commands resolves a `tod-serve` verb by ASKING THE BINARY,
+      # which needs one. It runs in the `go` job below, where the binary is real.
 
   go:
     name: build / test
@@ -61,6 +63,12 @@ jobs:
       - run: make vet
       - run: make build
       - run: make test
+      # AFTER the build, and in this job rather than `lint / repo`, because it resolves every
+      # `tod-serve` verb the runbooks name by running the command tree — a check against a `Use:`
+      # field grepped out of the source would be a second source of truth, and would pass a nested
+      # verb like `seed targets` that does not exist.
+      - name: Every command the docs name resolves
+        run: make verify-commands
 
   web:
     name: lint / web
@@ -113,17 +121,57 @@ jobs:
         with:
           version: v2.12.2
 
+  # The deploy artefacts, driven end to end against the image that would actually ship.
+  #
+  # `deploy/smoke.sh` IS the first-deploy walkthrough in docs/operations/deployment.md, executed:
+  # migrate, init, seed, boot, redeem the one-time owner code over HTTP, use the token it returns,
+  # report a ToD, read the board, take a backup and check it. Every one of those is a way an image
+  # can be broken while answering `/healthz` perfectly.
+  #
+  # WHAT IS NOT COVERED, said here as well as in the runbook: Traefik. There is no droplet in CI and
+  # ACME needs public DNS, so `deploy/compose.yaml` is only parsed (`config -q`) and never run. An
+  # untested layer described as though it were covered is worse than one described honestly.
+  deploy:
+    name: deploy / smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Build the image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          # One architecture and loaded into the local daemon, because this job RUNS the image.
+          # The multi-arch build is release.yml's job; doing it twice would double the slowest job
+          # in CI to prove something this run cannot observe anyway.
+          platforms: linux/amd64
+          load: true
+          tags: tod-serve:smoke
+          build-args: |
+            VERSION=0.0.0-smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke the image
+        run: bash deploy/smoke.sh tod-serve:smoke
+
   # A single required check, so branch protection names one job rather than a list that drifts
   # every time a job is added.
   ci-required:
     name: ci-required
     runs-on: ubuntu-24.04
-    needs: [repo, go, web, spec, golangci]
+    needs: [repo, go, web, spec, golangci, deploy]
     if: always()
     steps:
       - name: Fail if any required job did not succeed
+        # Through `env:`, not interpolated into the script. Gate ACT001 requires it of every
+        # workflow in this repository: an expression written into a shell script is EXECUTED by
+        # that shell, and the rule is only checkable if it has no exceptions — including the ones,
+        # like this boolean, that are obviously safe today.
+        env:
+          ANY_FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: |
-          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+          if [[ "$ANY_FAILED" == "true" ]]; then
             echo "a required job failed"; exit 1
           fi
           echo "all required jobs succeeded"

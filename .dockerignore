@@ -1,0 +1,25 @@
+# The build context. Everything here is either irrelevant to the node and Go stages or actively
+# harmful in one: a local web/dist would be copied over the one node:24 just built, and a local
+# .env would put the droplet's secrets into an image layer.
+.git
+.github
+bin
+docs
+test
+web/node_modules
+web/dist
+node_modules
+
+# The staging directory `go:embed` reads. Its CONTENTS are excluded — `make build-web` replaces
+# them from the node stage anyway — but `.gitkeep` has to travel: an embed pattern matching no
+# files is a COMPILE error, so a context with no internal/ui/dist at all does not build at all.
+internal/ui/dist/*
+!internal/ui/dist/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+*.pem
+*.key
+deploy/backups

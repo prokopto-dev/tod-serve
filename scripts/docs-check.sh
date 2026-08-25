@@ -76,4 +76,40 @@ else
   printf '\033[33m%-10s\033[0m %s\n' DOC001 "error-code pages land in Phase 1 (docs/errors/ does not exist yet)"
 fi
 
+# --- DOC002 — every gate this repository defines is recorded in invariants.md ------------------
+# The reverse drift from DOC001's: a gate that exists in a script but was never written down is a
+# rule nobody knows is enforced, so somebody eventually "simplifies" it away in a refactor and no
+# reviewer objects.
+#
+# Both locations are walked — the shell gates and the Go ones in test/repo — because "where the
+# gates live" is two places and a check over one of them is a check that goes quiet the first time
+# somebody puts a new gate in the other.
+if [ -f docs/concepts/invariants.md ]; then
+  missing=""
+  # NOT anchored to the start of a line. Several gates here are written inline —
+  # `{ report DOC001 "..."; bad=1; }` inside an `if` — and an anchored pattern silently skipped
+  # every one of them, which is precisely the shape of failure this gate exists to catch. The cost
+  # of over-matching is a name in a comment asking to be written down, which is the safe direction.
+  gates=$( { grep -ohE '(report|pass|vacant) [A-Z]+[0-9]{3}' scripts/*.sh
+             grep -ohE 'func Test[A-Z]+[0-9]{3}_' test/repo/*.go 2>/dev/null
+           } | grep -oE '[A-Z]+[0-9]{3}' | sort -u )
+  if [ -z "$gates" ]; then
+    report DOC002 "no gate names were parsed out of scripts/ or test/repo; the patterns are wrong"
+  else
+    n=0
+    for g in $gates; do
+      n=$((n + 1))
+      grep -q "$g" docs/concepts/invariants.md || missing="$missing  $g\n"
+    done
+    if [ -n "$missing" ]; then
+      report DOC002 "gate defined in a script or in test/repo but not recorded in invariants.md:"
+      printf "%b" "$missing"
+    else
+      pass DOC002 "$n gates, each recorded in docs/concepts/invariants.md"
+    fi
+  fi
+else
+  report DOC002 "docs/concepts/invariants.md is missing; it is where every gate is registered"
+fi
+
 exit $fail

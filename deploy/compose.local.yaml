@@ -1,0 +1,121 @@
+# Running tod-serve on a machine that is not the droplet: a laptop, a home server, a NAS.
+#
+# The design promises anyone can run this — one binary, one SQLite file, no CDN and no outbound
+# network for the console — so there has to be a path that does not involve Traefik, a public DNS
+# record or an ACME challenge. This is that path, and `deploy/smoke.sh` runs it on every CI build,
+# so it is the file in this directory that is actually exercised.
+#
+# The differences from compose.yaml are exactly three: it PUBLISHES a port, it has no Traefik
+# labels and no external network, and TOD_PUBLIC_URL names the address you will type. The
+# hardening — read-only root, no capabilities, no new privileges, uid 65532 — is identical, because
+# none of it depends on there being a proxy in front.
+#
+#   cp deploy/env.example .env        # then fill in the two secrets; `serve` refuses the placeholders
+#   docker compose -f deploy/compose.local.yaml run --rm tod-serve migrate
+#   docker compose -f deploy/compose.local.yaml run --rm tod-serve init --name "…" --circle "…" --server blue
+#   docker compose -f deploy/compose.local.yaml up -d
+#
+# ONE THING TO KNOW BEFORE YOU USE THE CONSOLE OVER PLAIN HTTP: the browser session cookie is
+# `__Host-` prefixed and unconditionally `Secure` (internal/auth/session.go). What that means for
+# `http://localhost` is written down — and was actually checked in two browsers — in
+# docs/operations/deployment.md, under "Running it at home". Read that before you decide whether
+# you need TLS here.
+
+name: tod-serve-local
+
+services:
+  tod-serve:
+    # A moving tag is the right default HERE and the wrong one on the droplet: at home "give me the
+    # current build" is what you want, and there is no approval gate to make an image pin mean
+    # anything. Set TOD_DEPLOY_IMAGE to pin it, which is what deploy/smoke.sh does with the image
+    # it just built.
+    image: ${TOD_DEPLOY_IMAGE:-ghcr.io/prokopto-dev/tod-serve:edge}
+    restart: unless-stopped
+
+    # Published, because there is no proxy to reach it any other way. It binds every interface, so
+    # everything on your LAN can reach it: set TOD_DEPLOY_PORT to something else, or put
+    # `127.0.0.1:` in front of it, if that is not what you want.
+    ports:
+      - "${TOD_DEPLOY_PORT:-8080}:8080"
+
+    environment:
+      TOD_DB_PATH: /data/tod.db
+      TOD_ADDR: ":8080"
+
+      # The origin you will actually type. It is what the join link is built from, so a value that
+      # does not match sends people to a page that is not there.
+      TOD_PUBLIC_URL: ${TOD_PUBLIC_URL:-http://localhost:8080}
+
+      TOD_TOKEN_PEPPER: ${TOD_TOKEN_PEPPER:?set TOD_TOKEN_PEPPER in .env — see deploy/env.example}
+      TOD_SESSION_KEY: ${TOD_SESSION_KEY:?set TOD_SESSION_KEY in .env — see deploy/env.example}
+      TOD_METRICS_ENABLED: "false"
+
+    volumes:
+      - tod-data:/data
+
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- the TLS front, for the console --------------------------------------------------------
+  #
+  # `docker compose -f deploy/compose.local.yaml --profile tls up -d` adds it; the default `up`
+  # does not, so the plain-HTTP path above stays one command with nothing to trust.
+  #
+  # It is here because the console's session cookie is `__Host-` prefixed and unconditionally
+  # `Secure`, and TWO OF THREE BROWSER ENGINES REFUSE TO STORE IT OVER PLAIN HTTP — measured, not
+  # assumed; the table is in deploy/Caddyfile and the full run is in
+  # docs/operations/deployment.md. Without this the console loads, the sign-in completes, and the
+  # browser is still signed out, which is the worst shape a failure can take.
+  #
+  # The API does not need it. A personal access token is an `Authorization` header and no cookie
+  # is involved, so the nParse+ plugin and every script work perfectly well against the plain
+  # port above.
+  caddy:
+    profiles: [tls]
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648 # 2-alpine
+    restart: unless-stopped
+    ports:
+      - "${TOD_DEPLOY_TLS_PORT:-8443}:8443"
+    environment:
+      # The name on the certificate. It has to be the name you TYPE, or the browser refuses the
+      # certificate for a reason that has nothing to do with the CA.
+      TOD_DEPLOY_HOST: ${TOD_DEPLOY_HOST:-localhost}
+    volumes:
+      - type: bind
+        source: ./Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          # The default is to CREATE a directory at a missing source, which would mount a
+          # directory over the config and leave Caddy serving its welcome page. This makes
+          # `compose up` fail on the missing file instead.
+          create_host_path: false
+      # Caddy's local CA lives here. It must SURVIVE a restart: a regenerated root is a new
+      # certificate authority, and every browser that trusted the old one now shows a warning
+      # that reads exactly like an interception.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - tod-serve
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  tod-data:
+  caddy-data:
+  caddy-config:

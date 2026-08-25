@@ -31,12 +31,15 @@ than writing it down as though it were enforced.
 | `internal/store/` | The only holder of `*sql.DB`. `sqlitegen/` is generated and never hand-edited |
 | `internal/core/` | `Micros`, ULID, typed ids, the `Server` enum, `Secret` |
 | `internal/clock/` | The only `time.Now` |
+| `internal/probe/` | The loopback liveness probe the image's `HEALTHCHECK` calls. **The one exception to law 6**, and the only package outside `internal/identity` that reaches the network at all |
 | `internal/apierr/` | The closed error-code enum and the RFC 9457 problem the edge renders |
 | `internal/repogate/` | The gates that need an AST rather than a grep: `CLOCK001`, `SLEEP001`, `ROUTE001`, `RAND001` |
 | `internal/ui/` | The embedded admin console. `//go:embed all:dist`, staged from `web/dist` by `make build-web`. Declares no route — it returns a handler and `internal/api` decides where it sits |
 | `web/` | The console: React + Vite + TypeScript + Tailwind. **Not part of the Go module** — `web/go.mod` is what says so, and what stops `./...` compiling whatever Go code the JavaScript dependency tree ships. `web/src/api/generated.ts` is generated from `openapi/openapi.json` and never hand-edited |
 | `internal/canondoc/` | Reads fenced blocks out of the normative documents, so a gate compares code against the document rather than against a copy of it |
 | `db/` | `schema.hcl` is the single schema truth; `enums.hcl` is generated; `queries/*.sql`; `migrations-sqlite/`, forward-only |
+| `deploy/` | The image, the two compose files, `env.example`, the Caddy front for the local TLS profile, and `smoke.sh` — which **is** the first-deploy walkthrough rather than a copy of it |
+| `.github/workflows/` | `ci.yml`, `release.yml` (GHCR, multi-arch, cross-compiled) and `deploy.yml` (approved, snapshots, then migrates). Every `run:` block is gated by `ACT001` and `ACT002` |
 | `test/repo/` | Tests about the repository itself, not the product: they assert the gates below actually fire |
 
 ## The laws
@@ -64,6 +67,17 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    neither may construct a client. `NET001`, plus a dialer that resolves, checks every resolved
    address against a deny list covering private, link-local, loopback and cloud-metadata ranges,
    and then dials the checked address literal so a DNS rebind has no second lookup to win.
+
+   **There is exactly one exception, `internal/probe`, and `PROBE001` is what makes it safe to
+   have.** The shipped image is `FROM scratch`: no shell, no curl, so the binary probes its own
+   listener for the container `HEALTHCHECK`. That request cannot go through the guarded client,
+   because the deny list covers loopback — a probe of our own listener is precisely the request an
+   SSRF guard exists to refuse. What makes it safe is that the destination is not an input: the
+   PORT comes from the listen address this binary was told to bind, and the HOST is a loopback
+   literal the package writes itself, so no variable, flag or row can point it anywhere else.
+   `NET001` allows that package by name; `PROBE001` holds it to naming no host and reading no
+   configuration; `TestLivenessURL_IsAlwaysLoopback` drives the URL builder over every spelling of
+   a listen address, names that resolve elsewhere included.
 7. **`web/src` contains no `fetch` or `XMLHttpRequest` outside `web/src/api`.** `tod/no-network-outside-api`,
    a local ESLint rule, plus `WEB001`. Two mechanisms because they fail differently: a lint rule is
    switched off by an `eslint-disable` comment and a grep is not, and the grep runs in the CI job
@@ -88,6 +102,21 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
     the wiring site. The gate requires that site to name `crypto/rand.Reader` itself, not a variable
     holding it and not a wrapper returning it, because "some non-nil reader" is what a nil check
     already bought.
+
+11. **The deployment is described once, and the description is checked.** `deploy/Dockerfile` runs
+    `make build` rather than re-spelling it, so the image cannot drift from what CI and a developer
+    produce. `ENV001` compares the `TOD_*` constants in `cmd/tod-serve/root.go` against
+    `deploy/env.example` and the compose files in both directions — two independent hand-written
+    lists, which is what stops it being a tautology — and `IMG001` applies `PIN001`'s reasoning to
+    images. `ACT001` and `ACT002` cover the workflow shell that nothing else compiles or runs.
+    `deploy/smoke.sh` boots the built image and drives a whole first deploy, and the runbook names
+    it as the executed version of its own walkthrough.
+
+    **A container restart must never migrate.** `serve` refuses to start against a database behind
+    the migrations it embeds rather than upgrading it, and `/readyz` says which half failed. The
+    deploy workflow runs `migrate` as its own step, after a required reviewer approved it. Do not
+    add a one-shot migrate service with `service_completed_successfully` — that runs on every `up`,
+    restarts included, which is the exact failure the rule exists for.
 
 ## Non-negotiable invariants
 
@@ -173,6 +202,7 @@ make build-web    # build the console and stage it where go:embed reads it
 make lint-web     # the console's ESLint run, its own rule's unit test, and the generated client
 make spec-diff    # the spec breaks no client against the base branch, renames included
 make test-tenancy # cross-circle isolation over the route registry
+make smoke        # build the container image and drive a whole first deploy against it
 make seed         # load the embedded raid-target identity. Timers are NOT bundled:
                   # `tod-serve seed timers --file` reads tod-serve-p99-seed
 ```
