@@ -206,6 +206,7 @@ jobs:
       - name: Decide which manifest to deploy
         id: digest
         env:
+          EVENT: ${{ github.event_name }}
           TAGGED_IMAGE: ${{ steps.release.outputs.tagged_image }}
           INPUT_DIGEST: ${{ github.event.inputs.image_digest }}
           REPO: ${{ github.repository }}
@@ -224,6 +225,26 @@ jobs:
 
           # Not `source`: that is a shell builtin, and a variable sharing its name reads as a
           # command every time somebody skims this.
+          # AN AUTOMATED DEPLOY DOES NOT DOWNGRADE.
+          #
+          # A `workflow_run` deploy has a triggering Release, so its digest artifact must be
+          # readable. Falling through to the tag here would quietly turn the strongest pairing this
+          # pipeline has into the weakest one, on the path nobody watches — the artifact could be
+          # missing because it expired, because the upload failed, or because somebody removed
+          # `actions: read`, and none of those should be answered by deploying whatever the tag
+          # names today. The fallback below exists for `workflow_dispatch`, which never has one.
+          if [ "$EVENT" = "workflow_run" ] && [ ! -s released/image-digest.txt ]; then
+            echo "FATAL: this deploy was triggered by a Release run, and that run's image-digest" >&2
+            echo "artifact could not be read. Refusing to fall back to the tag: an approval has to" >&2
+            echo "mean the bytes the approved run built." >&2
+            echo "" >&2
+            echo "Either re-run the Release workflow for this commit, or deploy deliberately with" >&2
+            echo "the digest that run printed:" >&2
+            echo "  gh workflow run Deploy -f image_tag=<tag> -f source_ref=<ref> \\" >&2
+            echo "    -f image_digest=sha256:<digest>" >&2
+            exit 1
+          fi
+
           digest_source=""
           digest=""
           if [ -s released/image-digest.txt ]; then
@@ -439,6 +460,36 @@ jobs:
               exit 1
             fi
             echo "snapshot: backups/pre-${stamp}.db ($(wc -c < "backups/pre-${stamp}.db") bytes)"
+
+            # AND THE SNAPSHOT IS OPENED BEFORE IT IS TRUSTED.
+            #
+            # `tod-serve backup` reports success against a database that is not the one you meant.
+            # Point it at a fresh empty volume — which is what a compose file naming a volume that
+            # does not exist gets — and it writes a perfectly valid 4 KB SQLite file and exits 0.
+            # That was reproduced, and it is the worst outcome a pre-deploy snapshot can have: the
+            # deploy proceeds believing it has an undo it does not have.
+            #
+            # `doctor` opens the copy and says what it is. Its EXIT CODE is deliberately ignored:
+            # an instance that has been migrated but not yet `init`ed is a real state between the
+            # first deploy and the operator's bootstrap, and doctor calls that a problem. What is
+            # required is narrower and is exactly "this is the live database": the migrations are
+            # current, and it passes an integrity check.
+            #
+            # The greps fail CLOSED. If doctor's wording ever changes, this stops the deploy rather
+            # than waving it through.
+            report="$(docker compose run --rm tod-serve doctor --db "/backups/pre-${stamp}.db" 2>&1 || true)"
+            printf '%s\n' "$report"
+            if ! printf '%s' "$report" | grep -q 'migrations are up to date' ||
+               ! printf '%s' "$report" | grep -q 'integrity check passed'; then
+              echo "FATAL: the snapshot is not a current tod-serve database; refusing to deploy." >&2
+              echo "An empty or unmigrated snapshot means the backup ran against the wrong volume," >&2
+              echo "or the copy is damaged. Either way there is no undo, and migrations are" >&2
+              echo "forward-only." >&2
+              echo "Restarting the old container; nothing has been changed." >&2
+              docker compose up -d --remove-orphans tod-serve || true
+              exit 1
+            fi
+            echo "the snapshot opens, its migrations are current, and it passes an integrity check"
           else
             # The ONLY case that proceeds without one. There is nothing to lose yet.
             echo "no data volume yet; first deploy"

@@ -71,11 +71,18 @@ scp deploy/env.example   deploy@tod.example.com:/opt/tod-serve/.env
 > Change `deploy/compose.yaml` in the repository instead — that is the copy that wins, and it is the
 > one anybody reviewing this service will read.
 >
-> One exception, and it follows from step 7 below: a release that **changes the `backups` mount or
-> the data volume's name** has to be hand-copied once first. The deploy snapshots the old container
-> through the compose file already on the box, deliberately, so a mount that only the incoming file
-> knows about is a mount the snapshot cannot use — and it fails loudly rather than backing up the
-> wrong thing.
+> One exception, and it follows from step 7 below: a release that **adds or changes the `backups`
+> mount** has to be hand-copied once first. The deploy snapshots the old container through the
+> compose file already on the box, deliberately, so a mount that only the incoming file knows about
+> is a mount the snapshot cannot use. That failure is loud — the snapshot has nowhere to write.
+>
+> **A release must never rename the data volume, and hand-copying is not a way to make it safe.**
+> The old volume holds the only copy of the report log and nothing in this pipeline moves it. A
+> compose file naming a volume that does not exist gets a new, *empty* one — and `tod-serve backup`
+> against that succeeds, writing a valid 4 KB database and exiting 0. That was reproduced against a
+> real container, which is why the deploy now opens every snapshot with `tod-serve doctor` before
+> trusting it. The guard is there; the rule is still **never**, because renaming a data volume is a
+> data migration and a deploy is not where one belongs.
 >
 > `.env` is the opposite and always will be: it holds secrets, so it stays on the host and no
 > pipeline ever writes it — except the one line naming the image. When a release needs a new
@@ -267,10 +274,11 @@ before starting, or the log reads `permission denied` on `/data/tod.db`.
 5. It **pulls first**, while nothing has changed, so a registry problem costs a red run and no
    downtime.
 6. It **stops the old container**, and only then snapshots the database with `tod-serve backup`
-   into `/opt/tod-serve/backups/pre-<timestamp>.db`. If the snapshot fails and a volume exists,
-   **the deploy stops and the old container is restarted**. Only "no volume at all — first deploy"
-   proceeds without one. It prunes to the last ten `pre-*.db` and touches nothing else in that
-   directory.
+   into `/opt/tod-serve/backups/pre-<timestamp>.db` — and then **opens that copy with
+   `tod-serve doctor`** and requires it to be a current, integrity-checking database before
+   believing in it. If either step fails and a volume exists, **the deploy stops and the old
+   container is restarted**. Only "no volume at all — first deploy" proceeds without a snapshot. It
+   prunes to the last ten `pre-*.db` and touches nothing else in that directory.
 7. **Now** it adopts the new `compose.yaml` — keeping `compose.yaml.prev` — and pins
    `TOD_DEPLOY_IMAGE` in `.env` to the digest. Everything before this point operated the OLD image,
    and operated it through the compose file it was released with.
@@ -281,6 +289,13 @@ before starting, or the log reads `permission denied` on `/data/tod.db`.
 Steps 4 and 7 are what stop a release and the stack running it from drifting apart. The compose file
 used to be copied once, at setup, and never again — so a release that added a required variable
 started against a compose file that had never heard of it.
+
+**Step 6 opens the snapshot because "it exited 0" is not the same as "there is an undo".**
+`tod-serve backup` against the wrong volume — a fresh empty one, say — writes a valid 4 KB SQLite
+file and succeeds. `doctor` is asked for two things only, and deliberately not for a clean bill of
+health: that the migrations are current, and that it passes an integrity check. An instance that has
+been migrated but not yet `init`ed is a real state, and doctor calls that a problem; requiring its
+exit code would fail a deploy for a reason that has nothing to do with the backup.
 
 **The adoption is in step 7 and not step 4 on purpose.** Everything before it is operating the OLD
 container, and an image and the compose file it was released with are a pair. A new compose file can
