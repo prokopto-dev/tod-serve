@@ -276,7 +276,7 @@ jobs:
             # naming the fix, not a deploy that quietly skips its only undo.
             if [ -z "$(docker compose ps --status running -q tod-serve)" ]; then
               echo "FATAL: the data volume exists but no container is running, so nothing can" >&2
-              echo "take a snapshot. Start the stack with \`docker compose up -d\` and re-run." >&2
+              echo "take a snapshot. Start the stack with 'docker compose up -d' and re-run." >&2
               exit 1
             fi
             if ! docker compose exec -T tod-serve \

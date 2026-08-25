@@ -35,8 +35,10 @@ jobs:
         run: make lint-repo
       - name: Documentation gates
         run: make docs-check
-      - name: Every command in AGENTS.md resolves
-        run: make verify-commands
+      # `make verify-commands` is NOT here. This job deliberately has no Go toolchain — that is
+      # what makes the greps in repo-gates.sh a genuine second mechanism for the rules the AST
+      # analysers own — and verify-commands resolves a `tod-serve` verb by ASKING THE BINARY,
+      # which needs one. It runs in the `go` job below, where the binary is real.
 
   go:
     name: build / test
@@ -61,6 +63,12 @@ jobs:
       - run: make vet
       - run: make build
       - run: make test
+      # AFTER the build, and in this job rather than `lint / repo`, because it resolves every
+      # `tod-serve` verb the runbooks name by running the command tree — a check against a `Use:`
+      # field grepped out of the source would be a second source of truth, and would pass a nested
+      # verb like `seed targets` that does not exist.
+      - name: Every command the docs name resolves
+        run: make verify-commands
 
   web:
     name: lint / web
