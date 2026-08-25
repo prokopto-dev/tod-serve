@@ -366,9 +366,10 @@ jobs:
           # An unquoted heredoc expands on the RUNNER, so a variable meant for the droplet gets
           # eaten by the runner's own `set -u` before the script is ever sent.
           ssh -o StrictHostKeyChecking=yes "${USER_NAME}@${HOST}" \
-            bash -seuo pipefail -s -- "$DEPLOY_PATH" "$IMAGE_REF" <<'REMOTE'
+            bash -seuo pipefail -s -- "$DEPLOY_PATH" "$IMAGE_REF" "$HOST" <<'REMOTE'
           deploy_path="$1"
           image_ref="$2"
+          expected_host="$3"
           cd "$deploy_path"
 
           # The compose file that shipped with this release is VALIDATED now and ADOPTED later.
@@ -390,6 +391,24 @@ jobs:
           fi
           docker compose -f compose.yaml.incoming --env-file .env config -q
           echo "the compose file that shipped with this release resolves against this host's .env"
+
+          # THE HOSTNAME IS ONE STRING WRITTEN DOWN FIVE TIMES, and nothing used to compare any two
+          # of them: this `.env`, the repository variable this deploy reads, `instance.public_url`,
+          # every enabled provider's `redirect_uri`, and the identity provider's own dashboard.
+          #
+          # These two are the pair a deploy can check, and it costs one grep of a line that is not a
+          # secret. A disagreement here means the deploy is about to route, certificate and
+          # advertise a different name than the one it verifies afterwards — and the compose file
+          # builds TOD_PUBLIC_URL out of this value, so the instance would go on handing out join
+          # links for it. The other pair is checked by `tod-serve doctor` at the end of this run.
+          env_host="$(sed -n 's/^TOD_DEPLOY_HOST=//p' .env | head -n 1 | tr -d '[:space:]')"
+          if [ "$env_host" != "$expected_host" ]; then
+            echo "FATAL: ${deploy_path}/.env says TOD_DEPLOY_HOST=${env_host:-<unset>}," >&2
+            echo "but this deploy was told the host is ${expected_host}." >&2
+            echo "One of them is wrong. Nothing has been changed." >&2
+            exit 1
+          fi
+          echo "TOD_DEPLOY_HOST agrees with the repository variable (${expected_host})"
 
           # --- the snapshot, and its failure is FATAL ------------------------------------------
           #
@@ -668,3 +687,50 @@ jobs:
           esac
 
           echo "deployment verified: liveness, readiness, the API, the console, and the running build"
+
+      # And the instance's own opinion of itself, once it is definitely serving.
+      #
+      # AFTER the checks above, deliberately: `doctor` opens the database, and asking it anything
+      # before `/readyz` has answered would report a problem that is really "the container has not
+      # finished starting". By here the service is up and every answer it gives is about the
+      # instance rather than about the deploy.
+      #
+      # What this buys that HTTP cannot: doctor compares the copies of the hostname this binary can
+      # see — `instance.public_url`, `$TOD_PUBLIC_URL` and every enabled provider's `redirect_uri` —
+      # and a disagreement there is invisible from outside. `spaJoinURL` prefers the environment
+      # over the stored row, so the join links look right while the stored URL is wrong, and the
+      # first symptom is an opaque OAuth error days later.
+      - name: Ask the instance to check itself
+        env:
+          HOST: ${{ vars.TOD_DEPLOY_HOST }}
+          USER_NAME: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=yes "${USER_NAME}@${HOST}" \
+            bash -seuo pipefail -s -- "$DEPLOY_PATH" <<'REMOTE'
+          cd "$1"
+          # `exec`, so this runs inside the container that is already serving rather than starting a
+          # second one against the same volume.
+          report="$(docker compose exec -T tod-serve /usr/local/bin/tod-serve doctor 2>&1 || true)"
+          printf '%s\n' "$report"
+
+          # A FIRST DEPLOY HAS NOT BEEN BOOTSTRAPPED YET, and that is not a failed deploy.
+          # `tod-serve init` is a hand-run step the runbook walks you through afterwards, so until
+          # it has happened there is no instance row for doctor to check anything against. That one
+          # state is excused by name; everything else is red.
+          if printf '%s' "$report" | grep -q 'no instance row'; then
+            echo "NOTE: this instance has not been bootstrapped yet, so there is little to check."
+            echo "Run \`tod-serve init\` — see docs/operations/deployment.md, first deploy."
+            exit 0
+          fi
+          # Requiring the success LINE rather than trusting the exit code, so a doctor that changed
+          # its wording stops the deploy instead of being waved through.
+          if ! printf '%s' "$report" | grep -q 'no problems found'; then
+            echo "FAILED: the instance reports problems with itself." >&2
+            echo "It is serving — the checks above passed — so this is configuration rather than a" >&2
+            echo "bad container. A public-URL disagreement is the one that is invisible over HTTP." >&2
+            exit 1
+          fi
+          echo "the instance reports no problems"
+          REMOTE

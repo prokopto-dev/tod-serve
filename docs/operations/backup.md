@@ -91,7 +91,7 @@ docker compose -f deploy/compose.local.yaml run --rm --volume "$PWD/backups:/bac
 >
 > ```bash
 > # On your workstation, or from anywhere with the deploy key.
-> rsync -avz deploy@tod.example.com:/opt/tod-serve/backups/ ./tod-serve-backups/
+> rsync -avz deploy@tod.prokopto.dev:/opt/tod-serve/backups/ ./tod-serve-backups/
 > ```
 
 ## Checking one

@@ -60,12 +60,12 @@ Over the API, with a session holding `instance.security.manage` — see the firs
 [the deployment runbook](deployment.md#6-first-deploy) for how you get that grant.
 
 ```bash
-curl -fsS -X POST "https://tod.example.com/api/v1/admin/identity-providers" \
+curl -fsS -X POST "https://tod.prokopto.dev/api/v1/admin/identity-providers" \
   -H "Content-Type: application/json" -b cookies.txt \
   -H "Idempotency-Key: $(uuidgen)" \
   -d '{"key":"discord","kind":"discord","display_name":"Discord",
        "client_id":"<CLIENT ID>","client_secret":"<CLIENT SECRET>",
-       "redirect_uri":"https://tod.example.com/api/v1/auth/callback/discord",
+       "redirect_uri":"https://tod.prokopto.dev/api/v1/auth/callback/discord",
        "token_endpoint":"https://discord.com/api/oauth2/token","enabled":true}'
 ```
 
