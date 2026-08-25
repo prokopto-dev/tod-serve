@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 
@@ -152,9 +153,19 @@ func newSeedTimersCommand() *cobra.Command {
 			// catalogue.TimerInvalidator.
 			report, applyErr := svc.ApplySeed(cmd.Context(), parsed, states)
 
-			// Both counts are printed on BOTH paths, before the error is returned. A run that
-			// stopped part-way wrote real rows, and how far it got is the only thing an operator
-			// can act on — a failure that hid its own progress would make the remedy a guess.
+			// A REJECTED seed wrote nothing, so it gets no counts and no remedy. Printing
+			// "0 of 0 timers written" here would be three lies in two lines: an empty denominator
+			// read off a zero report, a claim that zero windows "are written and recomputed", and
+			// an instruction to re-run a file that cannot succeed — with the one thing an operator
+			// can act on, the validation error itself, buried at the end of it.
+			if errors.Is(applyErr, catalogue.ErrSeedRejected) {
+				return fmt.Errorf("seed timers: %w", applyErr)
+			}
+
+			// Past that point the counts are real and are printed on BOTH paths, before the error
+			// is returned. A run that stopped part-way wrote rows, and how far it got is the only
+			// thing an operator can act on — a failure that hid its own progress would make the
+			// remedy a guess.
 			if _, err = fmt.Fprintf(out, "%d of %d timers written from %q\n",
 				report.TimersWritten, report.TimersTotal, report.Source); err != nil {
 				return fmt.Errorf("write seed result: %w", err)

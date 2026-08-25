@@ -191,7 +191,7 @@ func TestSeedTimers_ABadFile_FailsAndLeavesTheCatalogueUnchanged(t *testing.T) {
 			_, err := captureCLI(t, "seed", "targets", "--db", db.Path())
 			require.NoError(t, err)
 
-			_, err = captureCLI(t, "seed", "timers", "--db", db.Path(),
+			out, err := captureCLI(t, "seed", "timers", "--db", db.Path(),
 				"--file", writeSeed(t, tt.body))
 			require.Error(t, err, "a bad seed was accepted")
 
@@ -199,6 +199,20 @@ func TestSeedTimers_ABadFile_FailsAndLeavesTheCatalogueUnchanged(t *testing.T) {
 			require.NoError(t, listErr)
 			require.Empty(t, timers,
 				"the seed failed and left %d timers behind; it is half-applied", len(timers))
+
+			// **A rejected seed is described as rejected, not as partial progress.** Nothing was
+			// written, so there is nothing to count and re-running the same file cannot help — it
+			// is the file that is wrong. Reporting it the way a mid-write failure is reported
+			// buries the one line an operator can act on under an instruction that cannot work.
+			require.NotContains(t, out, "timers written",
+				"a seed that wrote nothing printed a written count: %s", out)
+			require.NotContains(t, out, "recomputed",
+				"a seed that recomputed nothing printed a recomputed count: %s", out)
+			require.NotContains(t, err.Error(), "Run the same file again",
+				"the file is invalid, so re-running it cannot succeed: %s", err)
+			require.NotContains(t, err.Error(), "those are written",
+				"nothing was written, and saying otherwise sends the operator looking for rows "+
+					"that do not exist: %s", err)
 		})
 	}
 }

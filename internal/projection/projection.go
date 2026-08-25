@@ -125,6 +125,22 @@ func (s *Service) Board(
 	ctx context.Context, circleID core.CircleID, filter BoardFilter,
 ) ([]BoardEntry, bool, error) {
 	// The board is a read: no transaction, and the pool said so at the call.
+	//
+	// **`q` is the pool, not a snapshot, and this render is not isolated from a concurrent timer
+	// write.** Each read below is its own implicit transaction, so an override that commits
+	// between `ResolveTimers` and `cachedStates` gives this render the OLD timer beside the NEW
+	// cached row — and because the timer carries the clustering ε, the two can describe different
+	// derivations rather than merely different instants.
+	//
+	// It is narrower than it was: before ADR-0013 the same render could catch a committed timer
+	// whose recomputation had not happened yet, or never would. That window is gone. This one is
+	// bounded by the gap between two statements, and the next render is correct.
+	//
+	// Closing it needs a READ snapshot, which this store cannot currently give: the DSN sets
+	// `_txlock=immediate`, so [store.DB.InTx] takes the WRITE lock at BEGIN and wrapping every
+	// board render in one would serialise the whole instance behind the slowest reader — the cost
+	// that pragma's own comment names. A deferred-transaction handle is a change to
+	// `internal/store` and a decision of its own; it is not this function's to make quietly.
 	q := s.db.Queries()
 	circle, err := s.circle(ctx, q, circleID)
 	if err != nil {

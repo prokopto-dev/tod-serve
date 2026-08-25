@@ -194,6 +194,17 @@ func (t SeedTimer) describe() string {
 	return strconv.Quote(t.Target) + " on " + t.Server
 }
 
+// ErrSeedRejected marks a seed that was refused before anything was written.
+//
+// The distinction it carries is the only one an operator can act on: a REJECTED seed wrote nothing
+// and re-running the same file cannot help, because the file is what is wrong. A run that failed
+// part-way through the writes wrote real rows, and re-running the same file IS the remedy. Those
+// are opposite instructions, so the caller must not have to guess which it is holding — and it
+// cannot infer it from the report, whose counts are all zero in both cases at the first window.
+//
+// Compare with [errors.Is]. `tod-serve seed timers` is the caller that branches on it.
+var ErrSeedRejected = errors.New("seed rejected before anything was written")
+
 // ApplySeed writes a parsed seed's timers, recomputing every board each one moves.
 //
 // Resolution and validation both happen BEFORE anything is written: a target name that does not
@@ -219,6 +230,10 @@ func (t SeedTimer) describe() string {
 // file again: every write here is an upsert and every recomputation is idempotent, so a re-run
 // finishes the job and changes nothing it already did. The report says how far it got.
 //
+// That remedy is exactly wrong for a REJECTED seed, which wrote nothing because the file is what
+// is wrong — hence [ErrSeedRejected], and hence a caller that must branch on it rather than read
+// the counts, which are zero for both at the first window.
+//
 // The `source` on every row is the file's, overwritten rather than merged. A timer says where its
 // numbers came from; a row whose source named a seed that no longer sets it would be a citation to
 // the wrong document.
@@ -226,11 +241,12 @@ func (s *Service) ApplySeed(
 	ctx context.Context, file SeedFile, inv TimerInvalidator,
 ) (TimerSeedReport, error) {
 	if inv == nil {
-		return TimerSeedReport{}, errNoInvalidator("apply timer seed")
+		return TimerSeedReport{}, errors.Join(ErrSeedRejected,
+			errNoInvalidator("apply timer seed"))
 	}
 	targets, err := s.loadTargets(ctx, s.db.Queries())
 	if err != nil {
-		return TimerSeedReport{}, err
+		return TimerSeedReport{}, errors.Join(ErrSeedRejected, err)
 	}
 	byID := make(map[string]Target, len(targets))
 	for _, t := range targets {
@@ -243,17 +259,18 @@ func (s *Service) ApplySeed(
 	for i, timer := range file.Timers {
 		target, resolveErr := resolveSeedTarget(timer, byID, targets)
 		if resolveErr != nil {
-			return TimerSeedReport{}, fmt.Errorf("seed timers[%d] (%s): %w",
-				i, timer.describe(), resolveErr)
+			return TimerSeedReport{}, errors.Join(ErrSeedRejected,
+				fmt.Errorf("seed timers[%d] (%s): %w", i, timer.describe(), resolveErr))
 		}
 		server, serverErr := core.ParseServer(timer.Server)
 		if serverErr != nil {
-			return TimerSeedReport{}, fmt.Errorf("seed timers[%d]: %w", i, serverErr)
+			return TimerSeedReport{}, errors.Join(ErrSeedRejected,
+				fmt.Errorf("seed timers[%d]: %w", i, serverErr))
 		}
 		window, windowErr := timer.window().validate("timer")
 		if windowErr != nil {
-			return TimerSeedReport{}, fmt.Errorf("seed timers[%d] (%s): %w",
-				i, timer.describe(), windowErr)
+			return TimerSeedReport{}, errors.Join(ErrSeedRejected,
+				fmt.Errorf("seed timers[%d] (%s): %w", i, timer.describe(), windowErr))
 		}
 		rows = append(rows, resolvedSeedRow{
 			target: target, server: server, window: window, note: timer.Note,

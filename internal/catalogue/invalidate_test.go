@@ -335,3 +335,126 @@ func TestApplySeed_AFailurePartWay_KeepsTheWindowsItWroteAndNoOthers(t *testing.
 	require.False(t, present(third),
 		"a window after the failure was written; the run did not stop where it said it did")
 }
+
+// TestApplySeed_EveryPreWriteFailure_IsMarkedRejected pins the one distinction an operator acts on.
+//
+// A REJECTED seed wrote nothing and re-running the same file cannot help, because the file is what
+// is wrong. A run that failed part-way through the writes wrote real rows, and re-running the same
+// file IS the remedy. Those are opposite instructions, and the report cannot tell them apart —
+// its counts are all zero in both cases at the first window — so the ERROR has to.
+//
+// Without this the command described a rejected file as partial progress: "0 of 0 timers written
+// from """, then "those are written and their boards recomputed, and the rest are untouched. Run
+// the same file again to finish it", with the actual validation error buried at the end of it.
+//
+// The last row is the contrast and is what stops this passing vacuously: a failure DURING the
+// writes must NOT carry the sentinel, or the command would tell an operator with real half-written
+// state that nothing happened.
+func TestApplySeed_EveryPreWriteFailure_IsMarkedRejected(t *testing.T) {
+	t.Parallel()
+	version := catalogue.SeedFormatVersion
+	// Built as a struct rather than parsed, because two of these refusals are unreachable through
+	// [catalogue.ParseSeed] — it checks the server and the window itself, so `ApplySeed`'s own
+	// checks only fire for a SeedFile assembled in Go. They still have to carry the sentinel: an
+	// unmarked one would tell an operator to re-run a file that cannot succeed.
+	seed := func(timers ...catalogue.SeedTimer) catalogue.SeedFile {
+		return catalogue.SeedFile{
+			Version: &version, Source: "a fixture, not a wiki", Timers: timers,
+		}
+	}
+	tests := []struct {
+		name string
+		// file builds the seed, given a target that does exist.
+		file func(target catalogue.Target) catalogue.SeedFile
+		// nilInvalidator drives the unwired case, which is also a pre-write refusal.
+		nilInvalidator bool
+		// duringTheWrites makes the invalidation fail instead, which is NOT a rejection.
+		duringTheWrites bool
+		rejected        bool
+	}{
+		{
+			name: "a target this instance has never heard of",
+			file: func(catalogue.Target) catalogue.SeedFile {
+				return seed(catalogue.SeedTimer{
+					Target: "A Mob Nobody Has Heard Of", Server: "blue",
+					WindowKind: schemaenum.RaidTargetTimerWindowKindUnknown,
+				})
+			},
+			rejected: true,
+		},
+		{
+			name: "a server that is not a server",
+			file: func(target catalogue.Target) catalogue.SeedFile {
+				return seed(catalogue.SeedTimer{
+					TargetID: target.ID.String(), Server: "purple",
+					WindowKind: schemaenum.RaidTargetTimerWindowKindUnknown,
+				})
+			},
+			rejected: true,
+		},
+		{
+			name: "a window the schema would refuse",
+			file: func(target catalogue.Target) catalogue.SeedFile {
+				return seed(catalogue.SeedTimer{
+					TargetID: target.ID.String(), Server: "blue",
+					WindowKind:              schemaenum.RaidTargetTimerWindowKindFixed,
+					WindowOpenOffsetSeconds: ptr(int64(60)),
+					// A fixed window is a point, so unequal offsets are not one.
+					WindowCloseOffsetSeconds: ptr(int64(120)),
+				})
+			},
+			rejected: true,
+		},
+		{
+			name: "nobody wired an invalidator",
+			file: func(target catalogue.Target) catalogue.SeedFile {
+				return seed(catalogue.SeedTimer{
+					TargetID: target.ID.String(), Server: "blue",
+					WindowKind: schemaenum.RaidTargetTimerWindowKindUnknown,
+				})
+			},
+			nilInvalidator: true,
+			rejected:       true,
+		},
+		{
+			name: "the recomputation fails after the window is written",
+			file: func(target catalogue.Target) catalogue.SeedFile {
+				return seed(catalogue.SeedTimer{
+					TargetID: target.ID.String(), Server: "blue",
+					WindowKind: schemaenum.RaidTargetTimerWindowKindUnknown,
+				})
+			},
+			duringTheWrites: true,
+			rejected:        false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			target := f.target("Venril Sathir", "Karnor's Castle", "vs")
+
+			inv := catalogue.TimerInvalidator(f.inv)
+			switch {
+			case tt.nilInvalidator:
+				inv = nil
+			case tt.duringTheWrites:
+				f.inv.failWith(errors.New("the projection is unreachable"))
+			}
+
+			_, err := f.svc.ApplySeed(t.Context(), tt.file(target), inv)
+			require.Error(t, err)
+			require.Equal(t, tt.rejected, errors.Is(err, catalogue.ErrSeedRejected),
+				"%s: the command branches on exactly this to decide whether to tell the operator "+
+					"to run the same file again", tt.name)
+
+			// Either way nothing is left behind — a rejection never wrote, and a failed
+			// recomputation rolled its window back.
+			_, getErr := f.store.Queries().GetRaidTargetTimer(t.Context(),
+				sqlitegen.GetRaidTargetTimerParams{
+					TargetID: target.ID.String(), Server: string(core.ServerBlue),
+				})
+			require.True(t, store.IsNotFound(getErr), "the failed seed left a window behind")
+		})
+	}
+}
