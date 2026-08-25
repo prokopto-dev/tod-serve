@@ -26,7 +26,7 @@ func TestResolveTimer_AnUnseededInstance_IsUnknownEverywhere(t *testing.T) {
 	f.seedEmbedded()
 	circleID := f.circle("Riot")
 
-	resolved, err := f.svc.ResolveTimers(t.Context(), circleID, core.ServerBlue)
+	resolved, err := f.svc.ResolveTimers(t.Context(), f.store.Queries(), circleID, core.ServerBlue)
 	require.NoError(t, err)
 	require.NotEmpty(t, resolved, "the embedded catalogue produced no targets to resolve")
 
@@ -43,7 +43,7 @@ func TestResolveTimer_AnUnseededInstance_IsUnknownEverywhere(t *testing.T) {
 	// getTargetState and listTargetStates render the same answer.
 	vulak, err := f.svc.Resolve(t.Context(), catalogue.Ref{Name: "Vulak`Aerr"})
 	require.NoError(t, err)
-	one, err := f.svc.ResolveTimer(t.Context(), circleID, vulak.Target.ID, core.ServerBlue)
+	one, err := f.svc.ResolveTimer(t.Context(), f.store.Queries(), circleID, vulak.Target.ID, core.ServerBlue)
 	require.NoError(t, err)
 	require.Equal(t, resolved[vulak.Target.ID], one)
 }
@@ -60,7 +60,7 @@ func TestResolveTimer_AnUnknownTimer_StillCarriesTheQuakeFlag(t *testing.T) {
 	f.seedEmbedded()
 	circleID := f.circle("Riot")
 
-	resolved, err := f.svc.ResolveTimers(t.Context(), circleID, core.ServerBlue)
+	resolved, err := f.svc.ResolveTimers(t.Context(), f.store.Queries(), circleID, core.ServerBlue)
 	require.NoError(t, err)
 
 	var sawQuakeTarget, sawImmune bool
@@ -90,7 +90,7 @@ func TestResolveTimer_ThePrecedence_IsOverrideThenCatalogueThenUnknown(t *testin
 	target := f.target("Test Wyrm", "Nowhere")
 
 	// Rung 3 first: nothing written anywhere.
-	got, err := f.svc.ResolveTimer(t.Context(), circleID, target.ID, core.ServerBlue)
+	got, err := f.svc.ResolveTimer(t.Context(), f.store.Queries(), circleID, target.ID, core.ServerBlue)
 	require.NoError(t, err)
 	require.Equal(t, catalogue.TimerSourceNone, got.Source)
 	require.Equal(t, consensus.WindowUnknown, got.Timer.Kind)
@@ -101,17 +101,17 @@ func TestResolveTimer_ThePrecedence_IsOverrideThenCatalogueThenUnknown(t *testin
 		WindowOpenOffsetSeconds:  ptr(int64(100)),
 		WindowCloseOffsetSeconds: ptr(int64(200)),
 		Source:                   "a fixture, not a wiki",
-	})
+	}, f.inv)
 	require.NoError(t, err)
 
-	got, err = f.svc.ResolveTimer(t.Context(), circleID, target.ID, core.ServerBlue)
+	got, err = f.svc.ResolveTimer(t.Context(), f.store.Queries(), circleID, target.ID, core.ServerBlue)
 	require.NoError(t, err)
 	require.Equal(t, catalogue.TimerSourceCatalogue, got.Source)
 	require.Equal(t, int64(100), *got.Timer.OpenOffsetSeconds)
 
 	// The timer is PER SERVER, so green still has nothing. A resolution that ignored the server
 	// would put blue's window on a green circle's board.
-	green, err := f.svc.ResolveTimer(t.Context(), circleID, target.ID, core.ServerGreen)
+	green, err := f.svc.ResolveTimer(t.Context(), f.store.Queries(), circleID, target.ID, core.ServerGreen)
 	require.NoError(t, err)
 	require.Equal(t, catalogue.TimerSourceNone, green.Source)
 
@@ -121,31 +121,31 @@ func TestResolveTimer_ThePrecedence_IsOverrideThenCatalogueThenUnknown(t *testin
 		WindowOpenOffsetSeconds:  ptr(int64(300)),
 		WindowCloseOffsetSeconds: ptr(int64(400)),
 		Note:                     "we have tracked this for two years",
-	})
+	}, f.inv)
 	require.NoError(t, err)
 
-	got, err = f.svc.ResolveTimer(t.Context(), circleID, target.ID, core.ServerBlue)
+	got, err = f.svc.ResolveTimer(t.Context(), f.store.Queries(), circleID, target.ID, core.ServerBlue)
 	require.NoError(t, err)
 	require.Equal(t, catalogue.TimerSourceCircleOverride, got.Source)
 	require.Equal(t, int64(300), *got.Timer.OpenOffsetSeconds)
 
 	// An override has no server column — the circle is pinned to one — so it wins on every server
 	// the circle could be asked about.
-	green, err = f.svc.ResolveTimer(t.Context(), circleID, target.ID, core.ServerGreen)
+	green, err = f.svc.ResolveTimer(t.Context(), f.store.Queries(), circleID, target.ID, core.ServerGreen)
 	require.NoError(t, err)
 	require.Equal(t, catalogue.TimerSourceCircleOverride, green.Source)
 
 	// And a DIFFERENT circle is unaffected: an override is one circle's opinion, not an edit.
 	other := f.circle("Ossuary")
-	got, err = f.svc.ResolveTimer(t.Context(), other, target.ID, core.ServerBlue)
+	got, err = f.svc.ResolveTimer(t.Context(), f.store.Queries(), other, target.ID, core.ServerBlue)
 	require.NoError(t, err)
 	require.Equal(t, catalogue.TimerSourceCatalogue, got.Source)
 	require.Equal(t, int64(100), *got.Timer.OpenOffsetSeconds)
 
 	// Removing the override falls back to the catalogue rather than to nothing.
-	_, err = f.svc.DeleteOverride(t.Context(), circleID, target.ID, actor)
+	_, err = f.svc.DeleteOverride(t.Context(), circleID, target.ID, actor, f.inv)
 	require.NoError(t, err)
-	got, err = f.svc.ResolveTimer(t.Context(), circleID, target.ID, core.ServerBlue)
+	got, err = f.svc.ResolveTimer(t.Context(), f.store.Queries(), circleID, target.ID, core.ServerBlue)
 	require.NoError(t, err)
 	require.Equal(t, catalogue.TimerSourceCatalogue, got.Source)
 }
@@ -167,7 +167,7 @@ func TestResolveTimers_TheBulkPath_AgreesWithTheSingleOne(t *testing.T) {
 			WindowKind:               schemaenum.RaidTargetTimerWindowKindVariance,
 			WindowOpenOffsetSeconds:  ptr(int64(10)),
 			WindowCloseOffsetSeconds: ptr(int64(20)),
-		})
+		}, f.inv)
 		require.NoError(t, err)
 	}
 	_, err := f.svc.PutOverride(t.Context(), circleID, overridden.ID, actor,
@@ -175,13 +175,13 @@ func TestResolveTimers_TheBulkPath_AgreesWithTheSingleOne(t *testing.T) {
 			WindowKind:               schemaenum.RaidTargetTimerWindowKindFixed,
 			WindowOpenOffsetSeconds:  ptr(int64(30)),
 			WindowCloseOffsetSeconds: ptr(int64(30)),
-		})
+		}, f.inv)
 	require.NoError(t, err)
 
-	bulk, err := f.svc.ResolveTimers(t.Context(), circleID, core.ServerBlue)
+	bulk, err := f.svc.ResolveTimers(t.Context(), f.store.Queries(), circleID, core.ServerBlue)
 	require.NoError(t, err)
 	for _, id := range []core.RaidTargetID{overridden.ID, catalogued.ID, bare.ID} {
-		one, oneErr := f.svc.ResolveTimer(t.Context(), circleID, id, core.ServerBlue)
+		one, oneErr := f.svc.ResolveTimer(t.Context(), f.store.Queries(), circleID, id, core.ServerBlue)
 		require.NoError(t, oneErr)
 		require.Equal(t, one, bulk[id], "the two paths disagree about %s", id)
 	}
@@ -263,7 +263,7 @@ func TestPutTimer_AWindowTheSchemaWouldRefuse_Is422AndNotA500(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := f.svc.PutTimer(t.Context(), target.ID, core.ServerBlue, tt.req)
+			_, err := f.svc.PutTimer(t.Context(), target.ID, core.ServerBlue, tt.req, f.inv)
 			require.Error(t, err)
 			coded, ok := apierr.From(err)
 			require.True(t, ok, "not a coded problem, so the edge would render a 500: %v", err)
@@ -285,7 +285,7 @@ func TestPutTimer_AFixedWindow_IsAPointWithAGrace(t *testing.T) {
 		WindowKind:               schemaenum.RaidTargetTimerWindowKindFixed,
 		WindowOpenOffsetSeconds:  ptr(int64(500)),
 		WindowCloseOffsetSeconds: ptr(int64(500)),
-	})
+	}, f.inv)
 	require.NoError(t, err)
 	require.Equal(t, int64(catalogue.DefaultFixedGraceSeconds), got.FixedGraceSeconds,
 		"a fixed timer with no grace flips pre_window to overdue with no state in between")
@@ -304,7 +304,7 @@ func TestPutTimer_ReplacingATimer_OverwritesRatherThanAppends(t *testing.T) {
 				WindowKind:               schemaenum.RaidTargetTimerWindowKindVariance,
 				WindowOpenOffsetSeconds:  ptr(open),
 				WindowCloseOffsetSeconds: ptr(open + 50),
-			})
+			}, f.inv)
 		require.NoError(t, err)
 	}
 	timers, err := f.svc.Timers(t.Context(), target.ID)
@@ -323,7 +323,7 @@ func TestOverride_Delete_IsA404WhenThereIsNothingToRemove(t *testing.T) {
 	actor := f.member(circleID)
 	target := f.target("Test Wyrm", "Nowhere")
 
-	_, err := f.svc.DeleteOverride(t.Context(), circleID, target.ID, actor)
+	_, err := f.svc.DeleteOverride(t.Context(), circleID, target.ID, actor, f.inv)
 	require.Error(t, err)
 	coded, ok := apierr.From(err)
 	require.True(t, ok)
@@ -341,9 +341,9 @@ func TestOverride_Writes_AreAudited(t *testing.T) {
 
 	_, err := f.svc.PutOverride(t.Context(), circleID, target.ID, actor, catalogue.WindowRequest{
 		WindowKind: schemaenum.RaidTargetTimerWindowKindUnknown,
-	})
+	}, f.inv)
 	require.NoError(t, err)
-	_, err = f.svc.DeleteOverride(t.Context(), circleID, target.ID, actor)
+	_, err = f.svc.DeleteOverride(t.Context(), circleID, target.ID, actor, f.inv)
 	require.NoError(t, err)
 
 	rows, err := f.store.Queries().ListAuditLog(t.Context(), sqlitegen.ListAuditLogParams{
@@ -382,7 +382,7 @@ func TestUnseededInstance_DerivesNoTimerAndStillCountsEveryReport(t *testing.T) 
 
 	vulak, err := f.svc.Resolve(t.Context(), catalogue.Ref{Name: "Vulak`Aerr"})
 	require.NoError(t, err)
-	resolved, err := f.svc.ResolveTimer(t.Context(), circleID, vulak.Target.ID, core.ServerBlue)
+	resolved, err := f.svc.ResolveTimer(t.Context(), f.store.Queries(), circleID, vulak.Target.ID, core.ServerBlue)
 	require.NoError(t, err)
 	require.Equal(t, catalogue.TimerSourceNone, resolved.Source)
 

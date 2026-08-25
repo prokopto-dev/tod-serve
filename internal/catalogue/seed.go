@@ -68,30 +68,36 @@ type SeedTimer struct {
 }
 
 // TimerSeedReport is what a run of [Service.ApplySeed] did.
+//
+// Every field counts something an operator can act on, including on the failure path: a seed that
+// stopped part-way returns this report ALONGSIDE its error, because "how far did it get" is the
+// only question worth asking at that point and a filter that drops a row counts it somewhere
+// visible.
 type TimerSeedReport struct {
-	// TimersWritten is how many (target, server) windows the file set. It counts rows that
-	// replaced an existing timer as well as new ones: a seed is a statement about what the window
-	// IS, not a request to add one.
+	// TimersWritten is how many rows were committed. It counts rows that replaced an existing
+	// timer as well as new ones: a seed is a statement about what the window IS, not a request to
+	// add one. On the failure path it is how many landed before the run stopped.
 	TimersWritten int
+	// TimersTotal is how many rows the file named, so TimersWritten always has a denominator.
+	TimersTotal int
 	// Source is what the file said about itself, echoed back so an operator can see which seed
 	// they just applied rather than trusting the filename.
 	Source string
-	// Changed names every (target, server) window the file set, deduplicated.
+	// Changed names every (target, server) window that was written AND recomputed, deduplicated.
 	//
-	// It is reported rather than kept private because a catalogue timer is instance-wide and
-	// per-server: writing one moves the window for every circle pinned to that server that has not
-	// overridden it, and something has to invalidate their derived state. The seed command is the
-	// caller that does it, the same way a route does — [SeededTimer] says why the caller rather
-	// than this function.
+	// It is what committed, not what was asked for: [Service.ApplySeed] writes one window per
+	// transaction, so on a failure part-way this is the prefix that landed and WindowsTotal is
+	// what the file named.
 	Changed []SeededTimer
+	// WindowsTotal is how many distinct (target, server) windows the file named.
+	WindowsTotal int
 }
 
 // SeededTimer is one (target, server) window a seed run wrote.
 //
-// The invalidation it implies is pushed by the CALLER, not from inside [Service.ApplySeed], for
-// the same reason the API's `TimerInvalidator` lives beside the handlers: the consumer owns the
-// port. `internal/catalogue` knowing about `internal/projection` would invert a dependency that
-// currently runs one way, and the projection already reads this package for the effective timer.
+// A catalogue timer is instance-wide and per-server, so one of these moves the window for every
+// circle pinned to that server that has not overridden it. That fan-out is the
+// [TimerInvalidator]'s, and it runs inside this window's own transaction.
 type SeededTimer struct {
 	TargetID core.RaidTargetID
 	Server   core.Server
@@ -188,19 +194,59 @@ func (t SeedTimer) describe() string {
 	return strconv.Quote(t.Target) + " on " + t.Server
 }
 
-// ApplySeed writes a parsed seed's timers.
+// ErrSeedRejected marks a seed that was refused before anything was written.
 //
-// Resolution and validation both happen BEFORE the transaction opens any write: a target name that
-// does not resolve is discovered while the catalogue is still untouched. The write itself is one
-// transaction, so a failure part-way leaves nothing behind.
+// The distinction it carries is the only one an operator can act on: a REJECTED seed wrote nothing
+// and re-running the same file cannot help, because the file is what is wrong. A run that failed
+// part-way through the writes wrote real rows, and re-running the same file IS the remedy. Those
+// are opposite instructions, so the caller must not have to guess which it is holding — and it
+// cannot infer it from the report, whose counts are all zero in both cases at the first window.
+//
+// Compare with [errors.Is]. `tod-serve seed timers` is the caller that branches on it.
+var ErrSeedRejected = errors.New("seed rejected before anything was written")
+
+// ApplySeed writes a parsed seed's timers, recomputing every board each one moves.
+//
+// Resolution and validation both happen BEFORE anything is written: a target name that does not
+// resolve is discovered while the catalogue is still untouched, so a malformed file still leaves
+// nothing behind.
+//
+// # The unit of atomicity is ONE window, not the file
+//
+// Each (target, server) window is written and invalidated in a transaction of its own. That is a
+// deliberate trade against the whole-file transaction this used to be, and it is made twice over:
+//
+//   - SQLite has ONE writer. A catalogue timer fans out over every circle pinned to that server,
+//     so a sixty-window seed inside one transaction holds the write lock across hundreds of
+//     recomputations — every report on the instance blocked for the duration. Reports timing out
+//     during a seed is a worse failure than the staleness this closes.
+//   - The invariant that matters is per window: a moved window and the boards derived from it
+//     commit together, or neither does. File-level atomicity is a different property, and it was
+//     buying protection against a partial write that validation already prevents.
+//
+// **What a crash mid-seed leaves behind:** the windows written so far, each with its boards
+// recomputed, and the rest untouched — every board on the instance consistent with the timer
+// behind it. Nothing is half-applied at the level anything reads. The remedy is to run the same
+// file again: every write here is an upsert and every recomputation is idempotent, so a re-run
+// finishes the job and changes nothing it already did. The report says how far it got.
+//
+// That remedy is exactly wrong for a REJECTED seed, which wrote nothing because the file is what
+// is wrong — hence [ErrSeedRejected], and hence a caller that must branch on it rather than read
+// the counts, which are zero for both at the first window.
 //
 // The `source` on every row is the file's, overwritten rather than merged. A timer says where its
 // numbers came from; a row whose source named a seed that no longer sets it would be a citation to
 // the wrong document.
-func (s *Service) ApplySeed(ctx context.Context, file SeedFile) (TimerSeedReport, error) {
-	targets, err := s.loadTargets(ctx)
+func (s *Service) ApplySeed(
+	ctx context.Context, file SeedFile, inv TimerInvalidator,
+) (TimerSeedReport, error) {
+	if inv == nil {
+		return TimerSeedReport{}, errors.Join(ErrSeedRejected,
+			errNoInvalidator("apply timer seed"))
+	}
+	targets, err := s.loadTargets(ctx, s.db.Queries())
 	if err != nil {
-		return TimerSeedReport{}, err
+		return TimerSeedReport{}, errors.Join(ErrSeedRejected, err)
 	}
 	byID := make(map[string]Target, len(targets))
 	for _, t := range targets {
@@ -209,79 +255,106 @@ func (s *Service) ApplySeed(ctx context.Context, file SeedFile) (TimerSeedReport
 
 	// Resolved first, all of them, before anything is written. A seed naming one target that does
 	// not exist must not leave the sixty that do half-applied.
-	type resolved struct {
-		target Target
-		server core.Server
-		window validated
-		note   string
-	}
-	rows := make([]resolved, 0, len(file.Timers))
+	rows := make([]resolvedSeedRow, 0, len(file.Timers))
 	for i, timer := range file.Timers {
 		target, resolveErr := resolveSeedTarget(timer, byID, targets)
 		if resolveErr != nil {
-			return TimerSeedReport{}, fmt.Errorf("seed timers[%d] (%s): %w",
-				i, timer.describe(), resolveErr)
+			return TimerSeedReport{}, errors.Join(ErrSeedRejected,
+				fmt.Errorf("seed timers[%d] (%s): %w", i, timer.describe(), resolveErr))
 		}
 		server, serverErr := core.ParseServer(timer.Server)
 		if serverErr != nil {
-			return TimerSeedReport{}, fmt.Errorf("seed timers[%d]: %w", i, serverErr)
+			return TimerSeedReport{}, errors.Join(ErrSeedRejected,
+				fmt.Errorf("seed timers[%d]: %w", i, serverErr))
 		}
 		window, windowErr := timer.window().validate("timer")
 		if windowErr != nil {
-			return TimerSeedReport{}, fmt.Errorf("seed timers[%d] (%s): %w",
-				i, timer.describe(), windowErr)
+			return TimerSeedReport{}, errors.Join(ErrSeedRejected,
+				fmt.Errorf("seed timers[%d] (%s): %w", i, timer.describe(), windowErr))
 		}
-		rows = append(rows, resolved{
+		rows = append(rows, resolvedSeedRow{
 			target: target, server: server, window: window, note: timer.Note,
 		})
 	}
 
+	// One instant for the whole file, not one per row: the rows are one statement about what the
+	// windows ARE, and a `created_at` that walked forward across a seed would make two rows from
+	// one file look like two decisions.
 	now := s.clock.Now()
-	err = s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
-		for _, row := range rows {
-			source := file.Source
-			params := sqlitegen.PutRaidTargetTimerParams{
-				TargetID: row.target.ID.String(), Server: string(row.server),
-				WindowKind:               row.window.kind,
-				WindowOpenOffsetSeconds:  row.window.openOffset,
-				WindowCloseOffsetSeconds: row.window.closeOffset,
-				FixedGraceSeconds:        row.window.grace,
-				ClusterEpsilonSeconds:    row.window.epsilon,
-				Source:                   &source,
-				Note:                     row.note,
-				CreatedAt:                int64(now), UpdatedAt: int64(now),
+
+	// Grouped before anything is written, because the group IS the transaction. A seed naming one
+	// (target, server) twice is a last-write-wins upsert, so its rows go in one transaction in
+	// file order and the window it moved is invalidated once.
+	groups := make([]seedGroup, 0, len(rows))
+	at := make(map[SeededTimer]int, len(rows))
+	for _, row := range rows {
+		pair := SeededTimer{TargetID: row.target.ID, Server: row.server}
+		i, seen := at[pair]
+		if !seen {
+			at[pair] = len(groups)
+			groups = append(groups, seedGroup{pair: pair})
+			i = len(groups) - 1
+		}
+		groups[i].params = append(groups[i].params, seedParams(row, file.Source, now))
+	}
+
+	report := TimerSeedReport{
+		Source: file.Source, TimersTotal: len(rows), WindowsTotal: len(groups),
+		Changed: make([]SeededTimer, 0, len(groups)),
+	}
+	for _, group := range groups {
+		if err = s.applySeedWindow(ctx, group, inv); err != nil {
+			// The report goes back WITH the error. "how far did it get" is the only question worth
+			// asking here, and an error carrying nothing forces an operator to go and look.
+			if coded, ok := apierr.From(err); ok {
+				return report, coded
 			}
+			return report, apierr.Wrap(apierr.CodeInternalError, err, "")
+		}
+		report.TimersWritten += len(group.params)
+		report.Changed = append(report.Changed, group.pair)
+	}
+
+	s.log.InfoContext(ctx, "timer seed applied",
+		slog.Int("timers_written", report.TimersWritten),
+		slog.Int("windows_recomputed", len(report.Changed)),
+		slog.String("source", file.Source))
+	return report, nil
+}
+
+// seedGroup is every row a seed file holds for ONE (target, server) window, and therefore one
+// transaction's worth of work.
+type seedGroup struct {
+	pair   SeededTimer
+	params []sqlitegen.PutRaidTargetTimerParams
+}
+
+// applySeedWindow writes one window and recomputes every board it moved, in one transaction.
+func (s *Service) applySeedWindow(
+	ctx context.Context, group seedGroup, inv TimerInvalidator,
+) error {
+	return s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
+		for _, params := range group.params {
 			if _, txErr := q.PutRaidTargetTimer(ctx, params); txErr != nil {
 				return txErr
 			}
 		}
-		return nil
+		return inv.OnCatalogueTimerChange(ctx, q, group.pair.Server, group.pair.TargetID)
 	})
-	if err != nil {
-		if coded, ok := apierr.From(err); ok {
-			return TimerSeedReport{}, coded
-		}
-		return TimerSeedReport{}, apierr.Wrap(apierr.CodeInternalError, err, "")
-	}
+}
 
-	changed := make([]SeededTimer, 0, len(rows))
-	seen := make(map[SeededTimer]bool, len(rows))
-	for _, row := range rows {
-		pair := SeededTimer{TargetID: row.target.ID, Server: row.server}
-		if seen[pair] {
-			// A seed naming one (target, server) twice is a last-write-wins upsert, so the window
-			// moved once and the caller invalidates once.
-			continue
-		}
-		seen[pair] = true
-		changed = append(changed, pair)
+func seedParams(row resolvedSeedRow, source string, now core.Micros) sqlitegen.PutRaidTargetTimerParams {
+	return sqlitegen.PutRaidTargetTimerParams{
+		TargetID: row.target.ID.String(), Server: string(row.server),
+		WindowKind:               row.window.kind,
+		WindowOpenOffsetSeconds:  row.window.openOffset,
+		WindowCloseOffsetSeconds: row.window.closeOffset,
+		FixedGraceSeconds:        row.window.grace,
+		ClusterEpsilonSeconds:    row.window.epsilon,
+		Source:                   &source,
+		Note:                     row.note,
+		CreatedAt:                int64(now), UpdatedAt: int64(now),
 	}
-
-	s.log.InfoContext(ctx, "timer seed applied",
-		slog.Int("timers_written", len(rows)), slog.String("source", file.Source))
-	return TimerSeedReport{
-		TimersWritten: len(rows), Source: file.Source, Changed: changed,
-	}, nil
 }
 
 // resolveSeedTarget finds the target one seed row is about.
@@ -306,4 +379,13 @@ func resolveSeedTarget(
 		return Target{}, err
 	}
 	return resolution.Target, nil
+}
+
+// resolvedSeedRow is one seed row after its target, server and window have been checked, and
+// before anything is written.
+type resolvedSeedRow struct {
+	target Target
+	server core.Server
+	window validated
+	note   string
 }

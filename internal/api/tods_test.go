@@ -45,7 +45,7 @@ func (h *harness) seedTimer(target catalogue.Target, open, close time.Duration) 
 			WindowOpenOffsetSeconds:  &openSeconds,
 			WindowCloseOffsetSeconds: &closeSeconds,
 			Source:                   "test",
-		})
+		}, h.invalidator)
 	require.NoError(h.t, err)
 }
 

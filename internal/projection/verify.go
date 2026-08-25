@@ -99,7 +99,7 @@ func (s *Service) Verify(ctx context.Context) (VerifyReport, error) {
 
 		for _, derived := range states {
 			report.TargetsChecked++
-			fresh, storeErr := s.store(ctx, circleID, derived.targetID, derived.state,
+			fresh, storeErr := s.store(ctx, s.db.Queries(), circleID, derived.targetID, derived.state,
 				derived.rows, derived.reason)
 			if storeErr != nil {
 				return VerifyReport{}, storeErr

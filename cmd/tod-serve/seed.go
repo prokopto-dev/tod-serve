@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -104,8 +103,14 @@ func newSeedTimersCommand() *cobra.Command {
 		Use:   "timers",
 		Short: "Load respawn windows from a seed file",
 		Long: "Reads a timer seed from the separate tod-serve-p99-seed repository.\n\n" +
-			"The whole file is validated before anything is written. A malformed or partial seed\n" +
-			"fails and leaves the catalogue exactly as it was: there is no half-applied state.\n\n" +
+			"The whole file is validated before anything is written, so a malformed seed fails\n" +
+			"and leaves the catalogue exactly as it was.\n\n" +
+			"Each window is then written and its boards recomputed in a transaction of its own,\n" +
+			"rather than the whole file in one: SQLite has a single writer, and a seed holding\n" +
+			"the write lock across every recomputation would block every report on the instance.\n" +
+			"A run that fails part-way leaves the windows it wrote, each with its boards already\n" +
+			"recomputed, and the rest untouched. Run the same file again to finish: every write\n" +
+			"here is an upsert and a re-run changes nothing it already did.\n\n" +
 			"--check validates the file and writes nothing.\n",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -143,32 +148,44 @@ func newSeedTimersCommand() *cobra.Command {
 			}
 			defer closeDB()
 
-			report, err := svc.ApplySeed(cmd.Context(), parsed)
-			if err != nil {
-				return fmt.Errorf("seed timers: %w", err)
-			}
-			if _, err = fmt.Fprintf(out, "%d timers written from %q\n",
-				report.TimersWritten, report.Source); err != nil {
-				return fmt.Errorf("write seed result: %w", err)
+			// The projection is handed IN rather than called after: each window is written and
+			// recomputed in one transaction, so the two cannot be separated by a crash. See
+			// catalogue.TimerInvalidator.
+			report, applyErr := svc.ApplySeed(cmd.Context(), parsed, states)
+
+			// A REJECTED seed wrote nothing, so it gets no counts and no remedy. Printing
+			// "0 of 0 timers written" here would be three lies in two lines: an empty denominator
+			// read off a zero report, a claim that zero windows "are written and recomputed", and
+			// an instruction to re-run a file that cannot succeed — with the one thing an operator
+			// can act on, the validation error itself, buried at the end of it.
+			if errors.Is(applyErr, catalogue.ErrSeedRejected) {
+				return fmt.Errorf("seed timers: %w", applyErr)
 			}
 
-			refreshed, err := invalidateSeededTimers(cmd.Context(), states, report.Changed)
-			if _, writeErr := fmt.Fprintf(out,
-				"%d of %d moved windows recomputed\n", refreshed, len(report.Changed)); writeErr != nil {
-				return fmt.Errorf("write seed result: %w", writeErr)
+			// Past that point the counts are real and are printed on BOTH paths, before the error
+			// is returned. A run that stopped part-way wrote rows, and how far it got is the only
+			// thing an operator can act on — a failure that hid its own progress would make the
+			// remedy a guess.
+			if _, err = fmt.Fprintf(out, "%d of %d timers written from %q\n",
+				report.TimersWritten, report.TimersTotal, report.Source); err != nil {
+				return fmt.Errorf("write seed result: %w", err)
 			}
-			// The timers are already written and the failure is reported rather than swallowed: a
-			// seed that half-invalidated must be LOUD, because the alternative is a run that says
-			// "61 timers written" while some boards go on serving the old window.
-			//
-			// The invariant is the one the timer ROUTES hold: after a zero exit, the projection has
-			// been told about every window this run moved. It is deliberately not "a retry
-			// converges" — that reasoning is true here, because a seed is an upsert and a re-run
-			// does reach the push, and it was false for `deleteCircleTimerOverride`, where the row
-			// is gone and the retry answers before it pushes. A remedy that happens to work is not
-			// the same as an invariant, so this reports the gap and names the command that closes
-			// it outright.
-			return err
+			if _, err = fmt.Fprintf(out, "%d of %d moved windows recomputed\n",
+				len(report.Changed), report.WindowsTotal); err != nil {
+				return fmt.Errorf("write seed result: %w", err)
+			}
+			if applyErr != nil {
+				return fmt.Errorf(
+					"seed timers stopped after %d of %d windows; those are written and their "+
+						"boards recomputed, and the rest are untouched. Run the same file again "+
+						"to finish it: %w",
+					len(report.Changed), report.WindowsTotal, applyErr)
+			}
+			// The invariant is the one the timer ROUTES hold, and it holds here for the same
+			// reason: every window this run wrote committed together with the boards derived from
+			// it, so after ANY exit — zero or not — no board is serving a window this command
+			// replaced.
+			return nil
 		},
 	}
 	cmd.Flags().String(flagSeedFile, "",
@@ -218,36 +235,4 @@ func seedService(cmd *cobra.Command) (
 		return nil, nil, nil, err
 	}
 	return svc, states, closeDB, nil
-}
-
-// invalidateSeededTimers recomputes the derived state every window a seed moved.
-//
-// A catalogue timer is instance-wide and per-server, so ONE seeded row moves the window for every
-// circle pinned to that server that has not overridden it. That fan-out is
-// [projection.Service.OnCatalogueTimerChange]'s, and this loop is only the seed's half of it.
-//
-// It attempts every pair even after one fails, and joins the failures. A partial invalidation is
-// the outcome worth naming precisely: "the seed wrote 61 timers and 3 of them left boards stale"
-// is actionable, and "the seed failed" after the first bad one is not — the writes have already
-// happened either way.
-func invalidateSeededTimers(
-	ctx context.Context, states *projection.Service, changed []catalogue.SeededTimer,
-) (int, error) {
-	refreshed := 0
-	var failures []error
-	for _, timer := range changed {
-		if err := states.OnCatalogueTimerChange(ctx, timer.Server, timer.TargetID); err != nil {
-			failures = append(failures, fmt.Errorf("recompute %s on %s: %w",
-				timer.TargetID, timer.Server, err))
-			continue
-		}
-		refreshed++
-	}
-	if len(failures) > 0 {
-		return refreshed, fmt.Errorf(
-			"seed timers wrote every window, but %d of %d could not be recomputed, so those "+
-				"boards are serving the old window; run `tod-serve rebuild-states` to fix it: %w",
-			len(failures), len(changed), errors.Join(failures...))
-	}
-	return refreshed, nil
 }

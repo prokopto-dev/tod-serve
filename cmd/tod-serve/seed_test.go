@@ -191,7 +191,7 @@ func TestSeedTimers_ABadFile_FailsAndLeavesTheCatalogueUnchanged(t *testing.T) {
 			_, err := captureCLI(t, "seed", "targets", "--db", db.Path())
 			require.NoError(t, err)
 
-			_, err = captureCLI(t, "seed", "timers", "--db", db.Path(),
+			out, err := captureCLI(t, "seed", "timers", "--db", db.Path(),
 				"--file", writeSeed(t, tt.body))
 			require.Error(t, err, "a bad seed was accepted")
 
@@ -199,6 +199,20 @@ func TestSeedTimers_ABadFile_FailsAndLeavesTheCatalogueUnchanged(t *testing.T) {
 			require.NoError(t, listErr)
 			require.Empty(t, timers,
 				"the seed failed and left %d timers behind; it is half-applied", len(timers))
+
+			// **A rejected seed is described as rejected, not as partial progress.** Nothing was
+			// written, so there is nothing to count and re-running the same file cannot help — it
+			// is the file that is wrong. Reporting it the way a mid-write failure is reported
+			// buries the one line an operator can act on under an instruction that cannot work.
+			require.NotContains(t, out, "timers written",
+				"a seed that wrote nothing printed a written count: %s", out)
+			require.NotContains(t, out, "recomputed",
+				"a seed that recomputed nothing printed a recomputed count: %s", out)
+			require.NotContains(t, err.Error(), "Run the same file again",
+				"the file is invalid, so re-running it cannot succeed: %s", err)
+			require.NotContains(t, err.Error(), "those are written",
+				"nothing was written, and saying otherwise sends the operator looking for rows "+
+					"that do not exist: %s", err)
 		})
 	}
 }
@@ -270,10 +284,14 @@ func TestSeedTimers_RecomputesEveryBoardTheWindowsMoved(t *testing.T) {
 
 	out, err := captureCLI(t, "seed", "timers", "--db", db.Path(), "--file", path)
 	require.NoError(t, err)
-	require.Contains(t, out, "2 timers written")
+	require.Contains(t, out, "2 of 2 timers written")
 	// EVERY window this run moved, not merely one of them. The invariant the timer routes hold is
 	// "after a non-5xx answer the projection has been told", and the zero exit above is this
 	// command's version of that answer — so a run that recomputed 1 of 2 must not reach it.
+	//
+	// Both counts carry their denominator because since ADR-0013 a run CAN stop part-way: each
+	// window is written and recomputed in a transaction of its own, so "1 of 2" is a reachable
+	// and honest thing for this command to print, and a bare "1" would read as success.
 	require.Contains(t, out, "2 of 2 moved windows recomputed",
 		"a seed that wrote windows and invalidated nothing leaves every board on that server stale")
 

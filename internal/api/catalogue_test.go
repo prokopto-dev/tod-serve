@@ -436,7 +436,7 @@ func TestGetRaidTarget_ASeededTimer_FoldsIntoTheReadAndOnlyForItsServer(t *testi
 			WindowOpenOffsetSeconds:  ptrInt64Test(60),
 			WindowCloseOffsetSeconds: ptrInt64Test(120),
 			Source:                   "a test, not the wiki",
-		})
+		}, h.invalidator)
 	require.NoError(t, err)
 
 	got := h.do(request{
@@ -681,7 +681,7 @@ func TestGetRaidTarget_AChangedTarget_StopsRevalidating(t *testing.T) {
 			WindowKind:               "variance",
 			WindowOpenOffsetSeconds:  ptrInt64Test(60),
 			WindowCloseOffsetSeconds: ptrInt64Test(120),
-		})
+		}, h.invalidator)
 	require.NoError(t, err)
 
 	after := h.do(request{

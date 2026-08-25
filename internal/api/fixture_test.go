@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -611,48 +612,75 @@ type timerChange struct {
 	Scope  string
 }
 
-// recordingInvalidator is the [api.TimerInvalidator] the suite wires.
+// recordingInvalidator is the [catalogue.TimerInvalidator] the suite wires.
 //
 // It records rather than no-ops, because "did this route push the invalidation" is the question
 // TestRouteRegistry_EveryTimerWritingRoute_PushesTheInvalidation exists to answer, and a no-op
 // fake would let every route pass it. The failure it guards is a route that writes a window and
 // tells nobody, which is invisible from the response.
+//
+// It is called INSIDE the writing transaction, and `q` is that transaction's query set — so it
+// hands `q` on to the delegate rather than substituting one, and `inside` lets a test read the
+// database through the same transaction the write is using.
 type recordingInvalidator struct {
 	mu      sync.Mutex
 	changes []timerChange
 	// delegate is the REAL projection. Recording and doing are both wanted: the record answers
 	// "did this route push the invalidation", and the delegate is what makes the next board read
 	// in the same test show the new window rather than the cached old one.
-	delegate api.TimerInvalidator
+	delegate catalogue.TimerInvalidator
 	// err, when set, is returned by both methods INSTEAD of delegating. A write whose invalidation
-	// failed must not report success, and that is only assertable if the fake can fail.
+	// failed must not report success — and, since ADR-0013, must leave no row behind either. That
+	// is only assertable if the fake can fail.
 	err error
+	// inside, when set, runs with the writing transaction's own query set before the delegate.
+	inside func(ctx context.Context, q *sqlitegen.Queries) error
 }
 
 func (r *recordingInvalidator) OnTimerChange(
-	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID,
+	ctx context.Context, q *sqlitegen.Queries,
+	circleID core.CircleID, targetID core.RaidTargetID,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.changes = append(r.changes,
 		timerChange{Circle: circleID, Target: targetID, Scope: "circle"})
+	if r.inside != nil {
+		if err := r.inside(ctx, q); err != nil {
+			return err
+		}
+	}
 	if r.err != nil {
 		return r.err
 	}
-	return r.delegate.OnTimerChange(ctx, circleID, targetID)
+	return r.delegate.OnTimerChange(ctx, q, circleID, targetID)
 }
 
 func (r *recordingInvalidator) OnCatalogueTimerChange(
-	ctx context.Context, server core.Server, targetID core.RaidTargetID,
+	ctx context.Context, q *sqlitegen.Queries, server core.Server, targetID core.RaidTargetID,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.changes = append(r.changes,
 		timerChange{Server: server, Target: targetID, Scope: "instance"})
+	if r.inside != nil {
+		if err := r.inside(ctx, q); err != nil {
+			return err
+		}
+	}
 	if r.err != nil {
 		return r.err
 	}
-	return r.delegate.OnCatalogueTimerChange(ctx, server, targetID)
+	return r.delegate.OnCatalogueTimerChange(ctx, q, server, targetID)
+}
+
+// observeInside installs a hook that runs with the writing transaction's query set. It is how
+// TestTimerWrite_TheInvalidationRunsInsideTheWritingTransaction asks what that transaction can
+// already see and what the pool cannot.
+func (r *recordingInvalidator) observeInside(fn func(ctx context.Context, q *sqlitegen.Queries) error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.inside = fn
 }
 
 // recorded returns the pushes so far.
@@ -662,7 +690,9 @@ func (r *recordingInvalidator) recorded() []timerChange {
 	return append([]timerChange(nil), r.changes...)
 }
 
-// reset clears the record, so a test can drive one route and assert on that route alone.
+// reset clears the RECORD, so a test can drive one route and assert on that route alone. It
+// deliberately leaves `err` and `inside` alone: a test arms the failure and then resets the
+// record, and a reset that disarmed it would make the assertion pass against a working push.
 func (r *recordingInvalidator) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -675,4 +705,59 @@ func (r *recordingInvalidator) failWith(err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.err = err
+}
+
+// timerFingerprint is everything a window-moving write can touch, for one circle and one target,
+// rendered as a comparable string.
+//
+// It is what TestRouteRegistry_EveryTimerWritingRoute_RollsBackWhenTheInvalidationFails compares
+// before and after a failed write. It reads through the generated queries rather than dumping
+// tables, so the reader can see exactly which four things are being watched — the override, the
+// catalogue timer on every server, the derived state, and the audit log — and a fifth would have
+// to be added here deliberately.
+func (h *harness) timerFingerprint(t *testing.T, subject timerSubject) string {
+	t.Helper()
+	ctx := t.Context()
+	q := h.store.Queries()
+	var out []string
+
+	render := func(kind string, v any) {
+		// JSON, not %+v: these rows carry pointer fields, and %v prints their ADDRESSES — which
+		// differ between two reads of the same row and would make this comparison fail for every
+		// write, including the ones that correctly rolled back.
+		raw, marshalErr := json.Marshal(v)
+		require.NoError(t, marshalErr)
+		out = append(out, kind+" "+string(raw))
+	}
+
+	overrides, err := q.ListCircleTimerOverrides(ctx, subject.circle.String())
+	require.NoError(t, err)
+	for _, row := range overrides {
+		render("override", row)
+	}
+	for _, server := range core.Servers() {
+		row, timerErr := q.GetRaidTargetTimer(ctx, sqlitegen.GetRaidTargetTimerParams{
+			TargetID: subject.target, Server: string(server),
+		})
+		if store.IsNotFound(timerErr) {
+			continue
+		}
+		require.NoError(t, timerErr)
+		render("timer", row)
+	}
+	states, err := q.ListTargetStates(ctx, subject.circle.String())
+	require.NoError(t, err)
+	for _, row := range states {
+		render("state", row)
+	}
+	// The audit log is in here because a rollback has to take the audit row with it: an audit row
+	// that survives the write it describes is worse than no row, because it is believed.
+	entries, err := q.ListAuditLog(ctx, sqlitegen.ListAuditLogParams{
+		CircleID: subject.circle.String(), AfterID: "", RowLimit: 1000,
+	})
+	require.NoError(t, err)
+	for _, row := range entries {
+		render("audit", row)
+	}
+	return strings.Join(out, "\n")
 }

@@ -109,7 +109,7 @@ func (s *Service) Resolve(ctx context.Context, ref Ref) (Resolution, error) {
 			WithField("body.target_name", "required when target_id is absent")
 	}
 
-	targets, err := s.loadTargets(ctx)
+	targets, err := s.loadTargets(ctx, s.db.Queries())
 	if err != nil {
 		return Resolution{}, err
 	}

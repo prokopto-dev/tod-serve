@@ -59,19 +59,24 @@ type ResolvedTimer struct {
 //
 // A target id that names nothing is an error; a target with no timer anywhere is not. Those are
 // genuinely different: the first is a caller bug and the second is Tuesday.
+//
+// The query set is a parameter and not `s.db.Queries()`, and that is the whole of what makes
+// [TimerInvalidator] work: the recomputation that follows an override write runs INSIDE the
+// transaction that wrote it, so a resolve off the pool would read the window that was there
+// before — and recompute the board from it while looking like it had been told.
 func (s *Service) ResolveTimer(
-	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID, server core.Server,
+	ctx context.Context, q *sqlitegen.Queries,
+	circleID core.CircleID, targetID core.RaidTargetID, server core.Server,
 ) (ResolvedTimer, error) {
 	if !server.Valid() {
 		return ResolvedTimer{}, apierr.Newf(apierr.CodeValidationFailed,
 			"server must be one of %s", core.Servers())
 	}
-	target, err := s.Get(ctx, targetID)
+	target, err := s.get(ctx, q, targetID)
 	if err != nil {
 		return ResolvedTimer{}, err
 	}
 
-	q := s.db.Queries()
 	override, err := q.GetCircleTimerOverride(ctx, sqlitegen.GetCircleTimerOverrideParams{
 		CircleID: circleID.String(), TargetID: targetID.String(),
 	})
@@ -111,17 +116,16 @@ func (s *Service) ResolveTimer(
 // queries per target; this is three queries in total, and the precedence is the same code path
 // rather than a second copy of it — [resolveTimerFrom] is shared by both.
 func (s *Service) ResolveTimers(
-	ctx context.Context, circleID core.CircleID, server core.Server,
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID, server core.Server,
 ) (map[core.RaidTargetID]ResolvedTimer, error) {
 	if !server.Valid() {
 		return nil, apierr.Newf(apierr.CodeValidationFailed,
 			"server must be one of %s", core.Servers())
 	}
-	targets, err := s.loadTargets(ctx)
+	targets, err := s.loadTargets(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	q := s.db.Queries()
 	overrideRows, err := q.ListCircleTimerOverrides(ctx, circleID.String())
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
@@ -285,9 +289,20 @@ func (w WindowRequest) validate(field string) (validated, error) {
 //
 // The numbers are not ours and this is the route an operator uses to say so by hand; the bulk path
 // is `tod-serve seed timers --file`, which calls the same write.
+//
+// The write takes a transaction it did not need for the row alone, and the reason is `inv`: a
+// catalogue timer is instance-wide and per-server, so this one row moves the window for every
+// circle on that server that has not overridden it, and those recomputations commit with it or not
+// at all. See [TimerInvalidator]. The fan-out therefore runs under the write lock — bounded by the
+// circles on ONE server, and the same work the route did before, now where a crash cannot separate
+// it from its cause.
 func (s *Service) PutTimer(
 	ctx context.Context, id core.RaidTargetID, server core.Server, req WindowRequest,
+	inv TimerInvalidator,
 ) (TargetTimer, error) {
+	if inv == nil {
+		return TargetTimer{}, errNoInvalidator("write catalogue timer")
+	}
 	if !server.Valid() {
 		return TargetTimer{}, apierr.Newf(apierr.CodeValidationFailed,
 			"server must be one of %s", core.Servers()).
@@ -297,13 +312,26 @@ func (s *Service) PutTimer(
 	if err != nil {
 		return TargetTimer{}, err
 	}
-	if _, err = s.Get(ctx, id); err != nil {
-		return TargetTimer{}, err
-	}
 
 	now := s.clock.Now()
-	row, err := s.db.Queries().PutRaidTargetTimer(ctx, putTimerParams(id, server, v, req, now))
+	var row sqlitegen.RaidTargetTimer
+	err = s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
+		// Inside the transaction, not before it: a target retired between the check and the write
+		// would otherwise leave a timer hanging off it.
+		if _, getErr := s.get(ctx, q, id); getErr != nil {
+			return getErr
+		}
+		var txErr error
+		row, txErr = q.PutRaidTargetTimer(ctx, putTimerParams(id, server, v, req, now))
+		if txErr != nil {
+			return txErr
+		}
+		return inv.OnCatalogueTimerChange(ctx, q, server, id)
+	})
 	if err != nil {
+		if coded, ok := apierr.From(err); ok {
+			return TargetTimer{}, coded
+		}
 		return TargetTimer{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
 	s.log.InfoContext(ctx, "catalogue timer written",
@@ -354,13 +382,14 @@ type TimerOverride struct {
 func (s *Service) ListOverrides(
 	ctx context.Context, circleID core.CircleID,
 ) ([]TimerOverride, error) {
-	rows, err := s.db.Queries().ListCircleTimerOverrides(ctx, circleID.String())
+	q := s.db.Queries()
+	rows, err := q.ListCircleTimerOverrides(ctx, circleID.String())
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
 	out := make([]TimerOverride, 0, len(rows))
 	for _, row := range rows {
-		view, convErr := s.toOverride(ctx, row)
+		view, convErr := s.toOverride(ctx, q, row)
 		if convErr != nil {
 			return nil, convErr
 		}
@@ -373,7 +402,16 @@ func (s *Service) ListOverrides(
 func (s *Service) GetOverride(
 	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID,
 ) (TimerOverride, error) {
-	row, err := s.db.Queries().GetCircleTimerOverride(ctx,
+	return s.getOverride(ctx, s.db.Queries(), circleID, targetID)
+}
+
+// getOverride is [Service.GetOverride] against a caller-chosen query set, so that
+// [Service.DeleteOverride] can read the row it is about to remove inside its own transaction
+// rather than before it.
+func (s *Service) getOverride(
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID, targetID core.RaidTargetID,
+) (TimerOverride, error) {
+	row, err := q.GetCircleTimerOverride(ctx,
 		sqlitegen.GetCircleTimerOverrideParams{
 			CircleID: circleID.String(), TargetID: targetID.String(),
 		})
@@ -384,14 +422,22 @@ func (s *Service) GetOverride(
 	if err != nil {
 		return TimerOverride{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	return s.toOverride(ctx, row)
+	return s.toOverride(ctx, q, row)
 }
 
 // PutOverride writes a circle's override for one target.
+//
+// The row, its audit entry and the projection's recomputation are one transaction: the override
+// outranks the catalogue for this circle the instant it commits, and nothing is appended anywhere
+// to say so, so a derived board that did not commit with it is a board serving a window an officer
+// replaced. See [TimerInvalidator].
 func (s *Service) PutOverride(
 	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID,
-	actor core.MembershipID, req WindowRequest,
+	actor core.MembershipID, req WindowRequest, inv TimerInvalidator,
 ) (TimerOverride, error) {
+	if inv == nil {
+		return TimerOverride{}, errNoInvalidator("write timer override")
+	}
 	v, err := req.validate("body")
 	if err != nil {
 		return TimerOverride{}, err
@@ -417,7 +463,7 @@ func (s *Service) PutOverride(
 		}
 		// The audit row goes in the same transaction as the write, so a rollback takes it with it:
 		// an audit row that survives a rollback is worse than no row, because it is believed.
-		return audit.Append(ctx, q, s.ids, now, audit.Entry{
+		if txErr = audit.Append(ctx, q, s.ids, now, audit.Entry{
 			CircleID: circleID, Actor: actor, Action: audit.ActionTimerOverrideSet,
 			EntityType: audit.EntityRaidTarget, EntityID: targetID.String(),
 			Detail: map[string]any{
@@ -425,7 +471,10 @@ func (s *Service) PutOverride(
 				"window_open_offset_seconds":  v.openOffset,
 				"window_close_offset_seconds": v.closeOffset,
 			},
-		})
+		}); txErr != nil {
+			return txErr
+		}
+		return inv.OnTimerChange(ctx, q, circleID, targetID)
 	})
 	if err != nil {
 		if coded, ok := apierr.From(err); ok {
@@ -433,7 +482,7 @@ func (s *Service) PutOverride(
 		}
 		return TimerOverride{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	return s.toOverride(ctx, row)
+	return s.toOverride(ctx, s.db.Queries(), row)
 }
 
 // DeleteOverride removes a circle's override, returning what was removed.
@@ -441,16 +490,28 @@ func (s *Service) PutOverride(
 // What it returns is the override as it stood, once, because a DELETE that answers with nothing
 // leaves the caller unable to tell "removed" from "there was nothing there" — and the second is a
 // 404 here.
+//
+// The read, the delete, the audit row and the recomputation are ONE transaction, and the read
+// being inside it is what makes the 404 an honest answer: `_txlock=immediate` takes the write lock
+// at BEGIN, so nothing can remove the row between seeing it and removing it. Before this the
+// route pushed an invalidation on the 404 as well, to make a failed push retryable; that
+// compensation is gone because the thing it compensated for is — a push that fails now takes the
+// delete down with it, so the retry finds the override still there and does both again.
 func (s *Service) DeleteOverride(
 	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID,
-	actor core.MembershipID,
+	actor core.MembershipID, inv TimerInvalidator,
 ) (TimerOverride, error) {
-	removed, err := s.GetOverride(ctx, circleID, targetID)
-	if err != nil {
-		return TimerOverride{}, err
+	if inv == nil {
+		return TimerOverride{}, errNoInvalidator("clear timer override")
 	}
 	now := s.clock.Now()
-	err = s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
+	var removed TimerOverride
+	err := s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
+		var txErr error
+		removed, txErr = s.getOverride(ctx, q, circleID, targetID)
+		if txErr != nil {
+			return txErr
+		}
 		rows, txErr := q.DeleteCircleTimerOverride(ctx,
 			sqlitegen.DeleteCircleTimerOverrideParams{
 				CircleID: circleID.String(), TargetID: targetID.String(),
@@ -459,15 +520,22 @@ func (s *Service) DeleteOverride(
 			return txErr
 		}
 		if rows == 0 {
-			// Somebody else removed it between the read and the write. One removal is enough.
+			// Unreachable while the read above holds the write lock, and kept because "the row
+			// this transaction just read is gone" is the one outcome that must never be reported
+			// as a successful removal.
 			return apierr.New(apierr.CodeNotFound,
 				"this circle has no timer override for that target")
 		}
-		return audit.Append(ctx, q, s.ids, now, audit.Entry{
+		if txErr = audit.Append(ctx, q, s.ids, now, audit.Entry{
 			CircleID: circleID, Actor: actor, Action: audit.ActionTimerOverrideCleared,
 			EntityType: audit.EntityRaidTarget, EntityID: targetID.String(),
 			Detail: map[string]any{"target_name": removed.TargetName},
-		})
+		}); txErr != nil {
+			return txErr
+		}
+		// The circle falls back to the catalogue timer, or to `no_timer` if there is none. Same
+		// push either way: the effective window moved.
+		return inv.OnTimerChange(ctx, q, circleID, targetID)
 	})
 	if err != nil {
 		if coded, ok := apierr.From(err); ok {
@@ -479,7 +547,7 @@ func (s *Service) DeleteOverride(
 }
 
 func (s *Service) toOverride(
-	ctx context.Context, row sqlitegen.CircleTimerOverride,
+	ctx context.Context, q *sqlitegen.Queries, row sqlitegen.CircleTimerOverride,
 ) (TimerOverride, error) {
 	targetID, err := core.ParseID[core.RaidTarget](row.TargetID)
 	if err != nil {

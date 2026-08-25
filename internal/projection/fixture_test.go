@@ -191,7 +191,7 @@ func (f *fixture) seedCatalogueTimer(target catalogue.Target, open, close time.D
 			WindowOpenOffsetSeconds:  &openSeconds,
 			WindowCloseOffsetSeconds: &closeSeconds,
 			Source:                   "test",
-		})
+		}, f.states)
 	require.NoError(f.t, err)
 }
 
@@ -206,7 +206,7 @@ func (f *fixture) seedOverride(target catalogue.Target, open, close time.Duratio
 			WindowOpenOffsetSeconds:  &openSeconds,
 			WindowCloseOffsetSeconds: &closeSeconds,
 			Note:                     "we have tracked this for two years",
-		})
+		}, f.states)
 	require.NoError(f.t, err)
 }
 
@@ -298,7 +298,7 @@ func (f *fixture) seedCatalogueTimerOn(
 			WindowOpenOffsetSeconds:  &openSeconds,
 			WindowCloseOffsetSeconds: &closeSeconds,
 			Source:                   "test",
-		})
+		}, f.states)
 	require.NoError(f.t, err)
 }
 
@@ -314,7 +314,7 @@ func (f *fixture) seedOverrideIn(
 			WindowOpenOffsetSeconds:  &openSeconds,
 			WindowCloseOffsetSeconds: &closeSeconds,
 			Note:                     "we have tracked this for two years",
-		})
+		}, f.states)
 	require.NoError(f.t, err)
 }
 

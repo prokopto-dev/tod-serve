@@ -165,16 +165,27 @@ type Listing struct {
 	Total int
 }
 
-// Get returns one target by id.
+// Get returns one target by id, off the pool.
 func (s *Service) Get(ctx context.Context, id core.RaidTargetID) (Target, error) {
-	row, err := s.db.Queries().GetRaidTarget(ctx, id.String())
+	return s.get(ctx, s.db.Queries(), id)
+}
+
+// get is [Service.Get] against a caller-chosen query set.
+//
+// The split exists because [Service.ResolveTimer] runs inside the transaction that just moved a
+// window, and a read of the pool there sees the snapshot from before that transaction opened. Most
+// callers want the pool and say so by calling the exported one.
+func (s *Service) get(
+	ctx context.Context, q *sqlitegen.Queries, id core.RaidTargetID,
+) (Target, error) {
+	row, err := q.GetRaidTarget(ctx, id.String())
 	if store.IsNotFound(err) {
 		return Target{}, apierr.New(apierr.CodeNotFound, "no such raid target")
 	}
 	if err != nil {
 		return Target{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	aliases, err := s.db.Queries().ListRaidTargetAliases(ctx, id.String())
+	aliases, err := q.ListRaidTargetAliases(ctx, id.String())
 	if err != nil {
 		return Target{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
@@ -214,7 +225,7 @@ func (s *Service) Timers(ctx context.Context, id core.RaidTargetID) ([]TargetTim
 // first backtick. If the catalogue ever reaches a size where this is wrong, the fix is an index on
 // `name_norm` and a prefix query, not a second normalisation.
 func (s *Service) List(ctx context.Context, filter ListFilter) (Listing, error) {
-	targets, err := s.loadTargets(ctx)
+	targets, err := s.loadTargets(ctx, s.db.Queries())
 	if err != nil {
 		return Listing{}, err
 	}
@@ -632,12 +643,17 @@ func validateAliases(raw []string) ([]string, error) {
 }
 
 // loadTargets reads the whole catalogue with its aliases attached, in one pass over each table.
-func (s *Service) loadTargets(ctx context.Context) ([]Target, error) {
-	rows, err := s.db.Queries().ListAllRaidTargets(ctx)
+//
+// The query set is a parameter for the same reason [Service.get]'s is: the whole-board resolve runs
+// inside a window-moving transaction and has to read what that transaction wrote.
+func (s *Service) loadTargets(
+	ctx context.Context, q *sqlitegen.Queries,
+) ([]Target, error) {
+	rows, err := q.ListAllRaidTargets(ctx)
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	aliasRows, err := s.db.Queries().ListAllRaidTargetAliases(ctx)
+	aliasRows, err := q.ListAllRaidTargetAliases(ctx)
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}

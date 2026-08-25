@@ -359,15 +359,14 @@ func (s *Server) registerRaidTargets() error {
 					return nil, err
 				}
 
+				// A catalogue timer is instance-wide and per-server, so this moves the window for
+				// every circle on that server that has not overridden it. Nothing is appended
+				// anywhere, so the projection is told rather than left to notice — and it is told
+				// INSIDE the write's transaction, so a process that dies here loses both halves
+				// rather than the second one. See [catalogue.TimerInvalidator].
 				timer, err := s.cfg.Catalogue.PutTimer(ctx, id, server,
-					in.Body.request(in.Body.Source))
+					in.Body.request(in.Body.Source), s.cfg.Invalidator)
 				if err != nil {
-					return nil, err
-				}
-				// A catalogue timer is instance-wide and per-server, so this moved the window for
-				// every circle on that server that has not overridden it. Nothing was appended
-				// anywhere, so the projection is told rather than left to notice.
-				if err = s.cfg.Invalidator.OnCatalogueTimerChange(ctx, server, id); err != nil {
 					return nil, err
 				}
 				after, err := s.targetResponse(ctx, id)
@@ -422,14 +421,13 @@ func (s *Server) registerTimerOverrides() error {
 					return nil, err
 				}
 
+				// The override now outranks the catalogue for this circle, and no row is appended
+				// to say so. Pushed rather than inferred, and pushed inside the write's own
+				// transaction so the two cannot be separated by a crash — see
+				// [catalogue.TimerInvalidator].
 				view, err := s.cfg.Catalogue.PutOverride(ctx, circleID, targetID, p.MembershipID,
-					in.Body.request(""))
+					in.Body.request(""), s.cfg.Invalidator)
 				if err != nil {
-					return nil, err
-				}
-				// The override now outranks the catalogue for this circle, and no row was appended
-				// to say so. Pushed rather than inferred — see [TimerInvalidator].
-				if err = s.cfg.Invalidator.OnTimerChange(ctx, circleID, targetID); err != nil {
 					return nil, err
 				}
 				etag, err := ETagOf(view)
@@ -458,34 +456,20 @@ func (s *Server) registerTimerOverrides() error {
 				// The override as it stood, returned once. After this the circle falls back to the
 				// catalogue timer, or to `no_timer` if there is none — and a DELETE that answered
 				// with nothing would leave the caller unable to tell which.
-				removed, deleteErr := s.cfg.Catalogue.DeleteOverride(ctx, circleID, targetID,
-					p.MembershipID)
-				if deleteErr != nil && !isNotFound(deleteErr) {
-					return nil, deleteErr
-				}
-
-				// **Pushed on BOTH outcomes, including the 404, and that is what makes this
-				// operation retryable.**
 				//
-				// The two PUTs beside it converge on their own: a retry re-writes the same row and
-				// re-pushes. A DELETE does not — the row is gone, so the retry is a 404 that would
-				// return before reaching this line, and a push that failed the first time could
-				// never be attempted again. The board would keep the deleted override until the
-				// nightly verify job noticed, which is up to twenty-four hours of a window an
-				// officer explicitly removed.
-				//
-				// So the invariant this establishes is: **after any non-5xx answer from this
-				// route, the projection has been told.** A caller who sees 500 retries; the retry
-				// takes the not-found branch, pushes again, and answers 404 once the push lands.
-				// The extra recompute a genuinely spurious 404 causes is one target, idempotent,
-				// and far cheaper than the staleness it removes.
-				if err = s.cfg.Invalidator.OnTimerChange(ctx, circleID, targetID); err != nil {
+				// **The invariant is still "after any non-5xx answer from this route, the
+				// projection has been told", and it is now held by construction rather than by
+				// compensation.** This handler used to push the invalidation on BOTH outcomes,
+				// including the 404, because a DELETE is the one timer write a retry cannot
+				// converge: the row is gone, so a retry after a failed push answered 404 without
+				// ever reaching the push. Inside a transaction that case does not arise — a failed
+				// push rolls the delete back, so the retry finds the override still there and does
+				// both again — and the 404 that is left means somebody else removed it, in a
+				// transaction that recomputed the board before it committed.
+				removed, err := s.cfg.Catalogue.DeleteOverride(ctx, circleID, targetID,
+					p.MembershipID, s.cfg.Invalidator)
+				if err != nil {
 					return nil, err
-				}
-				if deleteErr != nil {
-					// The override really was already gone. Answered only now, because the answer
-					// is only true once the projection knows it too.
-					return nil, deleteErr
 				}
 				return &deleteCircleTimerOverrideOutput{Body: OverrideResponse{
 					TimerOverride: removed, AsOf: s.cfg.Clock.Now(),
@@ -555,16 +539,6 @@ func (s *Server) targetResponse(
 		return TargetResponse{}, err
 	}
 	return TargetResponse{Target: target, Timers: timers}, nil
-}
-
-// isNotFound reports whether an error is this API's 404.
-//
-// It exists because one handler needs to do work on the not-found path rather than return
-// immediately, and comparing against the closed code enum is the only spelling of that which
-// cannot drift from what the edge will actually render.
-func isNotFound(err error) bool {
-	coded, ok := apierr.From(err)
-	return ok && coded.Code() == apierr.CodeNotFound
 }
 
 // parseTargetID reads a target id out of a path.

@@ -44,7 +44,7 @@ func TestApplySeed_AWellFormedFile_WritesEveryTimerAndItsProvenance(t *testing.T
 	)))
 	require.NoError(t, err)
 
-	report, err := f.svc.ApplySeed(t.Context(), parsed)
+	report, err := f.svc.ApplySeed(t.Context(), parsed, f.inv)
 	require.NoError(t, err)
 	require.Equal(t, 3, report.TimersWritten)
 	require.Equal(t, seedSource, report.Source)
@@ -60,7 +60,7 @@ func TestApplySeed_AWellFormedFile_WritesEveryTimerAndItsProvenance(t *testing.T
 
 	// And the circle now resolves through the catalogue rather than to nothing, which is the
 	// whole point of running a seed.
-	resolved, err := f.svc.ResolveTimer(t.Context(), circleID, vulak.Target.ID, core.ServerBlue)
+	resolved, err := f.svc.ResolveTimer(t.Context(), f.store.Queries(), circleID, vulak.Target.ID, core.ServerBlue)
 	require.NoError(t, err)
 	require.Equal(t, catalogue.TimerSourceCatalogue, resolved.Source)
 }
@@ -83,7 +83,7 @@ func TestApplySeed_TheLadder_ResolvesASeedsTargetNames(t *testing.T) {
 				`{"target": "` + named + `", "server": "blue", "window_kind": "variance",
 				  "window_open_offset_seconds": 60, "window_close_offset_seconds": 120}`)))
 			require.NoError(t, err)
-			_, err = inner.svc.ApplySeed(t.Context(), parsed)
+			_, err = inner.svc.ApplySeed(t.Context(), parsed, f.inv)
 			require.NoError(t, err)
 
 			vulak, err := inner.svc.Resolve(t.Context(), catalogue.Ref{Name: "Vulak`Aerr"})
@@ -227,7 +227,7 @@ func TestApplySeed_ARowThatDoesNotResolve_LeavesTheCatalogueUntouched(t *testing
 			require.NoError(t, err, "the file itself is well formed; the failure is against the "+
 				"catalogue, which is what makes this the partial-application case")
 
-			_, err = f.svc.ApplySeed(t.Context(), parsed)
+			_, err = f.svc.ApplySeed(t.Context(), parsed, f.inv)
 			require.Error(t, err)
 
 			// Not one of the four good rows landed. That is the whole assertion.
@@ -256,7 +256,7 @@ func TestApplySeed_ASecondSeed_ReplacesRatherThanAccumulates(t *testing.T) {
 			`{"target": "Naggy", "server": "blue", "window_kind": "variance",
 			  "window_open_offset_seconds": ` + open + `, "window_close_offset_seconds": 120}`)))
 		require.NoError(t, err)
-		_, err = f.svc.ApplySeed(t.Context(), parsed)
+		_, err = f.svc.ApplySeed(t.Context(), parsed, f.inv)
 		require.NoError(t, err)
 	}
 
@@ -285,17 +285,17 @@ func TestApplySeed_ASeedNeverTouchesACircleOverride(t *testing.T) {
 			WindowKind:               "variance",
 			WindowOpenOffsetSeconds:  ptr(int64(300)),
 			WindowCloseOffsetSeconds: ptr(int64(400)),
-		})
+		}, f.inv)
 	require.NoError(t, err)
 
 	parsed, err := catalogue.ParseSeed(strings.NewReader(seedJSON(
 		`{"target": "Naggy", "server": "blue", "window_kind": "variance",
 		  "window_open_offset_seconds": 60, "window_close_offset_seconds": 120}`)))
 	require.NoError(t, err)
-	_, err = f.svc.ApplySeed(t.Context(), parsed)
+	_, err = f.svc.ApplySeed(t.Context(), parsed, f.inv)
 	require.NoError(t, err)
 
-	resolved, err := f.svc.ResolveTimer(t.Context(), circleID, naggy.Target.ID, core.ServerBlue)
+	resolved, err := f.svc.ResolveTimer(t.Context(), f.store.Queries(), circleID, naggy.Target.ID, core.ServerBlue)
 	require.NoError(t, err)
 	require.Equal(t, catalogue.TimerSourceCircleOverride, resolved.Source,
 		"a seed overrode a circle's own decision")
