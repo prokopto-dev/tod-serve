@@ -40,3 +40,7 @@ node_modules/
 *.swp
 .idea/
 .vscode/
+
+# Local runs of deploy/compose.yaml write snapshots here. The droplet keeps them in
+# /opt/tod-serve/backups; this directory is only ever a developer artefact.
+/deploy/backups/

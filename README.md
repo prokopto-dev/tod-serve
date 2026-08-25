@@ -4,10 +4,15 @@ Time-of-death tracking for [Project 1999](https://www.project1999.com/) EverQues
 One Go binary, one SQLite file, an embedded web UI, and an API the
 [nParse+](https://github.com/prokopto-dev/nparse-plus) plugin drives as a first-class client.
 
-> **Status: pre-1.0, design phase. Do not run your raid week on this yet.**
-> There is no working software in this repository. What exists is the design, the roadmap, and the
-> contract that implementation follows. For what is *implemented*, run `make status` — it is derived
-> from the Makefile itself, so it cannot drift. For what is *planned*, read [ROADMAP.md](ROADMAP.md).
+> **Status: pre-1.0. It runs, and nobody has run a raid week on it yet.**
+> The API, all three identity providers, circles and membership, ToD ingest, consensus, the
+> projection, the catalogue and the embedded web console are implemented, and there is a container
+> image and a deployment you can stand up — see [Quickstart](#quickstart). What has not happened is
+> a season of real use: no circle has yet found out what this gets wrong on a Tuesday. Treat it as
+> software that works and has not been weathered.
+>
+> For what is *implemented*, run `make status` — it is derived from the Makefile itself, so it
+> cannot drift. For what is *planned*, read [ROADMAP.md](ROADMAP.md).
 
 ## The problem
 
@@ -88,9 +93,39 @@ thing that takes effect on the very next request.
 
 ## Quickstart
 
-Nothing to start yet. When Phase 1 lands this section describes `docker run` and a downloaded
-binary, both creating their own data directory and migrating themselves. See
-[ROADMAP.md](ROADMAP.md).
+One container, one SQLite file, no CDN and no outbound network for the console. `migrate` is a
+separate step on purpose: a server that upgraded its schema whenever Docker restarted it would apply
+a forward-only migration to the only copy of your report log with nobody watching.
+
+```bash
+git clone https://github.com/prokopto-dev/tod-serve && cd tod-serve
+cp deploy/env.example .env        # then generate the two secrets it asks for; the placeholders
+                                  # cannot boot, deliberately
+
+docker compose -f deploy/compose.local.yaml run --rm tod-serve migrate
+docker compose -f deploy/compose.local.yaml run --rm tod-serve seed targets
+docker compose -f deploy/compose.local.yaml run --rm tod-serve init \
+  --name "Your Instance" --public-url "http://localhost:8080" \
+  --circle "Your Guild" --server blue
+docker compose -f deploy/compose.local.yaml up -d
+```
+
+`init` prints a one-time owner code, once. Redeem it at the join link it shows you.
+
+`deploy/smoke.sh` runs exactly this on every CI build, against the image that would ship, and then
+reports a ToD and reads the board back — so these instructions are executed rather than asserted.
+
+**Two things worth knowing before you go further**, both written up in
+[the deployment runbook](docs/operations/deployment.md):
+
+- **The console needs HTTPS**, even locally. The session cookie is `__Host-` prefixed, and two of
+  three browser engines refuse to store that over plain HTTP — the measurement is in the runbook.
+  `--profile tls` adds a TLS front. The API is unaffected: a token is a header.
+- **Timers are not bundled.** An instance without them reports `no_timer` everywhere and records
+  every ToD correctly, which is the honest degradation rather than a guessed window.
+
+For a real deployment — a droplet, Traefik, GHCR and an approved deploy —
+[docs/operations/deployment.md](docs/operations/deployment.md) is the runbook.
 
 ## Documentation
 
@@ -102,6 +137,9 @@ binary, both creating their own data directory and migrating themselves. See
 | [Decisions](docs/adr/) | Why things are the way they are, including the downsides |
 | [Glossary](docs/concepts/glossary.md) | P99 raiding vocabulary, for contributors who do not play |
 | [Invariants](docs/concepts/invariants.md) | Every rule and the mechanism that enforces it |
+| [Deploying](docs/operations/deployment.md) | The droplet, the two workflows, and what is deliberately not covered |
+| [Backups](docs/operations/backup.md) | Taking one, checking it, and restoring — the only undo there is |
+| [Discord app](docs/operations/discord-app.md) | Registering your own, and what a removed role does not do |
 
 ## Contributing
 

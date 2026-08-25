@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,6 +55,14 @@ func newServeCommand() *cobra.Command {
 			sessionKey := core.Secret(os.Getenv(envSessionKey))
 			if sessionKey.IsZero() {
 				return fmt.Errorf("%s is required: it signs every browser session", envSessionKey)
+			}
+			metricsToken := core.Secret(os.Getenv(envMetricsToken))
+			if err := refusePlaceholders(map[string]core.Secret{
+				envTokenPepper:  pepper,
+				envSessionKey:   sessionKey,
+				envMetricsToken: metricsToken,
+			}); err != nil {
+				return err
 			}
 
 			path, err := databasePath(cmd)
@@ -105,7 +115,7 @@ func newServeCommand() *cobra.Command {
 				Console:     console,
 				Metrics: api.MetricsConfig{
 					Enabled: os.Getenv(envMetricsEnabled) == "true",
-					Token:   core.Secret(os.Getenv(envMetricsToken)),
+					Token:   metricsToken,
 				},
 			})
 			if err != nil {
@@ -126,6 +136,45 @@ func newServeCommand() *cobra.Command {
 			return listenAndServe(ctx, log, server)
 		},
 	}
+}
+
+// placeholderPrefix marks every value in `deploy/env.example` that must be replaced before an
+// instance can boot.
+//
+// The prefix is the mechanism, not a convention: `serve` refuses any secret carrying it, so the
+// example file cannot be copied to `.env` and started. `TestServe_PlaceholderSecret_Refused` drives
+// this against the values that file actually ships.
+const placeholderPrefix = "CHANGE_ME_"
+
+// refusePlaceholders stops the failure `deploy/env.example` would otherwise be most likely to
+// cause: a published example value copied into production and left there.
+//
+// `TOD_TOKEN_PEPPER` is what makes a stolen database file useless on its own — every credential is
+// stored as `HMAC-SHA256(pepper, secret)` — so a shipped-and-copied pepper is a database anybody
+// with the example file can forge tokens against. A boot failure naming the fix is the only
+// outcome here that is not silent.
+//
+// It refuses an EMPTY-past-the-prefix value too, because `CHANGE_ME_` on its own is what somebody
+// leaves behind after deleting the placeholder's tail.
+func refusePlaceholders(secrets map[string]core.Secret) error {
+	// Sorted, so a .env with two of them left in place produces the same message every time
+	// rather than whichever the map happened to yield first.
+	names := make([]string, 0, len(secrets))
+	for name := range secrets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if !strings.HasPrefix(secrets[name].Reveal(), placeholderPrefix) {
+			continue
+		}
+		return fmt.Errorf(
+			"%s still holds the %s placeholder from deploy/env.example: "+
+				"generate a real one with `openssl rand -base64 48`",
+			name, placeholderPrefix)
+	}
+	return nil
 }
 
 // listenAndServe starts the listeners and drains them on the first signal.

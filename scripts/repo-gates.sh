@@ -43,6 +43,71 @@ else
   vacant PIN001 "workflows pinned to SHAs"
 fi
 
+# --- ACT001 / ACT002 — the GitHub Actions gates ------------------------------------------------
+# The logic lives in scripts/act-gates.sh, which takes a DIRECTORY, so that test/repo/act_test.go
+# can point it at deliberately broken fixtures and require it to fire. That is not tidiness: the
+# first version of ACT001 — in the repository this was ported from — inspected only `run: |` and
+# reported green over a workflow that could have said `run: echo "${{ github.ref_name }}"`, a
+# caller's tag name substituted into a script before bash sees it, which is the one line the gate
+# exists for.
+#
+# ACT001: an expression inside a shell script. GitHub substitutes the VALUE into the script text,
+# so it is EXECUTED rather than read. The fix is always `env:` plus "$VAR", so the gate has no
+# exceptions — an exception list is a thing somebody appends to at 2am.
+#
+# ACT002: `bash -n` over every extracted script. Workflow shell is not compiled, not linted and not
+# executed until a tag is pushed or a deploy is approved, so a broken script ships and is found at
+# the worst possible moment.
+if compgen -G ".github/workflows/*.yml" >/dev/null; then
+  if out=$(bash scripts/act-gates.sh expressions .github/workflows 2>&1); then
+    pass ACT001 "no workflow interpolates an expression into a shell script"
+  else
+    report ACT001 "${out%%$'\n'*}"
+    printf '%s\n' "${out#*$'\n'}"
+  fi
+
+  if out=$(bash scripts/act-gates.sh syntax .github/workflows 2>&1); then
+    pass ACT002 "$out workflow shell script(s) parse"
+  else
+    report ACT002 "${out%%$'\n'*}"
+    printf '%s\n' "${out#*$'\n'}"
+  fi
+else
+  vacant ACT001 "workflows keep expressions out of shell scripts"
+  vacant ACT002 "workflow shell scripts parse"
+fi
+
+# --- ENV001 / IMG001 — the deployment gates ----------------------------------------------------
+# Both live in scripts/deploy-gates.sh, which takes a DIRECTORY for the same reason act-gates.sh
+# does: test/repo/deploygates_test.go points them at broken fixtures and requires them to fire.
+#
+# ENV001 compares the TOD_* constants in cmd/tod-serve/root.go against deploy/, in BOTH directions.
+# The two sides are independent hand-written lists — a Go const block and a set of deployment files
+# — which is what stops it being the kind of both-directions check that reads from one derivation
+# and proves nothing.
+#
+# IMG001 is PIN001's reasoning applied to images: a tag is mutable, so `node:24` in six months is
+# not the `node:24` this was tested against.
+if [ -d deploy ]; then
+  if out=$(bash scripts/deploy-gates.sh env deploy cmd/tod-serve/root.go 2>&1); then
+    pass ENV001 "$out TOD_* variables, documented in deploy/env.example and named nowhere else"
+  else
+    report ENV001 "${out%%$'\n'*}"
+    printf '%s\n' "${out#*$'\n'}"
+  fi
+
+  if out=$(bash scripts/deploy-gates.sh images deploy 2>&1); then
+    set -- $out
+    pass IMG001 "${1} image reference(s) pinned to a digest (${2} interpolate \$TOD_DEPLOY_IMAGE, which the deploy pins)"
+  else
+    report IMG001 "${out%%$'\n'*}"
+    printf '%s\n' "${out#*$'\n'}"
+  fi
+else
+  vacant ENV001 "the binary's environment and deploy/ agree"
+  vacant IMG001 "every image is pinned to a digest"
+fi
+
 # --- CLOCK001 — time.Now only in internal/clock -----------------------------------------------
 # This grep is the fast pre-check, and it runs in the CI job that has no Go toolchain. It is NOT
 # the authoritative gate: `import t "time"` defeats it. The authority is the AST analyser in
@@ -144,6 +209,13 @@ fi
 # NET001b: an outbound REQUEST may still only be issued from internal/identity — the confinement
 # canonical conventions §14 describes, unchanged.
 #
+# THE ONE EXCEPTION IS internal/probe, and it is an exception to both halves. The container image is
+# FROM scratch: no shell, no curl, so the binary probes its own listener for the `HEALTHCHECK`. That
+# request cannot go through the guarded client, because the guard's deny list covers LOOPBACK — a
+# probe of our own listener is precisely the request an SSRF guard exists to refuse. So it is
+# allowed by name, in one package, and PROBE001 below is the other half: it holds that package to
+# never taking a host from anywhere.
+#
 # The convenience helpers are matched WITH their opening parenthesis on purpose: `http.Head` is a
 # prefix of `http.Header`, and a gate that reports every file constructing a header is a gate
 # somebody switches off.
@@ -152,17 +224,44 @@ fi
 # inject a stub transport, and the guard itself is tested directly by the deny-list unit test that
 # docs/concepts/invariants.md names.
 if has_go; then
-  scanned=$(go_files | grep -v '^./internal/identity/outbound/')
+  scanned=$(go_files | grep -v '^./internal/identity/outbound/' | grep -v '^./internal/probe/')
   bad=$(echo "$scanned" | xargs grep -ln 'http\.Get(\|http\.Post(\|http\.Head(\|http\.Client{\|http\.Transport{\|http\.DefaultClient\|http\.DefaultTransport\|net\.Dial' 2>/dev/null || true)
   if [ -n "$bad" ]; then report NET001 "an HTTP client, transport or dialer outside internal/identity/outbound:"; echo "$bad"; \
-  else pass NET001 "the only HTTP client, transport and dialer are internal/identity/outbound's ($(count "$scanned") files)"; fi
+  else pass NET001 "the only HTTP client, transport and dialer are internal/identity/outbound's, plus internal/probe's loopback health check ($(count "$scanned") files)"; fi
 
-  scanned=$(go_files | grep -v '^./internal/identity/')
+  scanned=$(go_files | grep -v '^./internal/identity/' | grep -v '^./internal/probe/')
   bad=$(echo "$scanned" | xargs grep -ln 'http\.NewRequest' 2>/dev/null || true)
   if [ -n "$bad" ]; then report NET001 "an outbound request outside internal/identity:"; echo "$bad"; \
-  else pass NET001 "outbound requests are issued only from internal/identity ($(count "$scanned") files)"; fi
+  else pass NET001 "outbound requests are issued only from internal/identity and internal/probe ($(count "$scanned") files)"; fi
 else
   vacant NET001 "outbound HTTP only from internal/identity, through the guarded client"
+fi
+
+# --- PROBE001 — the health-check probe names no host but loopback -----------------------------
+# The other half of NET001's one exception. internal/probe may construct a client; what it may not
+# do is take its DESTINATION from anywhere — not an environment variable, not a flag, not a row.
+# Only the PORT comes from the listen address; the host is a literal the package writes itself.
+#
+# This is the grep. The authority is TestLivenessURL_IsAlwaysLoopback in internal/probe, which
+# drives the URL builder across every spelling of a listen address — including names that resolve
+# somewhere else — and requires the result to address loopback every time.
+if [ -d internal/probe ]; then
+  scanned=$(find ./internal/probe -name '*.go' -not -name '*_test.go')
+  # A quoted DOMAIN — anything with a dotted alphabetic suffix — and any read of the environment.
+  # Between them they cover every way a destination could arrive from outside this package.
+  bad=$( { echo "$scanned" | xargs grep -nE '"(https?://)?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' 2>/dev/null
+           echo "$scanned" | xargs grep -n 'os\.Getenv\|os\.Args' 2>/dev/null
+         } | grep . || true )
+  if [ -n "$bad" ]; then
+    report PROBE001 "internal/probe names a host, or reads configuration; it may do neither:"
+    printf '%s\n' "$bad"
+  elif ! grep -q '127\.0\.0\.1' internal/probe/probe.go; then
+    report PROBE001 "internal/probe no longer names 127.0.0.1; that literal is the whole guarantee"
+  else
+    pass PROBE001 "the health-check probe addresses loopback and nothing else ($(count "$scanned") file(s); TestLivenessURL_IsAlwaysLoopback is the authority)"
+  fi
+else
+  vacant PROBE001 "the health-check probe addresses loopback and nothing else"
 fi
 
 # --- TEN001 - every circle-scoped query names circle_id in its WHERE --------------------------

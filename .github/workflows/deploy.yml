@@ -1,0 +1,424 @@
+# Deploy to the DigitalOcean droplet.
+#
+# Split from release.yml on purpose: building an image is safe and automatic, applying it to the
+# machine holding the only copy of a circle's report log is neither. This workflow needs an
+# environment approval on `production`, and it takes a snapshot before it changes anything.
+#
+# What actually happens on the host is: snapshot, pull, MIGRATE, `up -d`. Traefik already owns :443
+# and picks the new container up from its labels, so there is no reverse-proxy step here.
+#
+# THE MIGRATE STEP IS THE ONE THING THIS DIFFERS FROM A PLAIN RESTART BY, and it is deliberate.
+# `serve` does not migrate, and the rule it enforces is that a container RESTART must not migrate —
+# because a restart is something Docker does at 3am with nobody watching, and migrations are
+# forward-only. A step in a workflow that already required a human approval is precisely the
+# deliberate act that rule asks for. There is deliberately NO one-shot migrate service with
+# `service_completed_successfully` in deploy/compose.yaml: that would run on every `up`, including
+# an unattended restart, which is the exact failure the rule exists for.
+#
+# The split of what travels and what stays: the IMAGE and the COMPOSE FILE come from the SAME
+# COMMIT, which is why this checks out the triggering release rather than whatever the default
+# branch has become while the deploy waited for approval. The `.env` stays on the droplet, because
+# it holds secrets and a secret routed through a pipeline is a secret in that pipeline's logs, its
+# cache and every fork's pull-request context.
+
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. 1.2.0, edge, sha-<full>)"
+        required: true
+        default: edge
+      source_ref:
+        description: >-
+          Commit or tag the image was built from. The compose file is taken from here, so it must
+          match image_tag: sha-<full> -> <full>, 1.2.0 -> v1.2.0. `edge` is built from the tip of
+          main, which moves — prefer sha-<full> for anything you care about being reproducible.
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never deploy twice at once: two `compose up` runs against one SQLite volume is exactly the
+  # situation the single-writer design assumes cannot happen — and two `migrate` runs against one
+  # database is worse.
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy / production
+    runs-on: ubuntu-24.04
+
+    # Requires the `production` environment. Put a required reviewer on it in repository settings:
+    # that is what makes a deploy a decision rather than a side effect of merging — and it is what
+    # makes the migrate step below a deliberate act rather than an automatic one.
+    environment:
+      name: production
+      url: https://${{ vars.TOD_DEPLOY_HOST }}
+
+    # Do not deploy a build that failed.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      # Resolved BEFORE the checkout, because it decides what the checkout takes.
+      #
+      # The image and the compose file must come from ONE commit. A deploy waits for a human on the
+      # production environment, and `main` keeps moving while it waits — so checking out the default
+      # branch would stage a compose file from a release this image was never built for. It would
+      # not even look wrong: the run is green, the image is the pinned one, and the container comes
+      # up with variables from somewhere else entirely.
+      #
+      # Values are passed through `env:` rather than interpolated into the script, so a crafted
+      # dispatch input is data and never a line of shell (gate ACT001).
+      - name: Resolve the image and the commit it was built from
+        id: release
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_TAG: ${{ github.event.inputs.image_tag }}
+          INPUT_REF: ${{ github.event.inputs.source_ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_run" ]; then
+            # The release that triggered this run. One commit, both values.
+            tag="sha-${RUN_SHA}"
+            ref="$RUN_SHA"
+          else
+            tag="$INPUT_TAG"
+            ref="$INPUT_REF"
+          fi
+          [ -n "$tag" ] || { echo "FATAL: image_tag is empty." >&2; exit 1; }
+          [ -n "$ref" ] || { echo "FATAL: source_ref is empty." >&2; exit 1; }
+
+          # Reject these values, do not encode them.
+          #
+          # $GITHUB_OUTPUT is a line-oriented `name=value` file, so a value containing a newline is
+          # not an odd value — it is extra RECORDS. An image_tag of
+          # "edge<newline>image=ghcr.io/attacker/evil:x" appends a second `image=` line, the LAST
+          # one wins, and the deploy pulls and starts whatever it names, on production, past the
+          # environment approval that was meant to be the control.
+          #
+          # The delimiter form would stop the injection and then hand `docker pull` a two-line image
+          # reference instead, which is not an improvement. Neither of these is ever anything but a
+          # plain token, so the honest answer is to refuse.
+          #
+          # `case`, not `grep`: grep is LINE-oriented, so `grep -E '^[A-Za-z0-9._-]+$'` matches the
+          # first line of a multiline value and waves this exact attack through. A shell pattern
+          # tests the whole string, newline included.
+          case "$tag" in
+            -* | *[!A-Za-z0-9._-]*)
+              echo "FATAL: image_tag must be an OCI tag: letters, digits, '.', '_', '-'." >&2
+              exit 1 ;;
+          esac
+          # `..` is not legal in a git ref, and a leading dash would be read as an option by the
+          # commands these values reach.
+          case "$ref" in
+            -* | *..* | *[!A-Za-z0-9._/-]*)
+              echo "FATAL: source_ref must be a commit sha, tag or branch name." >&2
+              exit 1 ;;
+          esac
+          [ "${#tag}" -le 128 ] || { echo "FATAL: image_tag exceeds 128 characters." >&2; exit 1; }
+          [ "${#ref}" -le 255 ] || { echo "FATAL: source_ref exceeds 255 characters." >&2; exit 1; }
+
+          {
+            echo "tag=${tag}"
+            echo "source_ref=${ref}"
+            echo "image=ghcr.io/${REPO}:${tag}"
+          } >> "$GITHUB_OUTPUT"
+          echo "deploying ${tag} from ${ref}"
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ steps.release.outputs.source_ref }}
+
+      # Prove the pairing where it is provable. A `sha-<full>` tag names its own commit, so a
+      # mismatch here means the source ref was wrong and the compose file about to be shipped
+      # belongs to a different release. A moving tag like `edge` cannot be checked, and this says so
+      # rather than implying a guarantee it has not made.
+      - name: Assert the compose file and the image come from one commit
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"
+          case "$TAG" in
+            sha-*)
+              want="${TAG#sha-}"
+              if [ "$want" != "$head" ]; then
+                echo "FATAL: image was built from ${want} but compose.yaml would come from ${head}." >&2
+                echo "Re-run with source_ref=${want}." >&2
+                exit 1
+              fi
+              echo "image and compose.yaml are both from ${head}"
+              ;;
+            *)
+              echo "NOTE: ${TAG} is not a commit-derived tag, so the pairing cannot be verified."
+              echo "compose.yaml comes from ${head}"
+              ;;
+          esac
+
+      - uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      # Pinned host key, NOT ssh-keyscan. Scanning at deploy time trusts whatever answers, which
+      # makes every deploy the one moment an attacker gets a free man-in-the-middle.
+      - name: Pin the host key
+        # The value arrives through `env:` rather than being interpolated into the script (gate
+        # ACT001). It matters most here of anywhere in this file: an expression written into a
+        # shell script is executed by that shell, and this one is a repository secret.
+        env:
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      # Staged as separate files, not written over the live ones. Nothing on the droplet changes
+      # until the heredoc below has validated them against the host's real `.env`.
+      - name: Stage the compose file
+        env:
+          HOST: ${{ vars.TOD_DEPLOY_HOST }}
+          USER_NAME: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          scp -o StrictHostKeyChecking=yes deploy/compose.yaml \
+            "${USER_NAME}@${HOST}:${DEPLOY_PATH}/compose.yaml.incoming"
+
+      - name: Deploy
+        env:
+          # A repository VARIABLE, not a secret. The hostname is in deploy/env.example, in the
+          # deployment runbook and in public DNS, so secrecy buys nothing — while the log masking
+          # that comes with a secret turns "the name does not resolve" into
+          # `ssh: Could not resolve hostname ***`. One name is used for SSH and for HTTPS, so this
+          # is also the string DEPLOY_KNOWN_HOSTS must be keyscanned against. The credential and
+          # the host-key pin stay secrets.
+          HOST: ${{ vars.TOD_DEPLOY_HOST }}
+          USER_NAME: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          IMAGE_REF: ${{ steps.release.outputs.image }}
+        run: |
+          set -euo pipefail
+          # QUOTED heredoc, and values cross the wire as positional arguments to `bash -s`.
+          # An unquoted heredoc expands on the RUNNER, so a variable meant for the droplet gets
+          # eaten by the runner's own `set -u` before the script is ever sent.
+          ssh -o StrictHostKeyChecking=yes "${USER_NAME}@${HOST}" \
+            bash -seuo pipefail -s -- "$DEPLOY_PATH" "$IMAGE_REF" <<'REMOTE'
+          deploy_path="$1"
+          image_ref="$2"
+          cd "$deploy_path"
+
+          # Adopt the compose file that shipped with this release, BEFORE anything is pulled.
+          #
+          # It used to be hand-copied once at setup and never again, so a release could add a
+          # required variable the running stack never picked up.
+          if [ ! -s compose.yaml.incoming ]; then
+            echo "FATAL: compose.yaml.incoming did not arrive; the staging step should have sent it." >&2
+            exit 1
+          fi
+
+          # Validate the INCOMING file against this host's real .env. `config` resolves every
+          # interpolation, so it fails here on a malformed compose file AND on any ${VAR:?} the
+          # .env is missing — both of which would otherwise surface during `up -d`, with the old
+          # container already stopped.
+          docker compose -f compose.yaml.incoming --env-file .env config -q
+
+          if [ -f compose.yaml ]; then
+            cp compose.yaml compose.yaml.prev
+          fi
+          # `cat >`, not `mv`: writing through the existing file keeps its owner and mode, which a
+          # rename from an scp-created file would silently replace.
+          cat compose.yaml.incoming > compose.yaml
+          rm -f compose.yaml.incoming
+          echo "compose.yaml is the one that shipped with this release"
+
+          # --- the snapshot, and its failure is FATAL ------------------------------------------
+          #
+          # Migrations are forward-only. This file is the only undo that exists, so a deploy that
+          # could not take one must not proceed — the alternative is applying an irreversible
+          # schema change to the only copy of the report log with no way back.
+          #
+          # `tod-serve backup` rather than a `cp` of the file: the database is in WAL mode, so the
+          # bytes at /data/tod.db are not the database and copying them while the server runs
+          # captures a torn read. `VACUUM INTO` runs in a read transaction and produces a complete,
+          # integrity-checkable file against a server that is still taking reports.
+          #
+          # It runs on the STILL-RUNNING OLD container, through the `backups` bind mount
+          # compose.yaml declares, so the file lands on the host in one step. Writing into the
+          # volume and copying it back out would work and then leave a full copy of the database
+          # inside the volume it is meant to protect on every deploy — this image has no shell to
+          # delete the leftover with. `docker cp` cannot reach a tmpfs, so /tmp is not a way round
+          # that; the bind mount is.
+          #
+          # The image in .env is still the OLD one here, so this is the binary that wrote the
+          # database taking its own snapshot.
+          if [ ! -d backups ]; then
+            echo "FATAL: ${deploy_path}/backups does not exist." >&2
+            echo "install -d -o 65532 -g deploy -m 770 ${deploy_path}/backups — see docs/operations/deployment.md" >&2
+            exit 1
+          fi
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          if docker volume inspect tod-serve_tod-data >/dev/null 2>&1; then
+            # `exec` needs something to exec into. Between deploys there always is one, because the
+            # previous deploy ended with `up -d`; a stack somebody stopped by hand is a refusal
+            # naming the fix, not a deploy that quietly skips its only undo.
+            if [ -z "$(docker compose ps --status running -q tod-serve)" ]; then
+              echo "FATAL: the data volume exists but no container is running, so nothing can" >&2
+              echo "take a snapshot. Start the stack with \`docker compose up -d\` and re-run." >&2
+              exit 1
+            fi
+            if ! docker compose exec -T tod-serve \
+                 /usr/local/bin/tod-serve backup --to "/backups/pre-${stamp}.db"; then
+              echo "FATAL: could not snapshot the database; refusing to deploy." >&2
+              echo "Migrations are forward-only and this file is the only undo there is." >&2
+              exit 1
+            fi
+            echo "snapshot: backups/pre-${stamp}.db ($(wc -c < "backups/pre-${stamp}.db") bytes)"
+          else
+            # The ONLY case that proceeds without one. There is nothing to lose yet.
+            echo "no data volume yet; first deploy"
+          fi
+          # Keep ten. This is not a backup strategy — it only runs when you deploy. See
+          # docs/operations/backup.md for the daily one that copies them off the droplet.
+          ls -1t backups/ 2>/dev/null | tail -n +11 | while read -r old; do rm -f -- "backups/$old"; done
+
+          # Pin the exact image, so a manual `docker compose up` on the box brings up what CI last
+          # shipped rather than whatever a moving tag has become.
+          sed -i "s|^TOD_DEPLOY_IMAGE=.*|TOD_DEPLOY_IMAGE=${image_ref}|" .env
+          grep '^TOD_DEPLOY_IMAGE=' .env
+
+          docker compose pull tod-serve
+
+          # --- migrate, as its own deliberate step ----------------------------------------------
+          #
+          # AFTER the pull, so the migrations that run are the ones the NEW binary embeds; before
+          # `up -d`, because `serve` refuses to start against a database behind the migrations it
+          # carries and would otherwise crash-loop. A one-shot service in compose.yaml would do this
+          # on every restart, which is the failure the whole rule exists for.
+          docker compose run --rm tod-serve migrate
+
+          docker compose up -d --remove-orphans tod-serve
+          docker image prune -f --filter "until=168h"
+          docker compose ps
+          REMOTE
+
+      - name: Verify the deployment is actually serving
+        env:
+          HOST_URL: https://${{ vars.TOD_DEPLOY_HOST }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # EVERY check retries, not just the first one.
+          #
+          # `docker compose up -d` recreates the container, and for a moment afterwards Traefik has
+          # no server for this host — it drops the router entirely and answers 404 on EVERY path,
+          # including one that answered 200 a second earlier. A check with no retry lands in that
+          # window and takes a deploy red against a service that is already serving correctly. The
+          # asymmetry is the defect: a check with no retry is not stricter than one with a bounded
+          # retry, it is just noisier, and a pipeline that cries wolf gets re-run without being read.
+          #
+          # A retry is only honest if it is BOUNDED and the give-up is a hard failure. Nothing here
+          # degrades to a warning: after the budget, the deploy is red.
+          ATTEMPTS=30
+          INTERVAL=5
+
+          # attempt <description> <command...> — run until it succeeds or the budget is spent.
+          #
+          # `until` rather than `if !`, because `set -e` does not apply to a command in an
+          # until/while condition; writing this with a plain `if` would abort the script on the
+          # first failed try and defeat the retry it is supposed to implement.
+          attempt() {
+            local what="$1"; shift
+            local i=1
+            until "$@"; do
+              if [ "$i" -ge "$ATTEMPTS" ]; then
+                echo "FAILED: ${what} did not succeed in ${ATTEMPTS} attempts" >&2
+                return 1
+              fi
+              i=$((i + 1))
+              sleep "$INTERVAL"
+            done
+            echo "ok (attempt ${i}/${ATTEMPTS}): ${what}"
+          }
+
+          liveness() { curl -fsS --max-time 10 "${HOST_URL}/healthz" -o /dev/null; }
+
+          # Readiness answers before anything else is fetched because it says WHY when it is not
+          # ready: "the database is behind the migrations this binary embeds" and "the database is
+          # not reachable" are different mornings, and a 503 whose body names the reason is a better
+          # first line in a failed deploy's log than a curl exit code. The body is echoed for
+          # exactly that reason.
+          readiness() {
+            curl -fsS --max-time 15 "${HOST_URL}/readyz" -o /tmp/readyz.json || return 1
+            cat /tmp/readyz.json
+          }
+
+          # The public discovery document: the API is serving, not merely alive. Fetch and assertion
+          # are one retryable unit — during the routing window above a body can arrive truncated,
+          # and re-fetching is the right response to that, whereas a permanently malformed one
+          # exhausts the budget and fails the deploy.
+          meta_serves() {
+            curl -fsS --max-time 15 "${HOST_URL}/api/v1/meta" -o /tmp/meta.json || return 1
+            python3 -c "
+          import json
+          d = json.load(open('/tmp/meta.json'))
+          assert d['version'], 'meta carries no version'
+          print(f\"meta ok: version={d['version']}\")
+          "
+          }
+
+          # The console, and the headers the BINARY attaches to it. Traefik adds HSTS; the CSP,
+          # nosniff and Referrer-Policy come from the image, so a page served without them is a
+          # deploy of something other than what was tested.
+          console_serves() {
+            curl -fsS --max-time 15 -D /tmp/console.headers "${HOST_URL}/" -o /tmp/console.html || return 1
+            grep -qi '^content-security-policy: .*frame-ancestors' /tmp/console.headers
+          }
+
+          attempt "/healthz answers"                          liveness
+          attempt "/readyz reports the database is ready"     readiness
+          attempt "/api/v1/meta serves a version"             meta_serves
+          attempt "the console serves with its own CSP"       console_serves
+
+          # And the running build is the one that was just deployed. Without this, a `pull` that
+          # silently failed to change anything looks exactly like a successful deploy: every check
+          # above passes against the container that was already there.
+          #
+          # Only checkable where the tag determines the version. `edge` and `latest` move, and this
+          # says so rather than implying a guarantee it has not made.
+          running="$(python3 -c "import json; print(json.load(open('/tmp/meta.json'))['version'])")"
+          case "$TAG" in
+            sha-*)
+              short="${TAG#sha-}"
+              want="+${short:0:7}"
+              case "$running" in
+                *"$want") echo "the running build is ${running}, from ${TAG}" ;;
+                *) echo "FAILED: ${HOST_URL} reports ${running}, which was not built from ${TAG}" >&2
+                   exit 1 ;;
+              esac
+              ;;
+            [0-9]*)
+              [ "$running" = "$TAG" ] || {
+                echo "FAILED: ${HOST_URL} reports ${running}, not ${TAG}" >&2; exit 1; }
+              echo "the running build is ${running}"
+              ;;
+            *)
+              echo "NOTE: ${TAG} is a moving tag, so the running version cannot be checked against it."
+              echo "the running build reports ${running}"
+              ;;
+          esac
+
+          echo "deployment verified: liveness, readiness, the API, the console, and the running build"

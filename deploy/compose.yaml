@@ -1,0 +1,171 @@
+# The unit of deployment on the droplet.
+#
+# Traefik is already running there and owns :80/:443 and TLS. This file adds one service to the
+# network Traefik watches and describes the route with labels; it publishes NO ports of its own, so
+# the only way in is through Traefik.
+#
+# Copy it to the droplet once (docs/operations/deployment.md), put the secrets in a sibling `.env`,
+# and never commit that `.env`. Every deploy afterwards ships the copy that came with the release,
+# so a hand-edit here survives until the next deploy and no longer.
+#
+# For a machine with no Traefik in front of it — a laptop, a home server, anything that is not this
+# droplet — use `compose.local.yaml` beside this file instead.
+
+name: tod-serve
+
+services:
+  tod-serve:
+    # Required, with no default. The deploy workflow rewrites this line in `.env` to the exact
+    # image it is shipping, so a manual `docker compose up` on the box brings up what CI last
+    # deployed rather than whatever a moving tag has become since. A `:-latest` default here would
+    # turn a `.env` that lost the line into a silent upgrade to an untested image.
+    image: ${TOD_DEPLOY_IMAGE:?set TOD_DEPLOY_IMAGE in .env — the deploy workflow writes this line}
+    restart: unless-stopped
+
+    # No `ports:`. Publishing one would expose the service on the droplet's public IP directly,
+    # bypassing Traefik and its TLS — which is the sort of thing nobody notices until it is found.
+    expose:
+      - "8080"
+
+    # `serve` and NOT `migrate`. The image's own CMD already says this; it is repeated in the
+    # comment because it is the rule most likely to be "fixed": a container restart must not
+    # migrate. There is deliberately NO one-shot migrate service with
+    # `service_completed_successfully` here — that runs on every `up`, including an unattended
+    # restart, which is the exact failure the rule exists for. The deploy workflow runs
+    # `docker compose run --rm tod-serve migrate` as its own step, after a human approved it.
+
+    environment:
+      # Inside the container, on the named volume below. SQLite writes its WAL and shared-memory
+      # files beside the database, so the DIRECTORY has to be writable — which is why this is
+      # /data and not somewhere on the read-only root.
+      TOD_DB_PATH: /data/tod.db
+      TOD_ADDR: ":8080"
+
+      # The origin this instance is reachable at, and the one thing that must match the redirect
+      # URI registered with the identity provider EXACTLY (docs/operations/discord-app.md).
+      # `spaJoinURL` in cmd/tod-serve/wiring.go derives the join link from it and refuses to invent
+      # one, so a wrong value here is a sign-in that completes and lands nowhere.
+      TOD_PUBLIC_URL: https://${TOD_DEPLOY_HOST:?set TOD_DEPLOY_HOST in .env}
+
+      # These live in `.env` on the droplet and are deliberately NOT passed through CI: a secret
+      # that travels through a pipeline is a secret in that pipeline's logs, its cache and every
+      # fork's pull-request context. CI ships an image; the host holds the credentials.
+      #
+      # The `${VAR:?}` form is the point. A missing secret fails at `docker compose config`, which
+      # the deploy runs BEFORE it pulls or swaps anything — rather than at `up`, with the old
+      # container already gone.
+      TOD_TOKEN_PEPPER: ${TOD_TOKEN_PEPPER:?set TOD_TOKEN_PEPPER in .env — see deploy/env.example}
+      TOD_SESSION_KEY: ${TOD_SESSION_KEY:?set TOD_SESSION_KEY in .env — see deploy/env.example}
+
+      # Off, and spelled as a literal rather than read from `.env`. The metrics listener is a
+      # SECOND listener (canonical §13) and this stack publishes no port for it and gives Traefik
+      # no router for it, so turning it on from the host would bind something nothing can reach and
+      # look like it had worked. Enabling it is a change to this file, reviewed, together with
+      # whatever is meant to scrape it.
+      TOD_METRICS_ENABLED: "false"
+
+    volumes:
+      - tod-data:/data
+
+      # Where `tod-serve backup` writes, and the reason the deploy workflow can snapshot with a
+      # single `docker compose exec` rather than writing into the volume and copying it back out —
+      # which this image, having no shell, could then never delete.
+      #
+      # It MUST be owned by uid 65532 on the host, because that is who the container runs as and it
+      # matches nothing there. `install -d -o 65532 -g deploy -m 770 /opt/tod-serve/backups`; the
+      # runbook says so. A root-owned directory fails loudly, naming the file
+      # (`unable to open database: /backups/pre-….db`), rather than producing a bad backup —
+      # verified both ways.
+      #
+      # Long syntax for `create_host_path: false`. The default is to CREATE a directory at a missing
+      # source — owned by root, which is precisely the state that does not work — so the default
+      # would turn a missing directory into a snapshot that fails on the day it is needed. This
+      # makes `compose up` refuse instead.
+      - type: bind
+        source: ./backups
+        target: /backups
+        bind:
+          create_host_path: false
+
+    # The image ships /data owned by uid 65532, and Docker applies that ownership when it
+    # initialises this empty named volume — see deploy/Dockerfile, which is where the mechanism
+    # lives. A root-owned /data means the server cannot create the database at all.
+    #
+    # A BIND MOUNT gets none of that: Docker does not touch the ownership of a host directory. If
+    # you switch to one, `chown 65532:65532` it on the host first.
+    user: "65532:65532"
+
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      # read_only makes / immutable, and SQLite needs scratch space for a query that spills to
+      # disk. Without this a write fails at runtime rather than at boot, which is the worst time to
+      # find out.
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK:-proxy}
+
+      # Two routers, matching the pattern already working for the other services on this droplet: a
+      # plain-HTTP router that only redirects, and a `-secure` router that terminates TLS.
+      #
+      # The entrypoint and certresolver NAMES are whatever the Traefik static config calls them —
+      # they are not standard. On this droplet they are `http`/`https` and a resolver named `http`.
+      # Naming a resolver that does not exist is SILENT: Traefik routes the host fine and simply
+      # never obtains a certificate, so it presents its self-signed default and every client sees a
+      # TLS error pointing nowhere near the real cause.
+      traefik.http.routers.tod-serve.entrypoints: ${TRAEFIK_ENTRYPOINT_HTTP:-http}
+      traefik.http.routers.tod-serve.rule: Host(`${TOD_DEPLOY_HOST}`)
+      traefik.http.middlewares.tod-serve-https-redirect.redirectscheme.scheme: https
+      traefik.http.routers.tod-serve.middlewares: tod-serve-https-redirect
+
+      traefik.http.routers.tod-serve-secure.entrypoints: ${TRAEFIK_ENTRYPOINT_HTTPS:-https}
+      traefik.http.routers.tod-serve-secure.rule: Host(`${TOD_DEPLOY_HOST}`)
+      traefik.http.routers.tod-serve-secure.tls: "true"
+      traefik.http.routers.tod-serve-secure.tls.certresolver: ${TRAEFIK_CERTRESOLVER:-http}
+      traefik.http.routers.tod-serve-secure.service: tod-serve
+      traefik.http.routers.tod-serve-secure.middlewares: tod-serve-hsts
+
+      traefik.http.services.tod-serve.loadbalancer.server.port: "8080"
+
+      # Traefik's own health view. Without it a failed deploy keeps receiving traffic until
+      # somebody notices the 502s. `/healthz` never touches the database, so this cannot take the
+      # service out of rotation for a disk problem that would recover.
+      traefik.http.services.tod-serve.loadbalancer.healthcheck.path: /healthz
+      traefik.http.services.tod-serve.loadbalancer.healthcheck.interval: "30s"
+
+      # HSTS on the SECURE router only. Sending it over plain HTTP is meaningless, and on a shared
+      # parent domain `includeSubDomains` from the wrong place can lock siblings out of http — so
+      # it is not set here. HSTS is Traefik's and not the binary's because it is a fact about the
+      # TLS terminator: the same image runs behind `compose.local.yaml` over plain http, where
+      # asserting it would be asserting something false. The console's own headers — CSP,
+      # X-Content-Type-Options, Referrer-Policy — come from the binary, so they hold there too.
+      traefik.http.middlewares.tod-serve-hsts.headers.stsSeconds: "31536000"
+
+      # Watchtower, if you run it, must NOT touch this service: an unattended image swap would
+      # apply a forward-only migration to the only copy of the report log with nobody watching and
+      # no snapshot taken — and this image does not migrate on boot, so the other outcome is a
+      # container that refuses to start at 3am. Deploys are deliberate here
+      # (.github/workflows/deploy.yml).
+      com.centurylinklabs.watchtower.enable: "false"
+
+    networks:
+      - proxy
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  tod-data:
+
+networks:
+  proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK:-proxy}

@@ -355,17 +355,29 @@ func withRequestID(next http.Handler, mint func() string) http.Handler {
 	})
 }
 
-// withSecurityHeaders sets the headers every response carries.
+// The two header values the API and the console both send.
 //
-// `no-store` is the important one: an API response can carry another circle's competitive
-// intelligence, and a shared proxy caching it is a cross-tenant leak no test in this repository
-// would ever see.
+// Named once because they are sent from two places that are not on one code path: the API chain
+// below, and `secureConsole` in console.go, which sits OUTSIDE that chain deliberately. Two
+// spellings of `nosniff` is not a bug today and is a divergence somebody introduces the first time
+// one of them is tightened.
+const (
+	contentTypeOptions = "nosniff"
+	referrerPolicy     = "no-referrer"
+)
+
+// withSecurityHeaders sets the headers every API response carries.
+//
+// `no-store` is the important one, and it is the one the console does NOT share: an API response
+// can carry another circle's competitive intelligence, and a shared proxy caching it is a
+// cross-tenant leak no test in this repository would ever see. The console's assets are hashed and
+// immutable, so caching those is the point rather than the hazard.
 func withSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Cache-Control", "no-store")
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("X-Content-Type-Options", contentTypeOptions)
+		h.Set("Referrer-Policy", referrerPolicy)
 		next.ServeHTTP(w, r)
 	})
 }

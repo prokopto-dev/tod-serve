@@ -135,3 +135,90 @@ func TestConsole_NoConsole_LeavesTheAPIAlone(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, got.Status)
 	require.Equal(t, apierr.CodeNotFound, got.Problem.Code)
 }
+
+// TestConsole_ServesASelfContainedCSP — the console's own security headers.
+//
+// They are the binary's, not the proxy's, so that `docker run`, `deploy/compose.local.yaml` and a
+// laptop get them too. A header configured on the reverse proxy protects the one deployment
+// somebody remembered to configure it on.
+//
+// The CSP is asserted by DIRECTIVE rather than as one string, so that reordering it or adding a
+// directive is not a red test while weakening one is. The claim being pinned is "no external
+// origin": every source in it is `'self'`, `'none'`, `data:` or `'unsafe-inline'`, and a policy
+// that names a host — a CDN somebody added for a font, an analytics endpoint — fails here.
+func TestConsole_ServesASelfContainedCSP(t *testing.T) {
+	t.Parallel()
+	h := newHarnessWithConsole(t)
+
+	// The middle of the range as well as its ends: the document, a client-routed path, a hashed
+	// asset, and a request the console REFUSES. A 405 is still a response a browser renders, and
+	// headers attached only on the success path are headers missing exactly where an injected
+	// document would be most useful to an attacker.
+	paths := []string{"/", "/board", "/join", "/assets/index-abc123.js", "/not-a-page"}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				got := h.do(request{Method: method, Path: path})
+				require.Equal(t, "nosniff", got.Header.Get("X-Content-Type-Options"),
+					"%s %s carries no X-Content-Type-Options", method, path)
+				require.Equal(t, "no-referrer", got.Header.Get("Referrer-Policy"),
+					"%s %s carries no Referrer-Policy", method, path)
+
+				csp := got.Header.Get("Content-Security-Policy")
+				require.NotEmpty(t, csp, "%s %s carries no Content-Security-Policy", method, path)
+				directives := parseCSP(t, csp)
+
+				require.Equal(t, []string{"'self'"}, directives["default-src"])
+				require.Equal(t, []string{"'none'"}, directives["frame-ancestors"],
+					"the console must not be framable; that is the clickjacking answer")
+				// Not covered by default-src, so each has to be spelled out or it is simply absent.
+				require.Equal(t, []string{"'none'"}, directives["base-uri"])
+				require.Equal(t, []string{"'none'"}, directives["object-src"])
+				require.Equal(t, []string{"'self'"}, directives["form-action"])
+
+				for directive, sources := range directives {
+					for _, source := range sources {
+						require.Contains(t,
+							[]string{"'self'", "'none'", "data:", "'unsafe-inline'"}, source,
+							"%s names %q: the console bundles everything and reaches no external "+
+								"host, so a source that is not one of these is an origin nobody "+
+								"meant to allow", directive, source)
+					}
+				}
+				// `script-src` is where 'unsafe-inline' would actually matter, and the policy
+				// leaves it to default-src precisely so it cannot be relaxed on its own.
+				require.NotContains(t, directives["script-src"], "'unsafe-inline'")
+				require.NotContains(t, directives["default-src"], "'unsafe-inline'")
+			}
+		})
+	}
+}
+
+// The headers belong to the console, and the API answers `application/problem+json` through its own
+// middleware chain — so this is also the check that the two halves did not get wired together.
+func TestConsole_TheCSP_IsNotAttachedToAPIResponses(t *testing.T) {
+	t.Parallel()
+	h := newHarnessWithConsole(t)
+
+	got := h.do(request{Method: http.MethodGet, Path: "/healthz"})
+	require.Equal(t, http.StatusOK, got.Status)
+	require.Empty(t, got.Header.Get("Content-Security-Policy"),
+		"a content policy on a JSON response protects nothing and hides where the rule lives")
+}
+
+// parseCSP splits a policy into directive -> sources.
+func parseCSP(t *testing.T, policy string) map[string][]string {
+	t.Helper()
+	out := map[string][]string{}
+	for _, directive := range strings.Split(policy, ";") {
+		fields := strings.Fields(directive)
+		if len(fields) == 0 {
+			continue
+		}
+		require.NotContains(t, out, fields[0], "%q is declared twice; the first one wins", fields[0])
+		out[fields[0]] = fields[1:]
+	}
+	require.NotEmpty(t, out, "the policy parsed to nothing")
+	return out
+}

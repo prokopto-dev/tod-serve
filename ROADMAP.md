@@ -1,8 +1,10 @@
 # Roadmap
 
-**Status: pre-1.0, design phase.** For what is *implemented*, run `make status` — it derives the list
-from `notyet` call sites in the Makefile, so it cannot drift from reality. This file is what is
-*planned*.
+**Status: pre-1.0. Phases 0 to 4 are done and the software runs.** There is a container image, a
+Traefik-fronted deployment for a droplet, a path for running it at home, and an approved deploy that
+snapshots before it migrates. What has not happened is a season of real use. For what is
+*implemented*, run `make status` — it derives the list from `notyet` call sites in the Makefile, so
+it cannot drift from reality. This file is what is *planned*.
 
 ## Release blockers: none
 
@@ -81,7 +83,16 @@ check that the design in [03-consensus.md](docs/design/03-consensus.md) is coher
 - [x] `listIdentityProviders`, `createAuthorizationURL` and `completeAuthorization` — the three
       public operations a browser needs before it holds anything. They were in the route registry
       and served by nothing, so there was no way into the instance through a browser at all
-- [ ] Docker image, `goreleaser` binaries, systemd unit
+- [x] The deployable instance: a `FROM scratch` multi-arch image on GHCR, a Traefik-fronted
+      `compose.yaml` for the droplet and a `compose.local.yaml` for everywhere else, `tod-serve
+      backup` over `VACUUM INTO`, `tod-serve healthcheck` for an image with no shell in it, the
+      console's own CSP, and an approved deploy that snapshots, then pulls, then migrates —
+      because a container restart must not. `deploy/smoke.sh` drives the whole first deploy against
+      the built image on every CI build, and the runbook names it as the executed version of its
+      own walkthrough.
+
+      **`goreleaser` binaries and a systemd unit are deliberately deferred, not done.** Docker is
+      the one supported deployment today. They are in the table below with what each would drag in
 
 **The board polls, and that is the whole realtime story for now.** The console revalidates
 `listTargetStates` every fifteen seconds with `If-None-Match` and leaves the rendered rows alone on
@@ -131,4 +142,6 @@ Named here so they arrive as projects rather than as small additions.
 | **Postgres** | SQLite is sufficient at a few hundred rows a week. Revisit only with a real use case |
 | **Cross-circle federation** | The multi-destination client already lets a person fan out to circles they belong to. Server-to-server sharing is a different trust problem |
 | **Continuous Discord role re-checking** | The guild gate is evaluated at join and at re-auth only, so losing a role does not revoke an already-issued PAT — see [04-identity §8](docs/design/04-identity-and-revocation.md). Continuous enforcement needs a bot polling guild membership: a background job, a second set of Discord rate limits, a new failure mode when Discord is unreachable, and a policy decision about what to do when it is. `revokeMember` is the tool that works on the very next request |
+| **`goreleaser` binaries** | A downloadable binary per platform is a second supported artefact: signing, checksums, a release-notes pipeline, and a support surface where "it does not start" has no container to reproduce it in. The image is one artefact, built one way, and `deploy/smoke.sh` drives it end to end — a second artefact needs its own equivalent before it is honest to publish |
+| **A systemd unit** | It is the sensible non-Docker deployment and it drags in a whole second operational story: a service user, a data directory somebody has to create with the right ownership, log rotation, and a migration step that is deliberate rather than automatic — which is easy in a workflow with an approval gate and awkward in a unit file. Wanted; not free |
 | **The loopback CLI login flow** | A headless client cannot use the browser `provider_ticket` path, so `tod-serve login` would need a loopback listener, its own redirect URI registered with the provider, and a story for machines with no browser at all. Non-browser clients use `bearer_token` or `id_token` until then |
