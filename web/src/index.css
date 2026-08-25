@@ -1,0 +1,72 @@
+@import 'tailwindcss';
+
+/* The console's surface.
+ *
+ * Dark, dense and calm: this is read at 2am on a second monitor beside a game client, and a bright
+ * panel in that position is a panel somebody turns away from. The palette is one blue accent over
+ * six greys, and colour is spent almost entirely on the six status treatments — if everything is
+ * coloured, nothing is.
+ */
+@theme {
+  --color-ink-950: #070a0f;
+  --color-ink-900: #0b0f16;
+  --color-ink-850: #10151e;
+  --color-ink-800: #151b26;
+  --color-ink-700: #1d2534;
+  --color-ink-600: #2a3547;
+  --color-ink-500: #3d4a60;
+  --color-ink-400: #64748b;
+  --color-ink-300: #94a3b8;
+  --color-ink-200: #cbd5e1;
+  --color-ink-100: #e8eef7;
+
+  --color-accent-600: #1a63d8;
+  --color-accent-500: #2b7fff;
+  --color-accent-400: #56a0ff;
+
+  /* The six status treatments. `overdue` is deliberately NOT red: it is real, actionable intel —
+   * the ToD is wrong, the timer is wrong, or somebody killed it quietly — and rendering it as a
+   * failure teaches officers to dismiss the row that most needs looking at. */
+  --color-status-unknown: #64748b;
+  --color-status-notimer: #a1793f;
+  --color-status-prewindow: #4a7fd4;
+  --color-status-inwindow: #3fa96a;
+  --color-status-overdue: #9d6bd8;
+  --color-status-up: #21b8c9;
+
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-ink-950);
+  color: var(--color-ink-200);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numbers in a table are read by comparing them down a column, so they are tabular everywhere. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-ink-900);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-ink-700);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-600);
+}

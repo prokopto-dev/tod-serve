@@ -39,11 +39,29 @@ status:
 	  | sort | awk -F'\t' '{printf "  \033[33m%-10s\033[0m %s\n", $$1, $$2}'
 	@printf '\nSee ROADMAP.md for what each phase contains.\n'
 
-## build: compile the binary
+## build: compile the binary, console included
 .PHONY: build
-build:
+build: build-web
 	@mkdir -p $(BUILD_DIR)
 	$(GO) build -trimpath -o $(BUILD_DIR)/$(BIN) ./cmd/$(BIN)
+
+## build-web: build the console and stage it where go:embed reads it
+# The staged copy lives at internal/ui/dist because `go:embed` cannot reach outside its own
+# package directory. Only `.gitkeep` is committed there — it is what makes `//go:embed all:dist`
+# compile on a clone where nobody has run this target, since an embed pattern matching no files is
+# a COMPILE error and the Go package would otherwise stop building because a JavaScript toolchain
+# had not been run.
+#
+# `ui.Available()` reports honestly when the placeholder is all there is, and `tod-serve serve`
+# logs a warning rather than serving a blank page that looks like a broken console.
+.PHONY: build-web
+build-web:
+	@if command -v npm >/dev/null 2>&1; then \
+	  cd web && npm ci --silent --no-audit --no-fund && rm -rf dist && npm run build; \
+	  cd .. && find internal/ui/dist -mindepth 1 ! -name .gitkeep -delete \
+	    && cp -R web/dist/. internal/ui/dist/ \
+	    && printf '\033[32m  built\033[0m     the console is staged in internal/ui/dist\n'; \
+	 else printf '\033[33m  skipped\033[0m  npm is not on PATH; the binary will serve the API with no console\n'; fi
 
 ## fmt: format Go sources
 .PHONY: fmt
@@ -57,7 +75,7 @@ vet:
 
 ## lint: run every linter in check mode
 .PHONY: lint
-lint: lint-repo lint-go
+lint: lint-repo lint-go lint-web
 
 ## lint-go: golangci-lint
 # NOT a `notyet`: this target does real work the moment the tool is present, and CI always has it.
@@ -68,7 +86,27 @@ lint-go:
 	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint config verify && golangci-lint run; \
 	 else printf '\033[33m  skipped\033[0m  golangci-lint is not on PATH; CI runs it (see .golangci.yml)\n'; fi
 
-## lint-repo: repository gates (PIN001, TEN001, LOG001, MIG001, SQLC001, NET001, CLOCK001, ...)
+## lint-web: the console's ESLint run, its own rule's unit test, and the generated client
+# Three things, because they fail differently:
+#
+#   1. `npm run lint` includes `tod/no-network-outside-api` — AGENTS.md law 7. WEB001 in
+#      scripts/repo-gates.sh is the SECOND half of that rule and runs in the CI job with no npm,
+#      because a lint rule is switched off by an `eslint-disable` comment and a grep is not.
+#   2. `npm test` drives that rule against the shapes it exists to catch. A gate nobody has seen
+#      fail is a gate nobody knows works.
+#   3. `npm run gen:check` fails when web/src/api/generated.ts no longer matches
+#      openapi/openapi.json. A console compiled against a spec the server has moved past is a
+#      console that type-checks and 404s.
+#
+# NOT a `notyet`: like lint-go, this does real work the moment the toolchain is present, and CI
+# always has it. A missing local npm is a missing local npm, not an unimplemented feature.
+.PHONY: lint-web
+lint-web:
+	@if command -v npm >/dev/null 2>&1; then \
+	  cd web && npm ci --silent --no-audit --no-fund && npm run lint && npm test && npm run gen:check; \
+	 else printf '\033[33m  skipped\033[0m  npm is not on PATH; CI runs it (see web/eslint.config.js)\n'; fi
+
+## lint-repo: repository gates (PIN001, TEN001, LOG001, MIG001, SQLC001, NET001, WEB001, CLOCK001, ...)
 .PHONY: lint-repo
 lint-repo:
 	@bash scripts/repo-gates.sh
@@ -119,13 +157,21 @@ gen-openapi:
 spec-diff:
 	@bash scripts/spec-diff.sh
 
+## gen-web: regenerate the console's TypeScript client from openapi/openapi.json
+# The document is the contract, so the client is derived from it rather than written beside it —
+# there is no hand-written request type anywhere in web/src, and a renamed field is a compile
+# error in the console rather than a runtime `undefined` somebody meets on a raid night.
+.PHONY: gen-web
+gen-web:
+	node web/scripts/generate-client.mjs
+
 ## gen: regenerate the enum locals, the migration and the sqlc bindings
 # Needs Atlas and sqlc; the script says so by name if either is missing. ADR-0006 accepts that
 # cost. The OpenAPI half lands with the API in Phase 1.
 #
 # NAME=<snake_case> names the migration when db/schema.hcl has changed.
 .PHONY: gen
-gen: gen-openapi
+gen: gen-openapi gen-web
 	@bash scripts/gen-schema.sh $(NAME)
 
 ## migrate: apply migrations to a local database
@@ -167,4 +213,5 @@ check: verify-commands docs-check lint vet build test
 ## clean: remove build output
 .PHONY: clean
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) web/dist
+	@find internal/ui/dist -mindepth 1 ! -name .gitkeep -delete

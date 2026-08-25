@@ -228,6 +228,36 @@
         ],
         "type": "object"
       },
+      "AuthorizationStart": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "authorization_url": {
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorization_url",
+          "expires_at",
+          "as_of"
+        ],
+        "type": "object"
+      },
       "BoardEntry": {
         "additionalProperties": false,
         "properties": {
@@ -674,6 +704,25 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "CreateAuthorizationURLInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "invite_code": {
+            "description": "The invite code, if this is a join rather than a re-auth. A circle is resolved from this and from nothing else",
+            "maxLength": 120,
+            "type": "string"
+          },
+          "provider": {
+            "description": "A provider key from listIdentityProviders",
+            "maxLength": 40,
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
+        ],
         "type": "object"
       },
       "CreateCircleInputBody": {
@@ -2198,6 +2247,41 @@
         ],
         "type": "object"
       },
+      "PagePublicIdentityProvider": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PublicIdentityProvider"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "has_more",
+          "as_of"
+        ],
+        "type": "object"
+      },
       "PageQuake": {
         "additionalProperties": false,
         "properties": {
@@ -2636,6 +2720,48 @@
           "verifiable_subject",
           "available",
           "discord_required_role_ids"
+        ],
+        "type": "object"
+      },
+      "PublicIdentityProvider": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization_endpoint": {
+            "type": "string"
+          },
+          "browser_flow": {
+            "type": "boolean"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "discord",
+              "oidc",
+              "local"
+            ],
+            "type": "string"
+          },
+          "verifiable_subject": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "display_name",
+          "verifiable_subject",
+          "browser_flow"
         ],
         "type": "object"
       },
@@ -5175,6 +5301,79 @@
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
+      }
+    },
+    "/api/v1/auth/authorization-url": {
+      "post": {
+        "operationId": "createAuthorizationURL",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAuthorizationURLInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizationStart"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "Start a browser OAuth flow. Takes no circle_id, by design",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "public",
+          "requires_step_up": false
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": false
       }
     },
     "/api/v1/circles": {
@@ -9327,6 +9526,69 @@
         "x-tod-session-only": false
       }
     },
+    "/api/v1/identity-providers": {
+      "get": {
+        "operationId": "listIdentityProviders",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagePublicIdentityProvider"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "The enabled identity providers, and never a secret. Needed before auth",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "public",
+          "requires_step_up": false
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": false
+      }
+    },
     "/api/v1/invites/preview": {
       "post": {
         "operationId": "previewInvite",
@@ -9422,7 +9684,14 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -10577,7 +10846,14 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {

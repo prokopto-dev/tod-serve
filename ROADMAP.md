@@ -68,16 +68,26 @@ check that the design in [03-consensus.md](docs/design/03-consensus.md) is coher
 
 ## Phase 4 — The web console
 
-- The embedded SPA: the board, invites, the member list, and the admin console for providers, the
-  per-circle guild gate and instance-wide blocks. API-first — a test replays the UI's exact requests
-  using a scoped token and fails the build if any capability is browser-only
-- The join page: reads the invite code from `location.hash`, POSTs `previewInvite`, and clears the
-  hash immediately
-- Docker image, `goreleaser` binaries, systemd unit
+- [x] The embedded SPA: the board, target detail, members, invites, timer overrides, the audit log,
+      device tokens, and the instance console for identity providers and the per-circle guild gate.
+      React + Vite + TypeScript + Tailwind, built to `web/dist`, staged into `internal/ui/dist` and
+      `go:embed`ed — one binary, no CDN, and a strict deployment needs no outbound network
+- [x] API-first, with a gate: `TestAPIParity_EveryConsoleRequest_IsReachableWithAScopedToken`
+      reads every `api.<operationId>(` out of `web/src` and drives each one over HTTP with a scoped
+      personal access token. Anything refused for a reason that is not the capability floor is a
+      browser-only capability and a red build
+- [x] The join page: reads the invite code from `location.hash`, POSTs `previewInvite`, clears the
+      hash immediately, and shows `revocation_strength` before anybody commits
+- [x] `listIdentityProviders`, `createAuthorizationURL` and `completeAuthorization` — the three
+      public operations a browser needs before it holds anything. They were in the route registry
+      and served by nothing, so there was no way into the instance through a browser at all
+- [ ] Docker image, `goreleaser` binaries, systemd unit
 
-**The board polls.** `listTargetStates` is `GET /tods` with an `ETag` and a `304`, which is cheap
-enough at this size that a console with no realtime layer is a complete product rather than a
-degraded one. Everything in `internal/events` therefore moves to Phase 6 — see below.
+**The board polls, and that is the whole realtime story for now.** The console revalidates
+`listTargetStates` every fifteen seconds with `If-None-Match` and leaves the rendered rows alone on
+a `304` — the point of revalidating is to NOT re-render. At a hundred-odd rows that is cheap enough
+that a console with no realtime layer is a complete product rather than a degraded one, so
+everything in `internal/events` moves to Phase 6 — see below.
 
 ## Phase 5 — The nParse+ plugin
 

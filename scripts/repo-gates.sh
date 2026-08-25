@@ -15,6 +15,7 @@ cd "$(dirname "$0")/.."
 # nobody knows works, which is the whole reason test/repo exists.
 QUERIES_DIR="${TOD_QUERIES_DIR:-db/queries}"
 MIGRATIONS_DIR="${TOD_MIGRATIONS_DIR:-db/migrations-sqlite}"
+WEB_SRC_DIR="${TOD_WEB_SRC_DIR:-web/src}"
 
 fail=0
 report() { printf '\033[31m%s\033[0m  %s\n' "$1" "$2"; fail=1; }
@@ -301,6 +302,114 @@ if compgen -G "$QUERIES_DIR/*.sql" >/dev/null; then
   fi
 else
   vacant SQLC001 "$QUERIES_DIR is ASCII only"
+fi
+
+# --- WEB001 — no fetch or XMLHttpRequest in web/src outside web/src/api ------------------------
+# AGENTS.md law 7. This is the SECOND half of the rule; the first is the ESLint rule
+# `tod/no-network-outside-api`, which is the authority because it resolves through the scope and
+# is therefore not fooled by a property named `fetch` or by a local binding that shadows the
+# global.
+#
+# Two mechanisms rather than one, because they fail DIFFERENTLY. A lint rule is switched off by an
+# `eslint-disable` comment on the offending line, and this grep is not. And this grep runs in the
+# CI job that has no npm installed at all, so the rule is enforced even on a machine where the
+# JavaScript toolchain was never set up.
+#
+# What it CANNOT see, stated rather than implied: it is a text gate, so it reads a `fetch` in a
+# comment or a string as a violation, and it does not resolve scope. The lint rule is the one that
+# is precise; this one is the one that cannot be waived.
+#
+# The rule is about a request being ISSUED, so `web/src/api` is exempt and nothing else is.
+if [ -d "$WEB_SRC_DIR" ]; then
+  scanned=$(find "$WEB_SRC_DIR" -type f \( -name '*.ts' -o -name '*.tsx' \) \
+            -not -path "$WEB_SRC_DIR/api/*" 2>/dev/null)
+  if [ -z "$scanned" ]; then
+    report WEB001 "no console sources were checked; the parse of $WEB_SRC_DIR is wrong"
+  else
+    bad=$(echo "$scanned" | xargs grep -nE '(^|[^.A-Za-z0-9_])(fetch\(|XMLHttpRequest|EventSource\(|WebSocket\(|sendBeacon\()' 2>/dev/null || true)
+    if [ -n "$bad" ]; then
+      report WEB001 "the console reaches the network outside $WEB_SRC_DIR/api:"; echo "$bad"
+    else
+      pass WEB001 "no fetch or XMLHttpRequest outside $WEB_SRC_DIR/api ($(count "$scanned") files; the ESLint rule in web/eslint-rules is the authority)"
+    fi
+  fi
+else
+  vacant WEB001 "no fetch or XMLHttpRequest outside web/src/api"
+fi
+
+# --- WEB002 — the console never reads the browser's clock -------------------------------------
+# Canonical conventions §1, applied to the client: every countdown the console renders is a signed
+# offset from the RESPONSE's `as_of`, advanced by monotonic elapsed time. A machine whose clock is
+# four minutes fast must not render a window that is wrong on screen and right in the database,
+# which is the worst available combination — the officer trusts what they can see and nothing
+# anywhere reports a discrepancy.
+#
+# Two allowances, each ONE FILE, each for a different reason:
+#
+#   web/src/lib/asof.ts    reads `performance.now()`, which is a monotonic counter of DURATION and
+#                          not a reading of the wall clock. It is unaffected by a wrong system
+#                          time, by an NTP correction mid-raid and by a daylight-saving jump.
+#   web/src/lib/format.ts  parses instants the SERVER sent, to render them and to subtract two of
+#                          them from one response. Neither is the browser's clock.
+#
+# `Date.now()` and a zero-argument `new Date()` are banned outright: there is nowhere in this
+# console that a reading of the local wall clock is the right answer.
+if [ -d "$WEB_SRC_DIR" ]; then
+  scanned=$(find "$WEB_SRC_DIR" -type f \( -name '*.ts' -o -name '*.tsx' \) 2>/dev/null)
+  if [ -z "$scanned" ]; then
+    report WEB002 "no console sources were checked; the parse of $WEB_SRC_DIR is wrong"
+  else
+    # Comment lines are stripped first: this rule is DESCRIBED in the files it governs, and a gate
+    # that fired on its own explanation is a gate somebody deletes the explanation to silence.
+    bad=$(echo "$scanned" | xargs grep -nE 'Date\.now\(|new Date\(\)' 2>/dev/null \
+          | grep -vE ':[0-9]+:[[:space:]]*(//|\*|/\*)' || true)
+    allowed=$(echo "$scanned" | xargs grep -nE 'performance\.now\(|new Date\(|Date\.parse\(' 2>/dev/null \
+          | grep -vE ':[0-9]+:[[:space:]]*(//|\*|/\*)' \
+          | grep -vE "^$WEB_SRC_DIR/lib/(asof|format)\.ts:" || true)
+    if [ -n "$bad" ]; then
+      report WEB002 "the console reads the browser's wall clock; every countdown is an offset from the response's as_of:"; echo "$bad"
+    elif [ -n "$allowed" ]; then
+      report WEB002 "a timestamp is parsed outside $WEB_SRC_DIR/lib/{asof,format}.ts:"; echo "$allowed"
+    else
+      pass WEB002 "the console never reads the browser's clock ($(count "$scanned") files; time comes from each response's as_of)"
+    fi
+  fi
+else
+  vacant WEB002 "the console never reads the browser's clock"
+fi
+
+# --- WEB003 — a module that holds a resource renders its staleness ----------------------------
+# Every explicit reload in this console follows a WRITE — a retraction, a revocation, a role
+# change — so a refresh that fails silently leaves somebody looking at the state from before their
+# own action and believing it is current. That is stale data left actionable, and it is the
+# opposite of "never hide a row silently".
+#
+# `Resource` carries `stale` and `staleError`, so no HOOK can drop them. What a hook cannot force
+# is a SCREEN rendering them, and this is that half: a file that calls `useResource(` or `usePoll(`
+# must also render `<StaleNotice`.
+#
+# A module that holds a resource and renders no UI of its own carries a `// stale: <why>` line
+# naming what does render it. It is a WAIVER, not a default: it is counted and reported below, so a
+# directory that quietly filled up with them looks different from one that did not — the same shape
+# TEN001's `-- tenancy:` waiver has, and for the same reason.
+if [ -d "$WEB_SRC_DIR" ]; then
+  holders=$(grep -rl 'useResource(\|usePoll(' "$WEB_SRC_DIR" 2>/dev/null || true)
+  if [ -z "$holders" ]; then
+    report WEB003 "no resource holders were found; the parse of $WEB_SRC_DIR is wrong"
+  else
+    found=0; waived=0; renders=0
+    for f in $holders; do
+      if grep -q '<StaleNotice' "$f"; then renders=$((renders + 1))
+      elif grep -q '^[[:space:]]*//[[:space:]]*stale:' "$f"; then waived=$((waived + 1))
+      else
+        report WEB003 "$f holds a resource, renders no <StaleNotice and carries no \`// stale:\` waiver; a failed refresh there is invisible"
+        found=1
+      fi
+    done
+    [ $found -eq 0 ] && pass WEB003 "every module holding a resource accounts for its staleness ($renders render it, $waived explicitly waived)"
+  fi
+else
+  vacant WEB003 "a module that holds a resource renders its staleness"
 fi
 
 # --- SEED001 — no bundled timer data ----------------------------------------------------------
