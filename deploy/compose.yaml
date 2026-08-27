@@ -132,11 +132,26 @@ services:
 
       traefik.http.services.tod-serve.loadbalancer.server.port: "8080"
 
-      # Traefik's own health view. Without it a failed deploy keeps receiving traffic until
-      # somebody notices the 502s. `/healthz` never touches the database, so this cannot take the
-      # service out of rotation for a disk problem that would recover.
-      traefik.http.services.tod-serve.loadbalancer.healthcheck.path: /healthz
-      traefik.http.services.tod-serve.loadbalancer.healthcheck.interval: "30s"
+      # THERE IS DELIBERATELY NO `loadbalancer.healthcheck` HERE.
+      #
+      # Traefik takes a server out of the pool when its health check fails. With ONE replica there
+      # is nothing to fail over to, so the only thing it can do is empty the pool — and a router
+      # with no servers answers **404**, which is byte-for-byte what Traefik answers when the host
+      # has no router at all. It converts a 502 that says "the proxy reached nothing" into a 404
+      # that says "this host is not configured here", which is the single most misleading signal
+      # this deployment can produce: it is exactly what an operator is told to read as "the
+      # container has not come up yet".
+      #
+      # What it was for is already done better. `.github/workflows/deploy.yml` polls `/healthz`,
+      # `/readyz`, `/api/v1/meta` and the console on bounded retries, and then asks the instance to
+      # check itself — so a failed deploy is caught by the deploy rather than by the proxy quietly
+      # dropping the service afterwards. Container health is Docker's HEALTHCHECK, in the image.
+      #
+      # Said honestly, because the evidence cuts both ways: `nparseplugins.prokopto.dev` runs on
+      # this same droplet and this same Traefik WITH that health check, and serves fine. This is
+      # not a fix for a thing that is broken — it is removing a label that cannot help a
+      # single-replica service and can only ever make its failure harder to read. Portainer, the
+      # other reference on this box, does not set it.
 
       # HSTS on the SECURE router only. Sending it over plain HTTP is meaningless, and on a shared
       # parent domain `includeSubDomains` from the wrong place can lock siblings out of http — so

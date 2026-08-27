@@ -225,6 +225,41 @@ echo | openssl s_client -connect 159.223.125.225:443 -servername tod.prokopto.de
 | A Let's Encrypt issuer **after** the deploy | Correct. The router came up with its labels and the resolver did its job |
 | `TRAEFIK DEFAULT CERT` **after** the deploy | **The `certresolver` name in the labels is wrong.** Nothing else about the deploy looks broken; the router works, the service answers, and every client sees a TLS error pointing nowhere near the cause. Check `TRAEFIK_CERTRESOLVER` in `.env` against Traefik's own static configuration |
 
+#### The names this droplet actually uses
+
+They are not standard, so they are written down here rather than left to be rediscovered. This is
+the label set of **Portainer**, which is serving on this droplet today:
+
+```
+traefik.enable=true
+traefik.http.routers.portainer.entrypoints=http
+traefik.http.routers.portainer.rule=Host(`portainer.prokopto.dev`)
+traefik.http.middlewares.portainer-https-redirect.redirectscheme.scheme=https
+traefik.http.routers.portainer.middlewares=portainer-https-redirect
+traefik.http.routers.portainer-secure.entrypoints=https
+traefik.http.routers.portainer-secure.rule=Host(`portainer.prokopto.dev`)
+traefik.http.routers.portainer-secure.tls=true
+traefik.http.routers.portainer-secure.tls.certresolver=http
+traefik.http.routers.portainer-secure.service=portainer
+traefik.http.services.portainer.loadbalancer.server.port=9000
+traefik.docker.network=proxy
+```
+
+`deploy/compose.yaml` renders the same set, name for name: entrypoints `http` and `https`,
+certresolver `http`, network `proxy`, two routers with a redirect middleware on the plain one. The
+defaults in the compose file are those values, so an `.env` that omits `TRAEFIK_*` still lands on
+them.
+
+It adds exactly one thing Portainer does not: **HSTS on the secure router**. That is not a guess
+either — `nparseplugins.prokopto.dev` runs on this same droplet and this same Traefik with the
+identical HSTS label, holds a **Let's Encrypt** certificate, and returns
+`strict-transport-security: max-age=31536000`.
+
+And it deliberately omits one thing: a `loadbalancer.healthcheck`. With a single replica that can
+only ever empty the pool, and a router with no servers answers **404** — indistinguishable from the
+"no router yet" state this whole section is about. The deploy workflow checks the service itself,
+which is a better place to check it from.
+
 That third row is the reason this section exists. It is the same class of failure as everything else
 this runbook is built around: the wrong thing works well enough to look right.
 

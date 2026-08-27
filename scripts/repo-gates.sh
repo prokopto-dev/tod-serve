@@ -101,6 +101,11 @@ fi
 #
 # IMG001 is PIN001's reasoning applied to images: a tag is mutable, so `node:24` in six months is
 # not the `node:24` this was tested against.
+#
+# LBL001 is the Traefik one. Those labels are resolved BY STRING: a router pointing at a service
+# name nothing defines is not an error anybody sees — the host just answers 404, which is the same
+# 404 Traefik gives a host it has never heard of, and the same one an operator is taught to read as
+# "the container is not up yet".
 if [ -d deploy ]; then
   if out=$(bash scripts/deploy-gates.sh env deploy cmd/tod-serve/root.go 2>&1); then
     pass ENV001 "$out TOD_* variables, documented in deploy/env.example and named nowhere else"
@@ -116,9 +121,17 @@ if [ -d deploy ]; then
     report IMG001 "${out%%$'\n'*}"
     printf '%s\n' "${out#*$'\n'}"
   fi
+
+  if out=$(bash scripts/deploy-gates.sh traefik deploy 2>&1); then
+    pass LBL001 "$out Traefik reference(s), each naming something a label defines"
+  else
+    report LBL001 "${out%%$'\n'*}"
+    printf '%s\n' "${out#*$'\n'}"
+  fi
 else
   vacant ENV001 "the binary's environment and deploy/ agree"
   vacant IMG001 "every image is pinned to a digest"
+  vacant LBL001 "every Traefik label names something that exists"
 fi
 
 # --- CLOCK001 — time.Now only in internal/clock -----------------------------------------------
