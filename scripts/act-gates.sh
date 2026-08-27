@@ -8,9 +8,10 @@
 # awk. The first version matched only `run: |`, so `run: echo "${{ github.ref_name }}"` walked
 # straight past the gate whose entire purpose is that line. It was green the whole time.
 #
-# Usage: act-gates.sh <expressions|syntax> <directory>
+# Usage: act-gates.sh <expressions|syntax|stdin> <directory>
 #   expressions  ACT001 — no `${{ … }}` inside a shell script
 #   syntax       ACT002 — every shell script parses under `bash -n`
+#   stdin        ACT003 — no `docker compose run`/`exec` that reads the script's own stdin
 #
 # Exit 0 = clean; `syntax` prints how many scripts it checked. Exit 1 = a finding, printed to
 # stdout with the headline first. Exit 2 = invoked wrongly.
@@ -24,8 +25,8 @@ mode="${1:-}"
 dir="${2:-}"
 
 case "$mode" in
-  expressions | syntax) ;;
-  *) printf 'usage: %s <expressions|syntax> <directory>\n' "$0" >&2; exit 2 ;;
+  expressions | syntax | stdin) ;;
+  *) printf 'usage: %s <expressions|syntax|stdin> <directory>\n' "$0" >&2; exit 2 ;;
 esac
 [ -d "$dir" ] || { printf 'not a directory: %s\n' "$dir" >&2; exit 2; }
 [ -f "$scanner" ] || { printf 'missing scanner: %s\n' "$scanner" >&2; exit 2; }
@@ -89,6 +90,62 @@ case "$mode" in
     if [ -n "$bad" ]; then
       printf 'a workflow shell script does not parse cleanly (file names are <workflow>-<line>.sh):\n'
       printf '%s' "$bad"
+      exit 1
+    fi
+    printf '%d\n' "${#scripts[@]}"
+    ;;
+
+  stdin)
+    # ACT003 — a `docker compose run` or `exec` must not inherit the script's stdin.
+    #
+    # A workflow script routinely reaches a remote shell ON STDIN (`ssh … bash -s <<'REMOTE'`), and
+    # BOTH of those compose subcommands attach stdin by default. The first one then swallows the
+    # rest of the script: bash reads EOF, exits 0, and the step reports SUCCESS having silently
+    # skipped everything after it.
+    #
+    # That is the failure this gate was written for, on 2026-08-25: `migrate` ran, `up -d` never
+    # did, the deploy step went green, and the verification afterwards spent thirty attempts
+    # reporting the symptom while the container had never been started.
+    #
+    # `-T` does NOT fix it — that disables the TTY, not the stdin attachment. `</dev/null` does, and
+    # `2>/dev/null` does not, which is why the pattern below looks for a `<` and not merely for the
+    # device.
+    blocks=$(mktemp -d)
+    trap 'rm -rf "$blocks"' EXIT
+
+    awk -v mode=extract -v out="$blocks" -f "$scanner" "${files[@]}"
+
+    shopt -s nullglob
+    scripts=("$blocks"/*.sh)
+    shopt -u nullglob
+    if [ ${#scripts[@]} -eq 0 ]; then
+      printf 'no run: scripts were extracted from %d workflow(s) in %s; the scanner is not matching\n' \
+        "${#files[@]}" "$dir"
+      exit 1
+    fi
+
+    # `run` and `exec` are matched as WHOLE FIELDS rather than as substrings, so that prose like
+    # "and re-run." inside an echo is not a finding — a gate with false positives is one somebody
+    # switches off. Shell comment lines are skipped for the same reason: this file's own
+    # explanations name the commands they are about.
+    findings=$(awk '
+      { line = $0
+        sub(/^[ \t]+/, "", line)
+        if (line ~ /^#/) next
+        if (line !~ /docker compose/) next
+        subcommand = 0
+        for (i = 1; i <= NF; i++) if ($i == "run" || $i == "exec") subcommand = 1
+        if (!subcommand) next
+        if (line ~ /<[ \t]*\/dev\/null/) next
+        printf "  %s:%d: %s\n", FILENAME, FNR, line
+      }' "${scripts[@]}")
+
+    if [ -n "$findings" ]; then
+      printf 'a workflow runs `docker compose run` or `exec` without redirecting stdin:\n'
+      printf '%s\n' "$findings"
+      printf '  Add `</dev/null`. Both attach stdin, and a script fed to `bash -s` over ssh IS\n'
+      printf '  stdin — the command eats the rest of it and the step exits 0 having skipped it.\n'
+      printf '  (File names are <workflow>-<line>.sh; the line number is within the script.)\n'
       exit 1
     fi
     printf '%d\n' "${#scripts[@]}"

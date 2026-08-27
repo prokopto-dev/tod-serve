@@ -7,9 +7,10 @@
 # knows works, and both of these are greps: the failure mode is reporting success over a file the
 # pattern stopped matching, which looks exactly like a clean tree.
 #
-# Usage: deploy-gates.sh <env|images> <deploy-directory> [root.go]
-#   env     ENV001 — the binary's TOD_* constants and the deployment files agree, both directions
-#   images  IMG001 — every image reference is pinned to a digest, with a readable tag
+# Usage: deploy-gates.sh <env|images|traefik> <deploy-directory> [root.go]
+#   env      ENV001 — the binary's TOD_* constants and the deployment files agree, both directions
+#   images   IMG001 — every image reference is pinned to a digest, with a readable tag
+#   traefik  LBL001 — every Traefik name a label REFERENCES is a name some label DEFINES
 #
 # Exit 0 = clean, and it prints how much it looked at. Exit 1 = a finding, printed with the
 # headline first. Exit 2 = invoked wrongly.
@@ -21,8 +22,8 @@ dir="${2:-}"
 rootgo="${3:-}"
 
 case "$mode" in
-  env | images) ;;
-  *) printf 'usage: %s <env|images> <deploy-directory> [root.go]\n' "$0" >&2; exit 2 ;;
+  env | images | traefik) ;;
+  *) printf 'usage: %s <env|images|traefik> <deploy-directory> [root.go]\n' "$0" >&2; exit 2 ;;
 esac
 [ -d "$dir" ] || { printf 'not a directory: %s\n' "$dir" >&2; exit 2; }
 
@@ -169,5 +170,87 @@ case "$mode" in
       exit 1
     fi
     printf '%d %d\n' "$checked" "$waived"
+    ;;
+
+  traefik)
+    # LBL001 — a Traefik label that NAMES a router, service or middleware must name one that some
+    # other label DEFINES.
+    #
+    # Traefik resolves these by string. A router whose `service=` says `todserve` when the service
+    # labels say `tod-serve` is not an error anybody sees: the router exists, the service does not,
+    # and the host answers **404** — the same 404 Traefik gives a host it has never heard of. On a
+    # deployment whose entire failure vocabulary is "404 means the container is not up yet", a typo
+    # that produces the identical symptom is the worst bug available, and `docker compose config`
+    # does not inspect label CONTENTS at all.
+    #
+    # Read from the file rather than from a rendered config, so it needs no environment: every name
+    # here is a literal, and the only interpolated part of a Traefik label in this repository is the
+    # host inside a `rule=`.
+    #
+    # Both label spellings are accepted — `key: value` mapping and `- "key=value"` list — because
+    # the reference stacks on the target droplet are written the second way, and a gate that only
+    # understood ours would pass a file copied from one of them without reading it.
+    # nullglob, because `deploy/` has no *.yml and awk on macOS DIES on a filename that does not
+    # exist — with stderr discarded, that is a gate producing no output and no finding, which is
+    # exactly the shape of failure every gate in this repository is written against. It cost one
+    # debugging round here.
+    shopt -s nullglob
+    label_files=("$dir"/*.yaml "$dir"/*.yml)
+    shopt -u nullglob
+    if [ ${#label_files[@]} -eq 0 ]; then
+      printf 'no compose files in %s to read Traefik labels from\n' "$dir"
+      exit 1
+    fi
+
+    findings=$(awk '
+      {
+        line = $0
+        sub(/^[ \t]*-[ \t]*/, "", line)
+        sub(/^[ \t]+/, "", line)
+        gsub(/"/, "", line)
+        if (line !~ /^traefik\.http\.(routers|services|middlewares)\./) next
+
+        key = line; sub(/[:=].*$/, "", key)
+        val = line; sub(/^[^:=]*[:=][ \t]*/, "", val); gsub(/[ \t]/, "", val)
+
+        split(key, part, ".")
+        defined[part[3] " " part[4]] = 1
+
+        if (part[3] != "routers") next
+        if (key ~ /\.service$/)     { refs[++n] = "services " val; where[n] = FILENAME ":" FNR }
+        if (key ~ /\.middlewares$/) {
+          m = split(val, chain, ",")
+          for (i = 1; i <= m; i++)
+            if (chain[i] != "") { refs[++n] = "middlewares " chain[i]; where[n] = FILENAME ":" FNR }
+        }
+      }
+      END {
+        if (n == 0) { print "VACANT"; exit }
+        for (i = 1; i <= n; i++) {
+          if (refs[i] in defined) continue
+          split(refs[i], r, " ")
+          kind = r[1]; sub(/s$/, "", kind)
+          printf "  %s: names the %s %s, and no label defines it\n", where[i], kind, r[2]
+        }
+        printf "CHECKED %d\n", n
+      }
+    ' "${label_files[@]}")
+
+    case "$findings" in
+      VACANT | "")
+        # A checker that checked nothing must never look like a checker that found nothing.
+        printf 'no Traefik router references were found in %s; the pattern is not matching\n' "$dir"
+        exit 1 ;;
+    esac
+    count=$(printf '%s\n' "$findings" | sed -n 's/^CHECKED //p')
+    problems=$(printf '%s\n' "$findings" | grep -v '^CHECKED ' || true)
+    if [ -n "$problems" ]; then
+      printf 'a Traefik label points at a name nothing defines:\n'
+      printf '%s\n' "$problems"
+      printf '  Traefik resolves these by string. The router will exist, its target will not, and\n'
+      printf '  the host answers 404 — the same 404 as a host with no router at all.\n'
+      exit 1
+    fi
+    printf '%s\n' "$count"
     ;;
 esac

@@ -3,6 +3,8 @@
 The target is a droplet already running Traefik, which owns `:80`/`:443` and issues certificates.
 tod-serve is one more service on the network Traefik watches; it publishes no ports of its own.
 
+Public URL: **`https://tod.prokopto.dev`** — the same droplet as `nparseplugins.prokopto.dev`.
+
 For a machine that is **not** that droplet — a laptop, a home server, a NAS — skip to
 [Running it at home](#running-it-at-home). Everything in this project is one binary and one SQLite
 file, and none of what follows is a prerequisite for that.
@@ -59,8 +61,8 @@ Copy two files from this repository into `/opt/tod-serve/`:
 ```bash
 # From your workstation, in a checkout of this repository. The hostname is TOD_DEPLOY_HOST — one
 # name for SSH and for HTTPS.
-scp deploy/compose.yaml  deploy@tod.example.com:/opt/tod-serve/compose.yaml
-scp deploy/env.example   deploy@tod.example.com:/opt/tod-serve/.env
+scp deploy/compose.yaml  deploy@tod.prokopto.dev:/opt/tod-serve/compose.yaml
+scp deploy/env.example   deploy@tod.prokopto.dev:/opt/tod-serve/.env
 ```
 
 > **This is the only time you copy `compose.yaml` by hand.** Every deploy ships the version
@@ -138,7 +140,7 @@ be gated by the same approval as the deploy itself, otherwise the approval gate 
 | Secret | Value | How to get it |
 |---|---|---|
 | `DEPLOY_SSH_KEY` | The **private** half of a keypair made for this and nothing else | `ssh-keygen -t ed25519 -C "tod-serve-deploy" -f ./tod-serve-deploy -N ""` — paste the contents of `tod-serve-deploy`, then append `tod-serve-deploy.pub` to `/home/deploy/.ssh/authorized_keys` on the droplet |
-| `DEPLOY_KNOWN_HOSTS` | The droplet's host key | `ssh-keyscan -t ed25519 tod.example.com` — the **exact string** in `TOD_DEPLOY_HOST`, scanned **once, from a network you trust**; paste the output |
+| `DEPLOY_KNOWN_HOSTS` | The droplet's host key | `ssh-keyscan -t ed25519 tod.prokopto.dev` — the **exact string** in `TOD_DEPLOY_HOST`, scanned **once, from a network you trust**; paste the output |
 
 There is no `DEPLOY_HOST`. The deploy SSHes to `vars.TOD_DEPLOY_HOST` (step 4), the same name it
 then fetches over HTTPS — one record, one string to keep in step with `DEPLOY_KNOWN_HOSTS`. That
@@ -174,7 +176,7 @@ environment ones:
 |---|---|
 | `DEPLOY_USER` | `deploy` |
 | `DEPLOY_PATH` | `/opt/tod-serve` |
-| `TOD_DEPLOY_HOST` | `tod.example.com` — the SSH target, the HTTPS host and the environment URL |
+| `TOD_DEPLOY_HOST` | `tod.prokopto.dev` — the SSH target, the HTTPS host and the environment URL |
 
 These are repository-level for two reasons. None of them is sensitive — a username, a path and a
 public hostname — so environment scoping buys nothing. And `TOD_DEPLOY_HOST` is referenced in the
@@ -189,6 +191,88 @@ render the deployment URL blank.
 Add yourself as a **required reviewer**. This is what turns a merge into a build and a deliberate
 click into a deploy — and it is what makes the migrate step a decision rather than an accident.
 Optionally restrict the environment to the `main` branch and tags.
+
+### Before the first deploy — prove the name and the certificate separately
+
+Two different things can be wrong here and they look identical from a browser, so check them
+separately rather than trusting a page load.
+
+**DNS, and Traefik's routing, without depending on your own resolver.** A workstation holding a
+stale negative cache will tell you the name does not exist long after it does, and that is exactly
+the moment somebody starts "fixing" DNS that was never broken. `--resolve` skips the lookup
+entirely and asks the droplet directly:
+
+```bash
+# Before the container exists, Traefik has no router for this host and answers 404. That is the
+# CORRECT pre-deploy state, and it proves the name reaches Traefik.
+curl -sk -o /dev/null -w '%{http_code}\n' --resolve tod.prokopto.dev:443:159.223.125.225 \
+  https://tod.prokopto.dev/healthz
+```
+
+**Then the certificate, which is the part that fails SILENTLY.** A wrong `certresolver` name is not
+an error: Traefik routes the host perfectly, never asks ACME for anything, and serves its own
+default certificate. So a `200` through `--resolve` — or through `-k` — proves routing and proves
+*nothing at all* about TLS. Ask who issued the certificate:
+
+```bash
+echo | openssl s_client -connect 159.223.125.225:443 -servername tod.prokopto.dev 2>/dev/null \
+  | openssl x509 -noout -issuer
+```
+
+| What it says | What that means |
+|---|---|
+| `TRAEFIK DEFAULT CERT` **before** the deploy | Correct. Traefik is up on the name and has no router for it yet, so it has never asked ACME for anything |
+| A Let's Encrypt issuer **after** the deploy | Correct. The router came up with its labels and the resolver did its job |
+| `TRAEFIK DEFAULT CERT` **after** the deploy | **The `certresolver` name in the labels is wrong.** Nothing else about the deploy looks broken; the router works, the service answers, and every client sees a TLS error pointing nowhere near the cause. Check `TRAEFIK_CERTRESOLVER` in `.env` against Traefik's own static configuration |
+
+#### The names this droplet actually uses
+
+They are not standard, so they are written down here rather than left to be rediscovered. This is
+the label set of **Portainer**, which is serving on this droplet today:
+
+```
+traefik.enable=true
+traefik.http.routers.portainer.entrypoints=http
+traefik.http.routers.portainer.rule=Host(`portainer.prokopto.dev`)
+traefik.http.middlewares.portainer-https-redirect.redirectscheme.scheme=https
+traefik.http.routers.portainer.middlewares=portainer-https-redirect
+traefik.http.routers.portainer-secure.entrypoints=https
+traefik.http.routers.portainer-secure.rule=Host(`portainer.prokopto.dev`)
+traefik.http.routers.portainer-secure.tls=true
+traefik.http.routers.portainer-secure.tls.certresolver=http
+traefik.http.routers.portainer-secure.service=portainer
+traefik.http.services.portainer.loadbalancer.server.port=9000
+traefik.docker.network=proxy
+```
+
+`deploy/compose.yaml` renders the same set, name for name: entrypoints `http` and `https`,
+certresolver `http`, network `proxy`, two routers with a redirect middleware on the plain one. The
+defaults in the compose file are those values, so an `.env` that omits `TRAEFIK_*` still lands on
+them.
+
+It adds exactly one thing Portainer does not: **HSTS on the secure router**. That is not a guess
+either — `nparseplugins.prokopto.dev` runs on this same droplet and this same Traefik with the
+identical HSTS label, holds a **Let's Encrypt** certificate, and returns
+`strict-transport-security: max-age=31536000`.
+
+It also sets a `loadbalancer.healthcheck` on `/healthz`, and that label is what makes a failure
+**legible**. Measured against a real Traefik v3 with the Docker provider, because the whole question
+is which status code you see:
+
+| What you get | What it means |
+|---|---|
+| **404** | No router matched the host. Either the container is not up, or its labels are wrong |
+| **503** | A router matched, and every health-checked server behind it is unhealthy |
+| **502** | A router matched, the container is up, and nothing is listening on the port |
+
+The third row of the measurement is the one worth knowing: **without** that label, Traefik's Docker
+provider drops an unhealthy container from the service entirely, so an unhealthy container gives you
+a **404** — identical to a host Traefik has never heard of. With it, the same failure is a 503 that
+says what it is. An earlier revision of this file removed the check on the opposite assumption; the
+table above is what settled it.
+
+That third row is the reason this section exists. It is the same class of failure as everything else
+this runbook is built around: the wrong thing works well enough to look right.
 
 ### 6. First deploy
 
@@ -209,12 +293,12 @@ docker compose run --rm tod-serve seed targets
 
 # The instance singleton and the first circle. It prints a ONE-TIME owner code.
 docker compose run --rm tod-serve init \
-  --name "Your Instance" --public-url "https://tod.example.com" \
+  --name "Your Instance" --public-url "https://tod.prokopto.dev" \
   --circle "Your Guild" --server blue
 ```
 
 `init` prints a `TODI-…` code, once, and never stores it. Redeem it at
-`https://tod.example.com/join#TODI-…` — that link is built from `--public-url`, which must be the
+`https://tod.prokopto.dev/join#TODI-…` — that link is built from `--public-url`, which must be the
 same origin `TOD_PUBLIC_URL` names, or the join page is somewhere else. Redeeming it makes you the
 circle's owner and creates an **identity**; the last bootstrap step hangs off that identity rather
 than off the owner role, and `init` prints it too:
@@ -239,10 +323,22 @@ docker compose run --rm tod-serve seed timers --file /path/to/seed.json
 Then check it — all three, in this order, because each failure means something different:
 
 ```bash
-curl -fsS https://tod.example.com/healthz          # the process is up
-curl -fsS https://tod.example.com/readyz           # the database answers, migrations current
-curl -fsS https://tod.example.com/api/v1/meta      # the API is serving
+curl -fsS https://tod.prokopto.dev/healthz          # the process is up
+curl -fsS https://tod.prokopto.dev/readyz           # the database answers, migrations current
+curl -fsS https://tod.prokopto.dev/api/v1/meta      # the API is serving
 ```
+
+```bash
+# And the two the deploy cannot see from outside: what the instance thinks of itself, and who
+# issued the certificate.
+docker compose run --rm tod-serve doctor
+echo | openssl s_client -connect tod.prokopto.dev:443 -servername tod.prokopto.dev 2>/dev/null \
+  | openssl x509 -noout -issuer
+```
+
+The deploy runs `doctor` for you at the end and fails red on a problem — including the one nothing
+else catches, a `public_url`, `$TOD_PUBLIC_URL` and `redirect_uri` that do not name the same origin.
+It excuses exactly one state, `no instance row`, because on a first deploy `init` has not run yet.
 
 `/readyz` says *why* when it is not ready. "the database is behind the migrations this binary
 embeds" means the migrate step did not run; "the database is not reachable" means the `/data` volume
@@ -276,9 +372,10 @@ before starting, or the log reads `permission denied` on `/data/tod.db`.
 6. It **stops the old container**, and only then snapshots the database with `tod-serve backup`
    into `/opt/tod-serve/backups/pre-<timestamp>.db` — and then **opens that copy with
    `tod-serve doctor`** and requires it to be a current, integrity-checking database before
-   believing in it. If either step fails and a volume exists, **the deploy stops and the old
-   container is restarted**. Only "no volume at all — first deploy" proceeds without a snapshot. It
-   prunes to the last ten `pre-*.db` and touches nothing else in that directory.
+   believing in it. If either step fails, **the deploy stops and the old container is restarted**.
+   Only a **first installation** proceeds without a snapshot — see below, because "there is no
+   volume" is not what decides that. It prunes to the last ten `pre-*.db` and touches nothing else
+   in that directory.
 7. **Now** it adopts the new `compose.yaml` — keeping `compose.yaml.prev` — and pins
    `TOD_DEPLOY_IMAGE` in `.env` to the digest. Everything before this point operated the OLD image,
    and operated it through the compose file it was released with.
@@ -318,6 +415,46 @@ complete state the migration is about to change.
 
 Step 9's last check is not ceremony either. Without it, a `pull` that silently changed nothing looks
 exactly like a successful deploy — every other check passes against the container already there.
+
+### The install marker, and why a missing volume is not a first deploy
+
+The first successful deploy writes `/opt/tod-serve/.tod-serve-installed`. It lives beside `.env`,
+**outside** the data volume, and it is what tells a genuine first installation apart from a host
+that has lost its data.
+
+`docker volume inspect` only says what is true now. A volume removed by `docker compose down -v`,
+pruned, or orphaned by a renamed volume in a release produces exactly the state a brand-new host
+does — and without the marker the deploy would migrate a fresh empty database over a real instance,
+start it, waive `doctor`'s complaints about the missing rows, and go **green**. A data loss
+confirmed by a successful deploy.
+
+| marker | volume | What happens |
+|---|---|---|
+| no | no | A first installation. The only state that skips the snapshot, and the only one the `doctor` waiver applies to |
+| no | yes | An install predating the marker. Treated as **established** — snapshot taken, nothing waived — and the marker is written |
+| yes | yes | The ordinary case |
+| yes | **no** | **Refused.** The data is gone from a host that has been deployed before |
+
+That last row is the point of the file. If you removed the volume deliberately and starting empty is
+genuinely what you want, delete the marker to say so:
+
+```bash
+rm /opt/tod-serve/.tod-serve-installed     # only if you mean "start over with an empty database"
+```
+
+Do not delete it for any other reason. It is the difference between a deploy that refuses and a
+deploy that quietly blesses an empty instance.
+
+### If a step goes green and the next one fails on `/healthz`
+
+Look at whether the deploy step actually printed `up -d`. A `docker compose run` or `exec` in a
+script fed to `bash -s` over ssh **attaches the script's own stdin** and eats the rest of it — bash
+reads EOF and the step exits **0**, having silently skipped everything after that command. `-T` does
+not fix it; `</dev/null` does. Gate `ACT003` now refuses a workflow that omits it.
+
+That is not a hypothetical: it is what the first production deploy of this pipeline did on
+2026-08-25. `migrate` ran, `up -d` never did, the step went green, and the verification afterwards
+spent thirty attempts reporting the symptom while the container had never been started.
 
 ### If the migration fails
 

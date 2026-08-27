@@ -43,7 +43,7 @@ else
   vacant PIN001 "workflows pinned to SHAs"
 fi
 
-# --- ACT001 / ACT002 — the GitHub Actions gates ------------------------------------------------
+# --- ACT001 / ACT002 / ACT003 — the GitHub Actions gates ---------------------------------------
 # The logic lives in scripts/act-gates.sh, which takes a DIRECTORY, so that test/repo/act_test.go
 # can point it at deliberately broken fixtures and require it to fire. That is not tidiness: the
 # first version of ACT001 — in the repository this was ported from — inspected only `run: |` and
@@ -58,6 +58,11 @@ fi
 # ACT002: `bash -n` over every extracted script. Workflow shell is not compiled, not linted and not
 # executed until a tag is pushed or a deploy is approved, so a broken script ships and is found at
 # the worst possible moment.
+#
+# ACT003: a `docker compose run` or `exec` that reads the script's own stdin. A workflow script
+# routinely reaches a remote shell ON stdin, both of those attach stdin, and the first one then eats
+# the rest of the script — bash reads EOF and the step exits 0 having skipped everything after it.
+# This gate exists because that shipped: `migrate` ran, `up -d` did not, the deploy went green.
 if compgen -G ".github/workflows/*.yml" >/dev/null; then
   if out=$(bash scripts/act-gates.sh expressions .github/workflows 2>&1); then
     pass ACT001 "no workflow interpolates an expression into a shell script"
@@ -72,9 +77,17 @@ if compgen -G ".github/workflows/*.yml" >/dev/null; then
     report ACT002 "${out%%$'\n'*}"
     printf '%s\n' "${out#*$'\n'}"
   fi
+
+  if out=$(bash scripts/act-gates.sh stdin .github/workflows 2>&1); then
+    pass ACT003 "$out workflow shell script(s) keep \`docker compose run/exec\` off the script's stdin"
+  else
+    report ACT003 "${out%%$'\n'*}"
+    printf '%s\n' "${out#*$'\n'}"
+  fi
 else
   vacant ACT001 "workflows keep expressions out of shell scripts"
   vacant ACT002 "workflow shell scripts parse"
+  vacant ACT003 "workflow scripts survive a docker compose run"
 fi
 
 # --- ENV001 / IMG001 — the deployment gates ----------------------------------------------------
@@ -88,6 +101,11 @@ fi
 #
 # IMG001 is PIN001's reasoning applied to images: a tag is mutable, so `node:24` in six months is
 # not the `node:24` this was tested against.
+#
+# LBL001 is the Traefik one. Those labels are resolved BY STRING: a router pointing at a service
+# name nothing defines is not an error anybody sees — the host just answers 404, which is the same
+# 404 Traefik gives a host it has never heard of, and the same one an operator is taught to read as
+# "the container is not up yet".
 if [ -d deploy ]; then
   if out=$(bash scripts/deploy-gates.sh env deploy cmd/tod-serve/root.go 2>&1); then
     pass ENV001 "$out TOD_* variables, documented in deploy/env.example and named nowhere else"
@@ -103,9 +121,17 @@ if [ -d deploy ]; then
     report IMG001 "${out%%$'\n'*}"
     printf '%s\n' "${out#*$'\n'}"
   fi
+
+  if out=$(bash scripts/deploy-gates.sh traefik deploy 2>&1); then
+    pass LBL001 "$out Traefik reference(s), each naming something a label defines"
+  else
+    report LBL001 "${out%%$'\n'*}"
+    printf '%s\n' "${out#*$'\n'}"
+  fi
 else
   vacant ENV001 "the binary's environment and deploy/ agree"
   vacant IMG001 "every image is pinned to a digest"
+  vacant LBL001 "every Traefik label names something that exists"
 fi
 
 # --- CLOCK001 — time.Now only in internal/clock -----------------------------------------------

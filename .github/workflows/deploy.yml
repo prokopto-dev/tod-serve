@@ -96,6 +96,34 @@ jobs:
       #
       # Values are passed through `env:` rather than interpolated into the script, so a crafted
       # dispatch input is data and never a line of shell (gate ACT001).
+      # The three repository variables this deploy cannot run without.
+      #
+      # Checked FIRST, because the failure without it is unhelpful and expensive: an unset
+      # TOD_DEPLOY_HOST reaches `scp` as an empty string and fails with
+      # `ssh: Could not resolve hostname : Name or service not known` — eight steps in, after the
+      # approval has been spent. That happened on the first real deploy of this workflow.
+      #
+      # They are VARIABLES rather than secrets precisely so this message can name them; a masked
+      # value would render the same failure as `hostname ***`.
+      - name: The deploy variables are set
+        env:
+          HOST: ${{ vars.TOD_DEPLOY_HOST }}
+          USER_NAME: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${HOST:-}" ]        || missing="${missing} vars.TOD_DEPLOY_HOST"
+          [ -n "${USER_NAME:-}" ]   || missing="${missing} vars.DEPLOY_USER"
+          [ -n "${DEPLOY_PATH:-}" ] || missing="${missing} vars.DEPLOY_PATH"
+          if [ -n "$missing" ]; then
+            echo "FATAL: unset repository variable(s):${missing}" >&2
+            echo "Settings -> Secrets and variables -> Actions -> Variables." >&2
+            echo "See docs/operations/deployment.md, step 4." >&2
+            exit 1
+          fi
+          echo "deploying to ${USER_NAME}@${HOST}:${DEPLOY_PATH}"
+
       - name: Resolve the image and the commit it was built from
         id: release
         env:
@@ -349,6 +377,7 @@ jobs:
             "${USER_NAME}@${HOST}:${DEPLOY_PATH}/compose.yaml.incoming"
 
       - name: Deploy
+        id: deploy
         env:
           # A repository VARIABLE, not a secret. The hostname is in deploy/env.example, in the
           # deployment runbook and in public DNS, so secrecy buys nothing — while the log masking
@@ -365,10 +394,13 @@ jobs:
           # QUOTED heredoc, and values cross the wire as positional arguments to `bash -s`.
           # An unquoted heredoc expands on the RUNNER, so a variable meant for the droplet gets
           # eaten by the runner's own `set -u` before the script is ever sent.
+          # Piped through `tee`, so the one fact the next step needs — did this deploy CREATE the
+          # volume — comes out of the remote script rather than being guessed from a symptom later.
           ssh -o StrictHostKeyChecking=yes "${USER_NAME}@${HOST}" \
-            bash -seuo pipefail -s -- "$DEPLOY_PATH" "$IMAGE_REF" <<'REMOTE'
+            bash -seuo pipefail -s -- "$DEPLOY_PATH" "$IMAGE_REF" "$HOST" <<'REMOTE' | tee "$RUNNER_TEMP/deploy.out"
           deploy_path="$1"
           image_ref="$2"
+          expected_host="$3"
           cd "$deploy_path"
 
           # The compose file that shipped with this release is VALIDATED now and ADOPTED later.
@@ -390,6 +422,24 @@ jobs:
           fi
           docker compose -f compose.yaml.incoming --env-file .env config -q
           echo "the compose file that shipped with this release resolves against this host's .env"
+
+          # THE HOSTNAME IS ONE STRING WRITTEN DOWN FIVE TIMES, and nothing used to compare any two
+          # of them: this `.env`, the repository variable this deploy reads, `instance.public_url`,
+          # every enabled provider's `redirect_uri`, and the identity provider's own dashboard.
+          #
+          # These two are the pair a deploy can check, and it costs one grep of a line that is not a
+          # secret. A disagreement here means the deploy is about to route, certificate and
+          # advertise a different name than the one it verifies afterwards — and the compose file
+          # builds TOD_PUBLIC_URL out of this value, so the instance would go on handing out join
+          # links for it. The other pair is checked by `tod-serve doctor` at the end of this run.
+          env_host="$(sed -n 's/^TOD_DEPLOY_HOST=//p' .env | head -n 1 | tr -d '[:space:]')"
+          if [ "$env_host" != "$expected_host" ]; then
+            echo "FATAL: ${deploy_path}/.env says TOD_DEPLOY_HOST=${env_host:-<unset>}," >&2
+            echo "but this deploy was told the host is ${expected_host}." >&2
+            echo "One of them is wrong. Nothing has been changed." >&2
+            exit 1
+          fi
+          echo "TOD_DEPLOY_HOST agrees with the repository variable (${expected_host})"
 
           # --- the snapshot, and its failure is FATAL ------------------------------------------
           #
@@ -424,6 +474,18 @@ jobs:
           # manifest every later command resolves.
           docker pull "$image_ref"
 
+          # EVERY `docker compose run` AND `exec` BELOW REDIRECTS STDIN, and that is not decoration.
+          #
+          # This whole script arrives on the remote shell's STDIN — `ssh … bash -s` — and both
+          # `compose run` and `compose exec` ATTACH STDIN by default. Without `</dev/null` the first
+          # one swallows the rest of the script: bash reads EOF, exits 0, and the deploy reports
+          # success having silently skipped everything after it. That is not hypothetical. It is
+          # what happened on 2026-08-25: `migrate` ran, `up -d` never did, this step went green, and
+          # the verification below spent thirty attempts reporting the symptom.
+          #
+          # `-T` alone does NOT fix it — that disables the TTY, not the stdin attachment. Gate
+          # ACT003 checks every workflow for this.
+
           # --- QUIESCE, and only then snapshot and migrate ---------------------------------------
           #
           # THIS SERVICE IS ONE SQLITE WRITER (ADR-0001), and everything downstream of that
@@ -447,12 +509,31 @@ jobs:
           # and docs/operations/deployment.md says how long and why.
           docker compose stop tod-serve
 
+          # A MISSING VOLUME IS NOT PROOF THAT THIS HOST HAS NEVER BEEN DEPLOYED.
+          #
+          # `docker volume inspect` says what is true now, not what has ever been true. A volume
+          # somebody removed with `down -v`, or pruned, or lost to a renamed volume in a release,
+          # produces exactly the state a first installation does — and then this deploy would
+          # migrate a fresh empty database over a real instance, bring it up, waive doctor's
+          # complaints about the missing rows, and go GREEN. A silent, confirmed data loss.
+          #
+          # So the answer comes from a marker that lives on the HOST, beside .env and outside the
+          # volume, written the first time this workflow brought the service up. It is durable and
+          # independent: losing the volume does not lose it.
+          #
+          #   no marker, no volume    a first installation. The only state the waiver applies to
+          #   no marker, volume       an install that predates this marker. Treated as established,
+          #                           which is the strict reading, and the marker is written
+          #   marker, volume          the ordinary case
+          #   marker, NO volume       refused. Something removed the data from a host that has been
+          #                           deployed before, and this must not be blessed by a green run
+          installed_marker=".tod-serve-installed"
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
           if docker volume inspect tod-serve_tod-data >/dev/null 2>&1; then
             # `run --rm`, not `exec`: there is deliberately nothing running to exec into. The image
             # in .env is still the OLD one here, so this is the binary that wrote the database
             # taking its own snapshot.
-            if ! docker compose run --rm tod-serve backup --to "/backups/pre-${stamp}.db"; then
+            if ! docker compose run --rm -T tod-serve backup --to "/backups/pre-${stamp}.db" </dev/null; then
               echo "FATAL: could not snapshot the database; refusing to deploy." >&2
               echo "Migrations are forward-only and this file is the only undo there is." >&2
               echo "Restarting the old container; nothing has been changed." >&2
@@ -477,7 +558,7 @@ jobs:
             #
             # The greps fail CLOSED. If doctor's wording ever changes, this stops the deploy rather
             # than waving it through.
-            report="$(docker compose run --rm tod-serve doctor --db "/backups/pre-${stamp}.db" 2>&1 || true)"
+            report="$(docker compose run --rm -T tod-serve doctor --db "/backups/pre-${stamp}.db" 2>&1 </dev/null || true)"
             printf '%s\n' "$report"
             if ! printf '%s' "$report" | grep -q 'migrations are up to date' ||
                ! printf '%s' "$report" | grep -q 'integrity check passed'; then
@@ -490,9 +571,22 @@ jobs:
               exit 1
             fi
             echo "the snapshot opens, its migrations are current, and it passes an integrity check"
+          elif [ -f "$installed_marker" ]; then
+            echo "FATAL: this host has been deployed before, and the data volume is GONE." >&2
+            echo "" >&2
+            sed 's/^/  /' "$installed_marker" >&2
+            echo "" >&2
+            echo "Continuing would migrate an empty database, start it, and report success — a" >&2
+            echo "data loss confirmed by a green deploy. Refusing." >&2
+            echo "" >&2
+            echo "If the volume was removed deliberately and starting empty is what you want," >&2
+            echo "delete ${deploy_path}/${installed_marker} to say so, and re-run." >&2
+            exit 1
           else
-            # The ONLY case that proceeds without one. There is nothing to lose yet.
-            echo "no data volume yet; first deploy"
+            # The ONLY state that proceeds without a snapshot, and the only one the doctor waiver
+            # downstream will accept: nothing has ever been installed here, so there is nothing to
+            # lose and nothing to have bootstrapped.
+            echo "no data volume and no install marker; first installation"
           fi
 
           # Keep the last ten PRE-DEPLOY snapshots, and touch nothing else in this directory.
@@ -535,7 +629,7 @@ jobs:
           # A one-shot service in compose.yaml would do this on every `up`, restarts included, which
           # is the failure the whole rule exists for. Here it runs once, after a human approved it,
           # as the only process holding the database.
-          if ! docker compose run --rm tod-serve migrate; then
+          if ! docker compose run --rm -T tod-serve migrate </dev/null; then
             echo "FATAL: the migration failed. Putting the previous release back." >&2
             # BOTH halves, because they are a pair: the old image has to come back up under the
             # compose file it was released with, not under the one that shipped with the release
@@ -556,9 +650,31 @@ jobs:
           fi
 
           docker compose up -d --remove-orphans tod-serve
+
+          # Written only after the service is actually up, so a run that died earlier does not
+          # leave a marker claiming an installation that never happened.
+          if [ ! -f "$installed_marker" ]; then
+            {
+              printf 'installed %s\n' "$stamp"
+              printf 'image     %s\n' "$image_ref"
+              printf 'This file is how the deploy tells a first installation from a host whose data\n'
+              printf 'volume has gone missing. Do not delete it unless you mean the second one.\n'
+            } > "$installed_marker"
+            echo "wrote ${installed_marker}"
+          fi
+
           docker image prune -f --filter "until=168h"
           docker compose ps
           REMOTE
+
+          # The marker the remote script printed when `docker volume inspect` found nothing. This is
+          # the ONLY thing that makes "this instance has never been bootstrapped" a fact rather than
+          # an inference from a missing row.
+          if grep -q '^no data volume and no install marker; first installation$' "$RUNNER_TEMP/deploy.out"; then
+            echo "first_deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "first_deploy=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Verify the deployment is actually serving
         env:
@@ -668,3 +784,116 @@ jobs:
           esac
 
           echo "deployment verified: liveness, readiness, the API, the console, and the running build"
+
+      # And the instance's own opinion of itself, once it is definitely serving.
+      #
+      # AFTER the checks above, deliberately: `doctor` opens the database, and asking it anything
+      # before `/readyz` has answered would report a problem that is really "the container has not
+      # finished starting". By here the service is up and every answer it gives is about the
+      # instance rather than about the deploy.
+      #
+      # What this buys that HTTP cannot: doctor compares the copies of the hostname this binary can
+      # see — `instance.public_url`, `$TOD_PUBLIC_URL` and every enabled provider's `redirect_uri` —
+      # and a disagreement there is invisible from outside. `spaJoinURL` prefers the environment
+      # over the stored row, so the join links look right while the stored URL is wrong, and the
+      # first symptom is an opaque OAuth error days later.
+      - name: Ask the instance to check itself
+        env:
+          HOST: ${{ vars.TOD_DEPLOY_HOST }}
+          USER_NAME: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          FIRST_DEPLOY: ${{ steps.deploy.outputs.first_deploy }}
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=yes "${USER_NAME}@${HOST}" \
+            bash -seuo pipefail -s -- "$DEPLOY_PATH" "$FIRST_DEPLOY" <<'REMOTE'
+          cd "$1"
+          first_deploy="$2"
+          # `exec`, so this runs inside the container that is already serving rather than starting a
+          # second one against the same volume.
+          report="$(docker compose exec -T tod-serve /usr/local/bin/tod-serve doctor 2>&1 </dev/null || true)"
+          printf '%s\n' "$report"
+
+          # DOCTOR MUST HAVE RUN, and this is checked positively rather than by the absence of
+          # complaints.
+          #
+          # That `|| true` is load-bearing — doctor exits non-zero whenever it finds a problem,
+          # including on a first installation — and it turns "the command failed" into "the report
+          # is empty". An empty report has no PROBLEM lines in it, and a check that looks only for
+          # PROBLEM lines then PASSES, having never run. A failed `exec`, a container that is not
+          # up, a binary at a different path: all of them looked like a healthy instance.
+          #
+          # So the lines doctor emits on every run, whatever it finds, are required to be there.
+          for required in \
+            'schema version' \
+            'migrations are up to date' \
+            'integrity check passed' \
+            'foreign key check passed'
+          do
+            printf '%s' "$report" | grep -q "$required" && continue
+            echo "FAILED: the report does not contain \"${required}\"." >&2
+            echo "Either doctor did not run, or its output has changed shape. Either way this" >&2
+            echo "check cannot vouch for the instance, so it does not." >&2
+            exit 1
+          done
+
+          # EVERY problem is collected, and then the ones a genuine first deploy is ALLOWED to have
+          # are subtracted by name. Anything left is red.
+          #
+          # The previous shape branched on the string "no instance row" and exited 0. Two things
+          # were wrong with it. A missing instance row is not proof of a first deploy — an
+          # established database whose singleton was deleted, or which was restored from the wrong
+          # snapshot, reaches the same branch — and the HTTP checks above still pass without that
+          # row, so a broken production instance became a green deploy. And the early exit threw
+          # away every OTHER problem in the report: a failed integrity check, an orphaned foreign
+          # key, a public URL the providers disagree with.
+          #
+          # The waiver is now tied to a FACT this run established: `docker volume inspect` found no
+          # volume, so this deploy created it, so nothing can have been bootstrapped into it yet.
+          # On any later deploy those same two lines are problems, because by then they mean
+          # somebody's instance stopped having an identity.
+          problems="$(printf '%s\n' "$report" | grep '^  PROBLEM' || true)"
+          if [ "$first_deploy" = "true" ]; then
+            # And the waiver is only accepted against the report a first installation ACTUALLY
+            # produces. "No problems to subtract" is not evidence of the bootstrap state — it is
+            # equally what a report that never arrived looks like — so the two problems being
+            # waived have to be PRESENT before anything is waived.
+            #
+            # SINGLE quotes below: a backtick inside a double-quoted string is command
+            # substitution, and this line runs on the droplet — it would have tried to execute the
+            # verb it names. ACT002 cannot see that; `bash -n` parses it happily.
+            for expected in 'no instance row' 'no identity provider is enabled'; do
+              printf '%s' "$report" | grep -q "$expected" && continue
+              echo "FAILED: this run created the data volume, so nothing can have been" >&2
+              echo "bootstrapped into it — yet doctor does not report \"${expected}\"." >&2
+              echo "That is not the state this waiver is for, so it is not applied." >&2
+              exit 1
+            done
+            echo 'NOTE: this run installed the data volume, so tod-serve init cannot have run.'
+            echo "The two problems that follow from that are expected here and nowhere else."
+            problems="$(printf '%s\n' "$problems" \
+              | grep -v 'no instance row' \
+              | grep -v 'no identity provider is enabled' || true)"
+          fi
+
+          if [ -n "$problems" ]; then
+            echo "FAILED: the instance reports problems with itself:" >&2
+            printf '%s\n' "$problems" >&2
+            echo "" >&2
+            echo "It is serving — the checks above passed — so this is configuration rather than a" >&2
+            echo "bad container. A public-URL disagreement is the one that is invisible over HTTP." >&2
+            exit 1
+          fi
+
+          if [ "$first_deploy" = "true" ]; then
+            echo "nothing else is wrong. Bootstrap it: docs/operations/deployment.md, first deploy."
+          else
+            # The success LINE, not the exit code, so a doctor that changed its wording stops the
+            # deploy rather than being waved through by an empty grep.
+            printf '%s' "$report" | grep -q 'no problems found' || {
+              echo "FAILED: doctor reported no PROBLEM lines and did not say it found none." >&2
+              echo "Its output has changed shape; this check cannot vouch for it." >&2
+              exit 1; }
+            echo "the instance reports no problems"
+          fi
+          REMOTE

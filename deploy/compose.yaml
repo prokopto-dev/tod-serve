@@ -132,9 +132,29 @@ services:
 
       traefik.http.services.tod-serve.loadbalancer.server.port: "8080"
 
-      # Traefik's own health view. Without it a failed deploy keeps receiving traffic until
-      # somebody notices the 502s. `/healthz` never touches the database, so this cannot take the
-      # service out of rotation for a disk problem that would recover.
+      # Traefik's own health view, and it is the label that makes a failure LEGIBLE.
+      #
+      # Measured against a real Traefik v3 with the Docker provider, because the reasoning here is
+      # entirely about which status code an operator sees, and an earlier version of this file got
+      # it backwards and removed the check:
+      #
+      #   no router matches the host                              404
+      #   THIS check failing (router matched, no healthy server)  503
+      #   no check, container UNHEALTHY per Docker's HEALTHCHECK   404
+      #   no check, container stopped                              404
+      #   no check, container up but nothing on the port           502
+      #
+      # Read the third row. The Docker provider drops an unhealthy container from the service, so
+      # WITHOUT this label an unhealthy container gives 404 — identical to a host Traefik has never
+      # heard of, which is the one signal this runbook teaches an operator to read as "not deployed
+      # yet". WITH it, the same failure is a 503 that says "the router matched and nothing behind it
+      # is healthy". The check does not cause the ambiguity; it is what resolves it.
+      #
+      # `/healthz` never touches the database, so a disk problem that would recover cannot take the
+      # service out of rotation — see internal/api/health.go and TestLiveness_MakesNoDatabaseCall.
+      #
+      # It is also runtime monitoring, which the deploy workflow is not: that polls once, right
+      # after a release, and then the run ends.
       traefik.http.services.tod-serve.loadbalancer.healthcheck.path: /healthz
       traefik.http.services.tod-serve.loadbalancer.healthcheck.interval: "30s"
 

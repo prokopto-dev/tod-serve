@@ -329,3 +329,120 @@ func TestACT002_PassesAWorkflowThatParses(t *testing.T) {
 func step(steps string) string {
 	return "name: t\non: push\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n" + steps + "\n"
 }
+
+// TestACT003_FiresOnACommandThatEatsTheScript — the gate that exists because it shipped.
+//
+// A workflow script routinely reaches a remote shell ON STDIN (`ssh … bash -s <<'REMOTE'`), and
+// both `docker compose run` and `docker compose exec` attach stdin by default. The first one then
+// swallows the rest of the script: bash reads EOF, exits **0**, and the step reports success having
+// silently skipped everything after it.
+//
+// On 2026-08-25 that was the first production deploy of this repository. `migrate` ran, `up -d`
+// never did, the deploy step went green, and the verification afterwards spent thirty attempts
+// reporting the symptom while the container had never been started.
+func TestACT003_FiresOnACommandThatEatsTheScript(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		yaml string
+		why  string
+	}{
+		{
+			name: "the line that actually shipped",
+			yaml: step("      - run: |\n          if ! docker compose run --rm tod-serve migrate; then\n            exit 1\n          fi\n          docker compose up -d"),
+			why:  "migrate ran, `up -d` never did, and the step exited 0",
+		},
+		{
+			name: "compose exec, which attaches stdin too",
+			yaml: step("      - run: |\n          docker compose exec -T svc /bin/thing\n          echo after"),
+			why:  "-T disables the TTY, not the stdin attachment",
+		},
+		{
+			name: "inside a command substitution",
+			yaml: step("      - run: |\n          out=\"$(docker compose run --rm svc doctor 2>&1 || true)\"\n          echo \"$out\""),
+			why:  "a substitution inherits stdin like anything else",
+		},
+		{
+			name: "2>/dev/null, which redirects the wrong stream",
+			yaml: step("      - run: |\n          docker compose run --rm svc thing 2>/dev/null\n          echo after"),
+			why:  "the device is not the point; the direction is",
+		},
+		{
+			name: "with global flags before the subcommand",
+			yaml: step("      - run: |\n          docker compose -p x -f y.yml run --rm svc thing\n          echo after"),
+			why:  "the subcommand is not always the third word",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			code, out := actGate(t, "stdin", map[string]string{"broken.yml": tt.yaml})
+			require.Equal(t, 1, code, "ACT003 must fail this workflow: %s\n%s", tt.why, out)
+			require.Contains(t, out, "without redirecting stdin")
+			require.Contains(t, out, "broken.yml", "the finding must name the file")
+		})
+	}
+}
+
+// The false-positive half, and the half that keeps the gate usable. This repository's own workflows
+// talk ABOUT these commands in comments and in echoed help text, and a gate that reported those
+// would be switched off within a week — taking the finding above with it.
+func TestACT003_PassesWhatItShould(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "the fix",
+			yaml: step("      - run: |\n          docker compose run --rm -T svc migrate </dev/null\n          docker compose up -d"),
+		},
+		{
+			name: "the fix, spelled with a space",
+			yaml: step("      - run: |\n          docker compose exec -T svc /bin/thing < /dev/null\n          echo after"),
+		},
+		{
+			name: "a comment naming the command it is about",
+			yaml: step("      - run: |\n          # docker compose run --rm svc migrate is what this replaces\n          docker compose up -d"),
+		},
+		{
+			name: "prose containing the word run",
+			yaml: step("      - run: |\n          echo \"Start the stack with 'docker compose up -d' and re-run.\"\n          docker compose ps"),
+		},
+		{
+			name: "compose subcommands that do not attach stdin",
+			yaml: step("      - run: |\n          docker compose pull svc\n          docker compose stop svc\n          docker compose up -d --remove-orphans svc\n          docker compose ps"),
+		},
+		{
+			name: "a `gh workflow run` that is not compose at all",
+			yaml: step("      - run: |\n          gh workflow run Deploy -f image_tag=edge\n          echo after"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			code, out := actGate(t, "stdin", map[string]string{"fine.yml": tt.yaml})
+			require.Equal(t, 0, code,
+				"ACT003 must NOT fail this; a gate with false positives gets switched off, which "+
+					"is worse than the problem it was added for\n%s", out)
+		})
+	}
+}
+
+// The vacancy check, for the same reason ACT002 has one: a scanner that stopped extracting scripts
+// would report a clean tree over every workflow in the repository.
+func TestACT003_FiresWhenNothingWasExtracted(t *testing.T) {
+	t.Parallel()
+
+	code, out := actGate(t, "stdin", map[string]string{
+		"noscripts.yml": "name: t\non: push\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: ./local\n",
+	})
+	require.Equal(t, 1, code, "a workflow directory with no extracted scripts is a finding\n%s", out)
+	require.Contains(t, out, "not matching")
+}

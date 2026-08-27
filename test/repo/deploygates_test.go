@@ -281,3 +281,100 @@ func TestIMG001_PassesWhatItShould(t *testing.T) {
 
 // sixtyFourHex is a syntactically valid digest. It names nothing; the gate checks shape.
 const sixtyFourHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// TestLBL001_FiresOnANameNothingDefines — the Traefik labels are resolved BY STRING.
+//
+// A router whose `service=` names something no label defines is not an error anybody sees. The
+// router exists, its target does not, and the host answers **404** — which is the same 404 Traefik
+// gives a host it has never heard of, and the same one this project's runbook teaches an operator
+// to read as "the container has not come up yet". Nothing in `docker compose config` looks at what
+// a label SAYS.
+func TestLBL001_FiresOnANameNothingDefines(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		compose string
+		wantOut string
+		why     string
+	}{
+		{
+			name: "a router pointing at a service nothing defines",
+			compose: "services:\n  x:\n    labels:\n" +
+				"      traefik.http.routers.x-secure.service: todserve\n" +
+				"      traefik.http.services.tod-serve.loadbalancer.server.port: \"8080\"\n",
+			wantOut: "names the service todserve",
+			why:     "one missing hyphen, and the host 404s exactly as if it were unconfigured",
+		},
+		{
+			name: "one bad name in a middleware chain",
+			compose: "services:\n  x:\n    labels:\n" +
+				"      traefik.http.routers.x.middlewares: x-redirect,x-hstsz\n" +
+				"      traefik.http.middlewares.x-redirect.redirectscheme.scheme: https\n" +
+				"      traefik.http.middlewares.x-hsts.headers.stsSeconds: \"31536000\"\n" +
+				"      traefik.http.routers.x.service: x\n" +
+				"      traefik.http.services.x.loadbalancer.server.port: \"80\"\n",
+			wantOut: "names the middleware x-hstsz",
+			why:     "a chain is comma-separated, so checking only the whole value would miss this",
+		},
+		{
+			name: "the list spelling, which the other stacks on the droplet use",
+			compose: "services:\n  x:\n    labels:\n" +
+				"      - \"traefik.http.routers.x-secure.service=nope\"\n" +
+				"      - \"traefik.http.services.x.loadbalancer.server.port=9000\"\n",
+			wantOut: "names the service nope",
+			why:     "a file copied from a working stack must be read, not waved through",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			code, out := deployGate(t, "traefik", map[string]string{"compose.yaml": tt.compose})
+			require.Equal(t, 1, code, "LBL001 must fail this: %s\n%s", tt.why, out)
+			require.Contains(t, out, tt.wantOut)
+		})
+	}
+}
+
+// And the shapes that are correct — including, verbatim, the Portainer labels running on the target
+// droplet today. They are the reference this project's own labels were diffed against, so a gate
+// that rejected them would be a gate measuring the wrong thing.
+func TestLBL001_PassesWhatItShould(t *testing.T) {
+	t.Parallel()
+
+	const portainer = `services:
+  portainer:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.portainer.entrypoints=http"
+      - "traefik.http.routers.portainer.rule=Host(` + "`portainer.prokopto.dev`" + `)"
+      - "traefik.http.middlewares.portainer-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.portainer.middlewares=portainer-https-redirect"
+      - "traefik.http.routers.portainer-secure.entrypoints=https"
+      - "traefik.http.routers.portainer-secure.rule=Host(` + "`portainer.prokopto.dev`" + `)"
+      - "traefik.http.routers.portainer-secure.tls=true"
+      - "traefik.http.routers.portainer-secure.tls.certresolver=http"
+      - "traefik.http.routers.portainer-secure.service=portainer"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+      - "traefik.docker.network=proxy"
+`
+
+	code, out := deployGate(t, "traefik", map[string]string{"compose.yaml": portainer})
+	require.Equal(t, 0, code, "LBL001 rejected a configuration that is serving in production\n%s", out)
+	// Two references — the secure router's service, and the plain router's middleware. The count is
+	// what proves it READ them: a scanner that had stopped matching would report a clean tree.
+	require.Equal(t, "2", strings.TrimSpace(out))
+}
+
+// The vacancy check. Labels with no router reference at all means the pattern stopped matching, and
+// a checker that checked nothing must never look like a checker that found nothing.
+func TestLBL001_FiresWhenNothingWasChecked(t *testing.T) {
+	t.Parallel()
+
+	code, out := deployGate(t, "traefik", map[string]string{
+		"compose.yaml": "services:\n  x:\n    labels:\n      traefik.enable: \"true\"\n",
+	})
+	require.Equal(t, 1, code, "a compose file with no Traefik references is a finding\n%s", out)
+	require.Contains(t, out, "not matching")
+}
