@@ -165,9 +165,19 @@ type Listing struct {
 	Total int
 }
 
-// Get returns one target by id, off the pool.
+// Get returns one target by id, off the pool. See [Service.List] for why the caller-facing
+// spelling is the one that names no query set.
 func (s *Service) Get(ctx context.Context, id core.RaidTargetID) (Target, error) {
 	return s.get(ctx, s.db.Queries(), id)
+}
+
+// GetIn is [Service.Get] through the caller's own query set, for the reason [Service.ListIn]
+// carries: `is_quake_target` is a derivation input, so the target a response renders has to come
+// from the same state of the database as the timer the answer was derived under.
+func (s *Service) GetIn(
+	ctx context.Context, q *sqlitegen.Queries, id core.RaidTargetID,
+) (Target, error) {
+	return s.get(ctx, q, id)
 }
 
 // get is [Service.Get] against a caller-chosen query set.
@@ -225,7 +235,24 @@ func (s *Service) Timers(ctx context.Context, id core.RaidTargetID) ([]TargetTim
 // first backtick. If the catalogue ever reaches a size where this is wrong, the fix is an index on
 // `name_norm` and a prefix query, not a second normalisation.
 func (s *Service) List(ctx context.Context, filter ListFilter) (Listing, error) {
-	targets, err := s.loadTargets(ctx, s.db.Queries())
+	// The pool, chosen at the call. `internal/api` reaches this one and no other: the edge is the
+	// one layer that never names a query set — ADR-0013 — so the caller-facing spelling has to be
+	// the one that needs no argument.
+	return s.ListIn(ctx, s.db.Queries(), filter)
+}
+
+// ListIn is [Service.List] through the caller's own query set: a writing transaction, or a read
+// snapshot.
+//
+// It exists because a target row is not only identity. `is_quake_target` is copied into
+// [consensus.Timer] by [timerOf] and decides whether [consensus.Derive] truncates at a quake, so a
+// caller that resolves timers inside a snapshot and lists targets outside it can render a row whose
+// flag says one thing and whose `died_at` was derived under the other — the mixed row
+// [projection.Service.Board]'s snapshot exists to prevent, arriving by the other door.
+func (s *Service) ListIn(
+	ctx context.Context, q *sqlitegen.Queries, filter ListFilter,
+) (Listing, error) {
+	targets, err := s.loadTargets(ctx, q)
 	if err != nil {
 		return Listing{}, err
 	}
@@ -237,7 +264,7 @@ func (s *Service) List(ctx context.Context, filter ListFilter) (Listing, error) 
 				"server must be one of %s", core.Servers()).
 				WithField("query.server", "not a server")
 		}
-		rows, timerErr := s.db.Queries().ListRaidTargetTimersForServer(ctx, string(filter.Server))
+		rows, timerErr := q.ListRaidTargetTimersForServer(ctx, string(filter.Server))
 		if timerErr != nil {
 			return Listing{}, apierr.Wrap(apierr.CodeInternalError, timerErr, "")
 		}

@@ -81,10 +81,14 @@ func (s *Service) Verify(ctx context.Context) (VerifyReport, error) {
 	if err != nil {
 		return VerifyReport{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	report := VerifyReport{CirclesChecked: len(circles), AsOf: s.clock.Now()}
+	// `CirclesChecked` counts up as circles are actually checked rather than being set to
+	// `len(circles)` here, because a circle can be tombstoned between that listing and its turn
+	// below — and a count that claimed to have checked one this job deliberately skipped would be
+	// the wrong kind of reassuring.
+	report := VerifyReport{AsOf: s.clock.Now()}
 
-	for _, circle := range circles {
-		circleID, parseErr := core.ParseID[core.Circle](circle.ID)
+	for _, listed := range circles {
+		circleID, parseErr := core.ParseID[core.Circle](listed.ID)
 		if parseErr != nil {
 			return VerifyReport{}, apierr.Wrap(apierr.CodeInternalError, parseErr, "")
 		}
@@ -106,11 +110,29 @@ func (s *Service) Verify(ctx context.Context) (VerifyReport, error) {
 		var (
 			cached map[core.RaidTargetID]*sqlitegen.TargetStateCache
 			states []derivedState
+			gone   bool
 		)
 		if snapErr := s.db.InReadSnapshot(ctx, func(
 			ctx context.Context, q *sqlitegen.Queries,
 		) error {
-			var err error
+			// **The circle is re-read HERE, and the row from `ListLiveCircles` above is not used
+			// for anything but its id.** `min_reporters_to_supersede` is an input to the
+			// derivation — it decides when a later cluster supersedes an earlier one — so an
+			// `updateCircle` committing between that listing and this snapshot would recompute
+			// under the OLD threshold and diff the answer against a cache the CURRENT threshold
+			// produced. This job would then either miss real drift or repair a correct row into a
+			// stale one, which is the one thing a repair must never do.
+			circle, err := s.circle(ctx, q, circleID)
+			if coded, ok := apierr.From(err); ok && coded.Code() == apierr.CodeNotFound {
+				// Tombstoned since the listing. Skipping is what the tombstone means — a deleted
+				// circle must not come back onto the recompute path — and it is counted by NOT
+				// being counted, plus the line below.
+				gone = true
+				return nil
+			}
+			if err != nil {
+				return err
+			}
 			if cached, err = s.cachedStates(ctx, q, circleID); err != nil {
 				return err
 			}
@@ -119,6 +141,12 @@ func (s *Service) Verify(ctx context.Context) (VerifyReport, error) {
 		}); snapErr != nil {
 			return VerifyReport{}, snapErr
 		}
+		if gone {
+			s.log.WarnContext(ctx, "circle was deleted during the verify sweep and was skipped",
+				slog.String("circle_id", circleID.String()))
+			continue
+		}
+		report.CirclesChecked++
 
 		for _, derived := range states {
 			report.TargetsChecked++

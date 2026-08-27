@@ -139,22 +139,19 @@ func (s *Service) Board(
 	// and wrapping the hottest read path in the product in one would serialise the whole instance
 	// behind the slowest reader.
 	//
-	// **The catalogue LISTING is deliberately outside, and is the one read here that is not.** It
-	// goes to the pool because `catalogue.List` binds its own query set, and it is left there
-	// rather than hidden: what it supplies is target IDENTITY — name, zone, aliases,
-	// `is_quake_target` — which carries no ε and no offsets and is therefore not half of the pair
-	// above. It is not free of the general hazard, though: `catalogue.Create` writes a
-	// `raid_target` and its aliases in ONE transaction and `List` reads them as two statements, so
-	// a target created mid-render can be listed with an alias list that does not match its row.
-	// That is an admin-path inconsistency in a field the derivation never reads, and closing it
-	// means a `catalogue.List` that takes a query set — a change to `internal/catalogue`, not to
-	// this function.
+	// **The catalogue listing is inside it too, and that is not decoration.** A target row is not
+	// only identity: `is_quake_target` is copied into the [consensus.Timer] this render derives
+	// with, and it decides whether the answer truncates at a quake. Listing targets outside the
+	// snapshot would render `Target.IsQuakeTarget` from one instant beside a status and a `died_at`
+	// derived under the other — the same mixed row by the other door. It also puts a target and its
+	// aliases, which `catalogue.Create` writes in ONE transaction, on one side of that write.
 	var (
 		circle   sqlitegen.Circle
 		timers   map[core.RaidTargetID]catalogue.ResolvedTimer
 		cached   map[core.RaidTargetID]*sqlitegen.TargetStateCache
 		quakes   []consensus.Quake
 		reported []core.RaidTargetID
+		listing  catalogue.Listing
 	)
 	if err := s.db.InReadSnapshot(ctx, func(
 		ctx context.Context, q *sqlitegen.Queries,
@@ -175,22 +172,21 @@ func (s *Service) Board(
 		}
 		// Read inside the snapshot as well, so a report appended mid-render cannot make this
 		// render rebuild a target against a cache map that predates it.
-		reported, err = s.reportedTargets(ctx, q, circleID)
+		if reported, err = s.reportedTargets(ctx, q, circleID); err != nil {
+			return err
+		}
+		listing, err = s.catalogue.ListIn(ctx, q, catalogue.ListFilter{
+			Expansion: filter.Expansion, Zone: filter.Zone, Query: filter.Query,
+			// No Server, deliberately: the entry's own timer is the CATALOGUE's and skips this
+			// circle's override. The effective timer comes from ResolveTimers above and nowhere
+			// else, and asking for the catalogue's would put a second timer in reach of a tired
+			// afternoon.
+			//
+			// No Limit either: the board sorts by `window_open_at`, which the catalogue does not
+			// know, so the page has to be cut after that sort rather than before it.
+		})
 		return err
 	}); err != nil {
-		return nil, false, err
-	}
-
-	listing, err := s.catalogue.List(ctx, catalogue.ListFilter{
-		Expansion: filter.Expansion, Zone: filter.Zone, Query: filter.Query,
-		// No Server, deliberately: the entry's own timer is the CATALOGUE's and skips this
-		// circle's override. The effective timer comes from ResolveTimers above and nowhere else,
-		// and asking for the catalogue's would put a second timer in reach of a tired afternoon.
-		//
-		// No Limit either: the board sorts by `window_open_at`, which the catalogue does not know,
-		// so the page has to be cut after that sort rather than before it.
-	})
-	if err != nil {
 		return nil, false, err
 	}
 

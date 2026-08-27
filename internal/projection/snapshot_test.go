@@ -35,13 +35,24 @@ const (
 // what makes it the unit this file asserts on rather than a field at a time.
 type pairing struct {
 	DiedAt     *core.Micros
+	UpSince    *core.Micros
 	Status     string
 	Confidence string
 	Window     consensus.Window
 }
 
 func pairingOf(e projection.BoardEntry) pairing {
-	return pairing{DiedAt: e.DiedAt, Status: e.Status, Confidence: e.Confidence, Window: e.Window}
+	return pairing{
+		DiedAt: e.DiedAt, UpSince: e.UpSince, Status: e.Status,
+		Confidence: e.Confidence, Window: e.Window,
+	}
+}
+
+func pairingOfDerived(d projection.Derived) pairing {
+	return pairing{
+		DiedAt: d.DiedAt, UpSince: d.UpSince, Status: d.Status,
+		Confidence: d.Confidence, Window: d.Window,
+	}
 }
 
 // expected is what a timer with these offsets produces for these kills, straight out of
@@ -53,13 +64,21 @@ func pairingOf(e projection.BoardEntry) pairing {
 // not. `internal/consensus` is pure: no store, no clock, no query set, nothing this test is about.
 func expected(t *testing.T, f *fixture, kills []core.Micros, open, closeAt time.Duration) pairing {
 	t.Helper()
+	return expectedWithQuake(t, f, kills, open, closeAt, false, nil)
+}
+
+func expectedWithQuake(
+	t *testing.T, f *fixture, kills []core.Micros, open, closeAt time.Duration,
+	isQuakeTarget bool, quakeAt *core.Micros,
+) pairing {
+	t.Helper()
 	openSeconds, closeSeconds := int64(open.Seconds()), int64(closeAt.Seconds())
 	timer := consensus.Timer{
 		Kind:               consensus.WindowVariance,
 		OpenOffsetSeconds:  &openSeconds,
 		CloseOffsetSeconds: &closeSeconds,
 		FixedGraceSeconds:  catalogue.DefaultFixedGraceSeconds,
-		IsQuakeTarget:      false,
+		IsQuakeTarget:      isQuakeTarget,
 	}
 	reports := make([]consensus.Report, 0, len(kills))
 	for _, at := range kills {
@@ -68,10 +87,16 @@ func expected(t *testing.T, f *fixture, kills []core.Micros, open, closeAt time.
 			ReporterMembershipID: f.reporter, Source: consensus.SourceManual,
 		})
 	}
-	state := consensus.Derive(reports, nil, timer, fixtureNow,
+	var quakes []consensus.Quake
+	if quakeAt != nil {
+		quakes = append(quakes, consensus.Quake{
+			ID: newID[core.QuakeEvent](f), OccurredAt: *quakeAt,
+		})
+	}
+	state := consensus.Derive(reports, quakes, timer, fixtureNow,
 		consensus.CircleConfig{MinReportersToSupersede: 1})
 	return pairing{
-		DiedAt: state.DiedAt, Status: string(state.Status),
+		DiedAt: state.DiedAt, UpSince: state.UpSince, Status: string(state.Status),
 		Confidence: string(state.Confidence), Window: state.Window,
 	}
 }
@@ -159,6 +184,71 @@ func TestBoard_ATimerCommittingMidRender_NeverPairsAWindowWithADiedAtFromAnother
 	}
 }
 
+// TestGetTargetState_AQuakeFlagFlippingMidRead_NeverRendersItAgainstTheOtherDerivation is the gate
+// for the second half of the pairing: the TARGET, not the timer row.
+//
+// `is_quake_target` is not identity. [catalogue.timerOf] copies it into the [consensus.Timer] the
+// answer is derived with, and [consensus.Derive] uses it to truncate every kill before the latest
+// quake and report `up` instead. Read the target outside the snapshot that resolved the timer and
+// a flip by `catalogue.Update` — a transaction of its own — renders `target.is_quake_target` from
+// one instant beside a `status` and an `up_since` derived under the other. Same mixed row as
+// issue #17, different door.
+//
+// `getTargetState` is where this is observable, and that is not a coincidence: it re-derives from
+// the report log on every call, so the flag it renders and the derivation beside it are produced
+// microseconds apart. The board reads a CACHED row, and nothing recomputes that row when the flag
+// flips — a separate and larger defect, tracked at
+// https://github.com/prokopto-dev/tod-serve/issues/21, which no snapshot can close because there
+// is no torn read: the row on disk is simply wrong.
+func TestGetTargetState_AQuakeFlagFlippingMidRead_NeverRendersItAgainstTheOtherDerivation(
+	t *testing.T,
+) {
+	t.Parallel()
+	f := newFixture(t)
+	target := f.seedTarget("Vulak`Aerr", "Temple of Veeshan", false)
+
+	kills := []core.Micros{
+		fixtureNow.Add(-6 * time.Hour),
+		fixtureNow.Add(-6*time.Hour + killsApart),
+	}
+	for _, at := range kills {
+		f.report(target, at, schemaenum.TodReportSourceManual)
+	}
+	// After every kill, so the quake truncates all of them and the two answers are as far apart as
+	// this derivation gets: an estimate and a window, or `up` and neither.
+	quakeAt := fixtureNow.Add(-2 * time.Hour)
+	_, err := f.tods.ReportQuake(t.Context(), todQuake(f, quakeAt))
+	require.NoError(t, err)
+	f.seedCatalogueTimer(target, narrowOpen, narrowClose)
+
+	quaked := expectedWithQuake(t, f, kills, narrowOpen, narrowClose, true, &quakeAt)
+	plain := expectedWithQuake(t, f, kills, narrowOpen, narrowClose, false, &quakeAt)
+	require.NotEqual(t, quaked.UpSince, plain.UpSince,
+		"the flag must change the answer, or this test is vacuous")
+	require.NotEqual(t, quaked.DiedAt, plain.DiedAt)
+
+	flips := f.flipQuakeFlagContinuously(target)
+	defer flips.stop()
+
+	const reads = 200
+	for i := range reads {
+		require.NoError(t, flips.err(), "the catalogue writer failed")
+
+		derived, readErr := f.states.Get(t.Context(), f.circle, target.ID, false)
+		require.NoError(t, readErr)
+
+		// **The assertion is the pairing itself**: whichever flag this response renders, the
+		// derivation beside it has to be the one that flag produces.
+		want := plain
+		if derived.Target.IsQuakeTarget {
+			want = quaked
+		}
+		require.Emptyf(t, cmp.Diff(want, pairingOfDerived(derived)),
+			"read %d rendered is_quake_target=%v against the other derivation",
+			i, derived.Target.IsQuakeTarget)
+	}
+}
+
 // timerFlips is a catalogue timer being rewritten, narrow then wide then narrow, on another
 // goroutine.
 //
@@ -231,6 +321,38 @@ func (t *timerFlips) err() error {
 func (t *timerFlips) stop() {
 	close(t.stopped)
 	<-t.finished
+}
+
+// flipQuakeFlagContinuously rewrites the target's `is_quake_target` as fast as it can, until
+// [timerFlips.stop]. Continuous for the reason [fixture.flipTimerContinuously] gives.
+//
+// **It is `catalogue.Update`, not a bare UPDATE**, because the point is that a supported write
+// path moves a derivation input in a transaction of its own.
+func (f *fixture) flipQuakeFlagContinuously(target catalogue.Target) *timerFlips {
+	flips := &timerFlips{
+		failure:  make(chan error, 1),
+		stopped:  make(chan struct{}),
+		finished: make(chan struct{}),
+	}
+	go func() {
+		defer close(flips.finished)
+		quake := true
+		for {
+			select {
+			case <-flips.stopped:
+				return
+			default:
+			}
+			on := quake
+			quake = !quake
+			if _, err := f.catalogue.Update(f.t.Context(), target.ID,
+				catalogue.UpdateRequest{IsQuakeTarget: &on}); err != nil {
+				flips.failure <- err
+				return
+			}
+		}
+	}()
+	return flips
 }
 
 // putCatalogueTimer is [fixture.seedCatalogueTimer] that returns its error instead of failing the

@@ -86,10 +86,14 @@ func (s *Service) Get(
 	// the rest read a snapshot, and because it WRITES what it derives: the day some transaction
 	// does commit two of these rows, the wrong answer would be cached rather than merely drawn.
 	//
-	// `catalogue.Get` is outside it and reads the target and its aliases on the pool, so the
-	// `Target` rendered here carries that same admin-path tear — see the note on [Service.Board].
+	// The TARGET is read inside it too, and that one is not defensive. `is_quake_target` is copied
+	// into the [consensus.Timer] below and decides whether the answer truncates at a quake, so
+	// reading the target afterwards would return a `Target` whose flag says one thing beside a
+	// `status` and an `up_since` derived under the other — and `catalogue.Update` flips that flag
+	// in a transaction of its own. See [Service.Board].
 	var (
 		circle  sqlitegen.Circle
+		target  catalogue.Target
 		timer   catalogue.ResolvedTimer
 		quakes  []consensus.Quake
 		rows    []sqlitegen.TodReport
@@ -101,6 +105,9 @@ func (s *Service) Get(
 	) error {
 		var err error
 		if circle, err = s.circle(ctx, q, circleID); err != nil {
+			return err
+		}
+		if target, err = s.catalogue.GetIn(ctx, q, targetID); err != nil {
 			return err
 		}
 		if timer, err = s.catalogue.ResolveTimer(
@@ -130,10 +137,6 @@ func (s *Service) Get(
 		return Derived{}, err
 	}
 
-	target, err := s.catalogue.Get(ctx, targetID)
-	if err != nil {
-		return Derived{}, err
-	}
 	reports, err := tod.ToConsensusReports(rows, revoked)
 	if err != nil {
 		return Derived{}, apierr.Wrap(apierr.CodeInternalError, err, "")
