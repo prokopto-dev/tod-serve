@@ -372,9 +372,10 @@ before starting, or the log reads `permission denied` on `/data/tod.db`.
 6. It **stops the old container**, and only then snapshots the database with `tod-serve backup`
    into `/opt/tod-serve/backups/pre-<timestamp>.db` — and then **opens that copy with
    `tod-serve doctor`** and requires it to be a current, integrity-checking database before
-   believing in it. If either step fails and a volume exists, **the deploy stops and the old
-   container is restarted**. Only "no volume at all — first deploy" proceeds without a snapshot. It
-   prunes to the last ten `pre-*.db` and touches nothing else in that directory.
+   believing in it. If either step fails, **the deploy stops and the old container is restarted**.
+   Only a **first installation** proceeds without a snapshot — see below, because "there is no
+   volume" is not what decides that. It prunes to the last ten `pre-*.db` and touches nothing else
+   in that directory.
 7. **Now** it adopts the new `compose.yaml` — keeping `compose.yaml.prev` — and pins
    `TOD_DEPLOY_IMAGE` in `.env` to the digest. Everything before this point operated the OLD image,
    and operated it through the compose file it was released with.
@@ -414,6 +415,35 @@ complete state the migration is about to change.
 
 Step 9's last check is not ceremony either. Without it, a `pull` that silently changed nothing looks
 exactly like a successful deploy — every other check passes against the container already there.
+
+### The install marker, and why a missing volume is not a first deploy
+
+The first successful deploy writes `/opt/tod-serve/.tod-serve-installed`. It lives beside `.env`,
+**outside** the data volume, and it is what tells a genuine first installation apart from a host
+that has lost its data.
+
+`docker volume inspect` only says what is true now. A volume removed by `docker compose down -v`,
+pruned, or orphaned by a renamed volume in a release produces exactly the state a brand-new host
+does — and without the marker the deploy would migrate a fresh empty database over a real instance,
+start it, waive `doctor`'s complaints about the missing rows, and go **green**. A data loss
+confirmed by a successful deploy.
+
+| marker | volume | What happens |
+|---|---|---|
+| no | no | A first installation. The only state that skips the snapshot, and the only one the `doctor` waiver applies to |
+| no | yes | An install predating the marker. Treated as **established** — snapshot taken, nothing waived — and the marker is written |
+| yes | yes | The ordinary case |
+| yes | **no** | **Refused.** The data is gone from a host that has been deployed before |
+
+That last row is the point of the file. If you removed the volume deliberately and starting empty is
+genuinely what you want, delete the marker to say so:
+
+```bash
+rm /opt/tod-serve/.tod-serve-installed     # only if you mean "start over with an empty database"
+```
+
+Do not delete it for any other reason. It is the difference between a deploy that refuses and a
+deploy that quietly blesses an empty instance.
 
 ### If a step goes green and the next one fails on `/healthz`
 

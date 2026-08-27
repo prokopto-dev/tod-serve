@@ -509,6 +509,25 @@ jobs:
           # and docs/operations/deployment.md says how long and why.
           docker compose stop tod-serve
 
+          # A MISSING VOLUME IS NOT PROOF THAT THIS HOST HAS NEVER BEEN DEPLOYED.
+          #
+          # `docker volume inspect` says what is true now, not what has ever been true. A volume
+          # somebody removed with `down -v`, or pruned, or lost to a renamed volume in a release,
+          # produces exactly the state a first installation does — and then this deploy would
+          # migrate a fresh empty database over a real instance, bring it up, waive doctor's
+          # complaints about the missing rows, and go GREEN. A silent, confirmed data loss.
+          #
+          # So the answer comes from a marker that lives on the HOST, beside .env and outside the
+          # volume, written the first time this workflow brought the service up. It is durable and
+          # independent: losing the volume does not lose it.
+          #
+          #   no marker, no volume    a first installation. The only state the waiver applies to
+          #   no marker, volume       an install that predates this marker. Treated as established,
+          #                           which is the strict reading, and the marker is written
+          #   marker, volume          the ordinary case
+          #   marker, NO volume       refused. Something removed the data from a host that has been
+          #                           deployed before, and this must not be blessed by a green run
+          installed_marker=".tod-serve-installed"
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
           if docker volume inspect tod-serve_tod-data >/dev/null 2>&1; then
             # `run --rm`, not `exec`: there is deliberately nothing running to exec into. The image
@@ -552,9 +571,22 @@ jobs:
               exit 1
             fi
             echo "the snapshot opens, its migrations are current, and it passes an integrity check"
+          elif [ -f "$installed_marker" ]; then
+            echo "FATAL: this host has been deployed before, and the data volume is GONE." >&2
+            echo "" >&2
+            sed 's/^/  /' "$installed_marker" >&2
+            echo "" >&2
+            echo "Continuing would migrate an empty database, start it, and report success — a" >&2
+            echo "data loss confirmed by a green deploy. Refusing." >&2
+            echo "" >&2
+            echo "If the volume was removed deliberately and starting empty is what you want," >&2
+            echo "delete ${deploy_path}/${installed_marker} to say so, and re-run." >&2
+            exit 1
           else
-            # The ONLY case that proceeds without one. There is nothing to lose yet.
-            echo "no data volume yet; first deploy"
+            # The ONLY state that proceeds without a snapshot, and the only one the doctor waiver
+            # downstream will accept: nothing has ever been installed here, so there is nothing to
+            # lose and nothing to have bootstrapped.
+            echo "no data volume and no install marker; first installation"
           fi
 
           # Keep the last ten PRE-DEPLOY snapshots, and touch nothing else in this directory.
@@ -618,6 +650,19 @@ jobs:
           fi
 
           docker compose up -d --remove-orphans tod-serve
+
+          # Written only after the service is actually up, so a run that died earlier does not
+          # leave a marker claiming an installation that never happened.
+          if [ ! -f "$installed_marker" ]; then
+            {
+              printf 'installed %s\n' "$stamp"
+              printf 'image     %s\n' "$image_ref"
+              printf 'This file is how the deploy tells a first installation from a host whose data\n'
+              printf 'volume has gone missing. Do not delete it unless you mean the second one.\n'
+            } > "$installed_marker"
+            echo "wrote ${installed_marker}"
+          fi
+
           docker image prune -f --filter "until=168h"
           docker compose ps
           REMOTE
@@ -625,7 +670,7 @@ jobs:
           # The marker the remote script printed when `docker volume inspect` found nothing. This is
           # the ONLY thing that makes "this instance has never been bootstrapped" a fact rather than
           # an inference from a missing row.
-          if grep -q '^no data volume yet; first deploy$' "$RUNNER_TEMP/deploy.out"; then
+          if grep -q '^no data volume and no install marker; first installation$' "$RUNNER_TEMP/deploy.out"; then
             echo "first_deploy=true" >> "$GITHUB_OUTPUT"
           else
             echo "first_deploy=false" >> "$GITHUB_OUTPUT"
@@ -769,6 +814,29 @@ jobs:
           report="$(docker compose exec -T tod-serve /usr/local/bin/tod-serve doctor 2>&1 </dev/null || true)"
           printf '%s\n' "$report"
 
+          # DOCTOR MUST HAVE RUN, and this is checked positively rather than by the absence of
+          # complaints.
+          #
+          # That `|| true` is load-bearing — doctor exits non-zero whenever it finds a problem,
+          # including on a first installation — and it turns "the command failed" into "the report
+          # is empty". An empty report has no PROBLEM lines in it, and a check that looks only for
+          # PROBLEM lines then PASSES, having never run. A failed `exec`, a container that is not
+          # up, a binary at a different path: all of them looked like a healthy instance.
+          #
+          # So the lines doctor emits on every run, whatever it finds, are required to be there.
+          for required in \
+            'schema version' \
+            'migrations are up to date' \
+            'integrity check passed' \
+            'foreign key check passed'
+          do
+            printf '%s' "$report" | grep -q "$required" && continue
+            echo "FAILED: the report does not contain \"${required}\"." >&2
+            echo "Either doctor did not run, or its output has changed shape. Either way this" >&2
+            echo "check cannot vouch for the instance, so it does not." >&2
+            exit 1
+          done
+
           # EVERY problem is collected, and then the ones a genuine first deploy is ALLOWED to have
           # are subtracted by name. Anything left is red.
           #
@@ -786,10 +854,22 @@ jobs:
           # somebody's instance stopped having an identity.
           problems="$(printf '%s\n' "$report" | grep '^  PROBLEM' || true)"
           if [ "$first_deploy" = "true" ]; then
-            # SINGLE quotes: a backtick inside a double-quoted string is command substitution,
-            # and this line runs on the droplet — it would have tried to execute the verb it
-            # names. ACT002 cannot see this; `bash -n` parses it happily.
-            echo 'NOTE: this deploy created the data volume, so tod-serve init cannot have run.'
+            # And the waiver is only accepted against the report a first installation ACTUALLY
+            # produces. "No problems to subtract" is not evidence of the bootstrap state — it is
+            # equally what a report that never arrived looks like — so the two problems being
+            # waived have to be PRESENT before anything is waived.
+            #
+            # SINGLE quotes below: a backtick inside a double-quoted string is command
+            # substitution, and this line runs on the droplet — it would have tried to execute the
+            # verb it names. ACT002 cannot see that; `bash -n` parses it happily.
+            for expected in 'no instance row' 'no identity provider is enabled'; do
+              printf '%s' "$report" | grep -q "$expected" && continue
+              echo "FAILED: this run created the data volume, so nothing can have been" >&2
+              echo "bootstrapped into it — yet doctor does not report \"${expected}\"." >&2
+              echo "That is not the state this waiver is for, so it is not applied." >&2
+              exit 1
+            done
+            echo 'NOTE: this run installed the data volume, so tod-serve init cannot have run.'
             echo "The two problems that follow from that are expected here and nowhere else."
             problems="$(printf '%s\n' "$problems" \
               | grep -v 'no instance row' \
