@@ -42,10 +42,23 @@ const driverName = "sqlite"
 // MemoryPath opens a private in-memory database. It exists for tests that genuinely do not touch
 // migrations; the integration suite uses a real file in t.TempDir(), because a schema this
 // trigger-dependent deserves to be exercised the way it will actually be run.
+//
+// **A store opened here has no snapshot pool and [DB.InReadSnapshot] returns [ErrNoSnapshot].**
+// `:memory:` is private to a CONNECTION, so a second handle would open a second, empty database
+// rather than another view of this one — and a snapshot of the wrong database is worse than no
+// snapshot, because it answers.
 const MemoryPath = ":memory:"
 
 // ErrClosed is returned by operations on a store that has been closed.
 var ErrClosed = errors.New("store is closed")
+
+// ErrNoSnapshot is returned by [DB.InReadSnapshot] on a store that has no snapshot pool, which is
+// every store opened at [MemoryPath].
+//
+// It is an error rather than a silent fall back to the writing pool. Falling back would give the
+// caller two pooled reads while the call site said "snapshot", which is the bug this primitive
+// exists to prevent, wearing the name of its fix.
+var ErrNoSnapshot = errors.New("store has no read snapshot pool")
 
 // ErrNoRows is what a `:one` query returns when it finds nothing.
 //
@@ -56,8 +69,15 @@ var ErrClosed = errors.New("store is closed")
 var ErrNoRows = sql.ErrNoRows
 
 // DB is an open database. It is safe for concurrent use.
+//
+// It holds TWO pools over the same file, and which one a caller gets is decided by the primitive
+// they reach for rather than by a field they pick. `sql` is the writing pool, opened
+// `_txlock=immediate`; `read` is the snapshot pool, opened `_txlock=deferred` and `query_only`.
+// See [DB.InTx] and [DB.InReadSnapshot], and [readDSN] for why the second one has to be a second
+// handle rather than a second kind of BEGIN.
 type DB struct {
 	sql     *sql.DB
+	read    *sql.DB
 	queries *sqlitegen.Queries
 	path    string
 	log     *slog.Logger
@@ -90,13 +110,36 @@ func Open(ctx context.Context, path string, log *slog.Logger) (*DB, error) {
 		)
 	}
 
-	return &DB{sql: handle, queries: sqlitegen.New(handle), path: path, log: log}, nil
+	db := &DB{sql: handle, queries: sqlitegen.New(handle), path: path, log: log}
+
+	// The read pool is opened SECOND and only for a file, both deliberately.
+	//
+	// Second, because it is `query_only`: it cannot create the database or its WAL, so the write
+	// handle's ping above has to have done that already. Only for a file, because `:memory:` is
+	// private to a connection — see [MemoryPath] — so a second handle to it would be a second,
+	// empty database rather than another view of this one.
+	if path != MemoryPath {
+		reader, readErr := sql.Open(driverName, readDSN(path))
+		if readErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("open read pool %s: %w", path, readErr), db.Close())
+		}
+		if pingErr := reader.PingContext(ctx); pingErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("reach read pool %s: %w", path, pingErr),
+				reader.Close(), db.Close())
+		}
+		db.read = reader
+	}
+
+	return db, nil
 }
 
-// dsn builds the connection string. Every pragma is set here, in the DSN, rather than with an Exec
-// after opening: database/sql keeps a POOL, it opens new connections whenever it feels like it,
-// and a pragma applied to one connection is not applied to the next one. A foreign-key check that
-// holds on some connections is worse than one that holds on none, because it passes in testing.
+// dsn builds the connection string for the WRITING pool. Every pragma is set here, in the DSN,
+// rather than with an Exec after opening: database/sql keeps a POOL, it opens new connections
+// whenever it feels like it, and a pragma applied to one connection is not applied to the next
+// one. A foreign-key check that holds on some connections is worse than one that holds on none,
+// because it passes in testing.
 //
 //	journal_mode=WAL    readers do not block the writer, which is what makes a long read (the
 //	                    nightly projection verify) survivable on a box also taking reports.
@@ -111,8 +154,41 @@ func Open(ctx context.Context, path string, log *slog.Logger) (*DB, error) {
 //	                    that reads and then writes can fail with SQLITE_BUSY_SNAPSHOT, which
 //	                    busy_timeout does NOT retry — the classic Go-plus-SQLite deadlock. The cost
 //	                    is that a read-only transaction also serialises; our transactions are short
-//	                    and nearly all of them write.
+//	                    and nearly all of them write. A read that is NEITHER — a board render —
+//	                    goes to the second pool instead of paying it: see [readDSN].
 func dsn(path string) string {
+	return connectionString(path, "immediate", false)
+}
+
+// readDSN builds the connection string for the SNAPSHOT pool: the same pragmas, plus
+// `_txlock=deferred` and `query_only`.
+//
+// **It is a second handle rather than a second kind of BEGIN because `_txlock` is a property of
+// the connection.** The driver reads it when a connection opens and prefixes every BEGIN with it
+// thereafter. Today's driver will also emit a plain, deferred BEGIN for a transaction opened with
+// `sql.TxOptions{ReadOnly: true}` — but that makes the lock mode a driver behaviour depended on
+// silently, and it buys nothing at all for the read-only half, which SQLite would still not
+// enforce. A pool is where both can be spelled once and checked.
+//
+//	_txlock=deferred    Take no lock at BEGIN. Under WAL the read snapshot is then pinned by the
+//	                    FIRST read statement and held until the transaction ends, which is exactly
+//	                    what a multi-read render needs — and writers are not blocked by it, which
+//	                    is what `_txlock=immediate` would have cost. See ADR-0014.
+//	query_only(1)       SQLite refuses every write on this pool. Without it a write reached through
+//	                    a snapshot would try to UPGRADE a deferred read transaction to a write one,
+//	                    which is the SQLITE_BUSY_SNAPSHOT deadlock `_txlock=immediate` exists to
+//	                    prevent — reintroduced by the back door. It is LAST so the pragmas before
+//	                    it run while the connection can still write. On a database already in WAL
+//	                    none of them needs to — `journal_mode=WAL` reads `wal` back and the rest
+//	                    are connection settings — which is exactly why [Open] pings the writing
+//	                    pool first: this pool must never be the connection that creates the file.
+func readDSN(path string) string {
+	return connectionString(path, "deferred", true)
+}
+
+// connectionString assembles a DSN. Both pools share it so a pragma added for one is not silently
+// missing from the other; the two arguments are the only things they disagree about.
+func connectionString(path, txlock string, queryOnly bool) string {
 	if path == MemoryPath {
 		path = ":memory:"
 	}
@@ -122,11 +198,14 @@ func dsn(path string) string {
 		"busy_timeout(5000)",
 		"synchronous(NORMAL)",
 	}
+	if queryOnly {
+		pragmas = append(pragmas, "query_only(1)")
+	}
 	q := url.Values{}
 	for _, p := range pragmas {
 		q.Add("_pragma", p)
 	}
-	q.Set("_txlock", "immediate")
+	q.Set("_txlock", txlock)
 	return "file:" + path + "?" + q.Encode()
 }
 
@@ -167,18 +246,75 @@ func (d *DB) InTx(ctx context.Context, fn func(context.Context, *sqlitegen.Queri
 	return nil
 }
 
-// Close releases the pool. A closed store returns [ErrClosed] rather than panicking on a nil
+// InReadSnapshot runs fn inside a deferred, read-only transaction on the snapshot pool, so every
+// statement fn issues sees ONE state of the database.
+//
+// **This is the primitive for a render that reads more than one table and pairs the answers.**
+// [DB.InTx] is the primitive for anything that writes. Reaching for the wrong one is meant to be
+// obvious from the name: a write inside a snapshot does not merely fail review, it fails at
+// SQLite, because the pool is `query_only` — see [readDSN].
+//
+// Two properties are being bought, and they are separate:
+//
+//   - Isolation. Without it, two pooled reads are two implicit transactions, and anything that
+//     commits between them gives the caller a pair of answers that never coexisted. The board's
+//     effective timer and its cached `died_at` are exactly such a pair — the timer carries the
+//     clustering ε the `died_at` was derived under — which is what
+//     https://github.com/prokopto-dev/tod-serve/issues/17 is about.
+//   - Concurrency. `InTx` would give isolation too, and would take the WRITE lock at BEGIN to do
+//     it, serialising the whole instance behind the slowest reader. This does not: under WAL a
+//     deferred read transaction blocks no writer. ADR-0014 is the trade in full.
+//
+// The snapshot is pinned by the FIRST read fn issues, not by this call, and it is held until fn
+// returns. So fn should read what it needs and get out: everything it holds open, it holds the WAL
+// from checkpointing.
+//
+// It always rolls back, never commits. A read-only transaction has nothing to commit, and
+// `ROLLBACK` says at the one place it matters that this was never going to write.
+//
+// A store opened at [MemoryPath] has no snapshot pool and this returns [ErrNoSnapshot].
+func (d *DB) InReadSnapshot(
+	ctx context.Context, fn func(context.Context, *sqlitegen.Queries) error,
+) error {
+	if d.sql == nil {
+		return ErrClosed
+	}
+	if d.read == nil {
+		return ErrNoSnapshot
+	}
+	tx, err := d.read.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin read snapshot: %w", err)
+	}
+	// Deliberate waiver, and the only correct one here: the rollback of a transaction that wrote
+	// nothing cannot lose anything, and its error is not something a caller can act on. Turning a
+	// board render that read correctly into a 500 because the connection died on the way back to
+	// the pool would report a failure that did not happen.
+	defer func() { _ = tx.Rollback() }()
+	return fn(ctx, sqlitegen.New(tx))
+}
+
+// Close releases both pools. A closed store returns [ErrClosed] rather than panicking on a nil
 // pointer, because shutdown ordering is exactly where a late request arrives.
 func (d *DB) Close() error {
 	if d.sql == nil {
 		return nil
 	}
-	handle := d.sql
-	d.sql, d.queries = nil, nil
-	if err := handle.Close(); err != nil {
-		return fmt.Errorf("close database %s: %w", d.path, err)
+	handle, reader := d.sql, d.read
+	d.sql, d.read, d.queries = nil, nil, nil
+	// Both pools are closed and both errors are reported. Closing one and returning on its error
+	// would leave the other's connections open on a database the caller believes it has released,
+	// which is the failure [Open] closes a handle it could not ping to avoid.
+	var errs []error
+	if reader != nil {
+		if err := reader.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close read pool %s: %w", d.path, err))
+		}
 	}
-	return nil
+	if err := handle.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("close database %s: %w", d.path, err))
+	}
+	return errors.Join(errs...)
 }
 
 // IntegrityCheck runs `PRAGMA integrity_check` and reports what SQLite found.

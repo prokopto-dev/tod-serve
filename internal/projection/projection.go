@@ -124,38 +124,67 @@ type BoardFilter struct {
 func (s *Service) Board(
 	ctx context.Context, circleID core.CircleID, filter BoardFilter,
 ) ([]BoardEntry, bool, error) {
-	// The board is a read: no transaction, and the pool said so at the call.
+	// **Every read below comes from one snapshot, and that is what makes the row on screen a
+	// derivation that happened.**
 	//
-	// **`q` is the pool, not a snapshot, and this render is not isolated from a concurrent timer
-	// write.** Each read below is its own implicit transaction, so an override that commits
-	// between `ResolveTimers` and `cachedStates` gives this render the OLD timer beside the NEW
-	// cached row — and because the timer carries the clustering ε, the two can describe different
-	// derivations rather than merely different instants.
+	// The effective timer and the cached row are a PAIR: the timer carries the clustering ε the
+	// cached `died_at` was derived under, and it carries the offsets the window is rendered from.
+	// Read as two pooled statements — two implicit transactions — a timer write committing between
+	// them hands this render the OLD timer beside a `died_at` derived under the NEW one, and the
+	// board then shows a window with a confidence and an evidence count and nothing saying the two
+	// halves disagree. That is a confident mistake, which is the failure this project is built
+	// against. It was issue #17; [store.DB.InReadSnapshot] and ADR-0014 are what closed it.
 	//
-	// It is narrower than it was: before ADR-0013 the same render could catch a committed timer
-	// whose recomputation had not happened yet, or never would. That window is gone. This one is
-	// bounded by the gap between two statements, and the next render is correct.
+	// It is NOT [store.DB.InTx]: that takes the write lock at BEGIN — see `_txlock=immediate` —
+	// and wrapping the hottest read path in the product in one would serialise the whole instance
+	// behind the slowest reader.
 	//
-	// Closing it needs a READ snapshot, which this store cannot currently give: the DSN sets
-	// `_txlock=immediate`, so [store.DB.InTx] takes the WRITE lock at BEGIN and wrapping every
-	// board render in one would serialise the whole instance behind the slowest reader — the cost
-	// that pragma's own comment names. A deferred-transaction handle is a change to
-	// `internal/store` and a decision of its own; it is not this function's to make quietly.
-	//
-	// Tracked, with the whole causal chain and why optimistic retry is not the answer, at
-	// https://github.com/prokopto-dev/tod-serve/issues/17 — which is also where the next person to
-	// edit this line should look before assuming ADR-0013 introduced it.
-	q := s.db.Queries()
-	circle, err := s.circle(ctx, q, circleID)
-	if err != nil {
+	// **The catalogue LISTING is deliberately outside, and is the one read here that is not.** It
+	// goes to the pool because `catalogue.List` binds its own query set, and it is left there
+	// rather than hidden: what it supplies is target IDENTITY — name, zone, aliases,
+	// `is_quake_target` — which carries no ε and no offsets and is therefore not half of the pair
+	// above. It is not free of the general hazard, though: `catalogue.Create` writes a
+	// `raid_target` and its aliases in ONE transaction and `List` reads them as two statements, so
+	// a target created mid-render can be listed with an alias list that does not match its row.
+	// That is an admin-path inconsistency in a field the derivation never reads, and closing it
+	// means a `catalogue.List` that takes a query set — a change to `internal/catalogue`, not to
+	// this function.
+	var (
+		circle   sqlitegen.Circle
+		timers   map[core.RaidTargetID]catalogue.ResolvedTimer
+		cached   map[core.RaidTargetID]*sqlitegen.TargetStateCache
+		quakes   []consensus.Quake
+		reported []core.RaidTargetID
+	)
+	if err := s.db.InReadSnapshot(ctx, func(
+		ctx context.Context, q *sqlitegen.Queries,
+	) error {
+		var err error
+		if circle, err = s.circle(ctx, q, circleID); err != nil {
+			return err
+		}
+		if timers, err = s.catalogue.ResolveTimers(
+			ctx, q, circleID, core.Server(circle.Server)); err != nil {
+			return err
+		}
+		if cached, err = s.cachedStates(ctx, q, circleID); err != nil {
+			return err
+		}
+		if quakes, err = s.latestQuake(ctx, q, circleID); err != nil {
+			return err
+		}
+		// Read inside the snapshot as well, so a report appended mid-render cannot make this
+		// render rebuild a target against a cache map that predates it.
+		reported, err = s.reportedTargets(ctx, q, circleID)
+		return err
+	}); err != nil {
 		return nil, false, err
 	}
-	server := core.Server(circle.Server)
 
 	listing, err := s.catalogue.List(ctx, catalogue.ListFilter{
 		Expansion: filter.Expansion, Zone: filter.Zone, Query: filter.Query,
 		// No Server, deliberately: the entry's own timer is the CATALOGUE's and skips this
-		// circle's override. The effective timer comes from ResolveTimers below and nowhere else,
+		// circle's override. The effective timer comes from ResolveTimers above and nowhere else,
 		// and asking for the catalogue's would put a second timer in reach of a tired afternoon.
 		//
 		// No Limit either: the board sorts by `window_open_at`, which the catalogue does not know,
@@ -164,32 +193,29 @@ func (s *Service) Board(
 	if err != nil {
 		return nil, false, err
 	}
-	timers, err := s.catalogue.ResolveTimers(ctx, q, circleID, server)
-	if err != nil {
-		return nil, false, err
-	}
-	cached, err := s.cachedStates(ctx, circleID)
-	if err != nil {
-		return nil, false, err
-	}
-	quakes, err := s.latestQuake(ctx, q, circleID)
-	if err != nil {
-		return nil, false, err
-	}
 
 	// The read-miss rebuild. Only targets that HAVE reports are rebuilt: a target nobody has
 	// reported has nothing to cache, and writing a row of nulls for every mob in the game on the
 	// first board render would make the cache proportional to the catalogue rather than to the
 	// circle's activity.
-	reported, err := s.reportedTargets(ctx, circleID)
-	if err != nil {
-		return nil, false, err
-	}
+	//
+	// **It runs on the writing pool, outside the snapshot, because it writes** — a snapshot is
+	// `query_only` and would refuse it. What it is handed, though, is the snapshot's `timers`,
+	// `circle` and `quakes`, so the row it hands back is derived under the same timer the render
+	// is about to draw the window from: the pair above holds for a rebuilt row exactly as it does
+	// for a cached one.
+	//
+	// What that does not buy is the row it WRITES. A timer committing between the snapshot and
+	// this loop leaves a cache row derived under a superseded window, until the next report or the
+	// nightly verify replaces it. That is unchanged from before the snapshot — the same two reads
+	// were equally stale — and closing it means the read-miss rebuild becoming a transaction of
+	// its own on a read path, which is a bigger trade than this one.
 	for _, id := range reported {
 		if _, hit := cached[id]; hit {
 			continue
 		}
-		row, rebuildErr := s.recompute(ctx, q, circleID, id, circle, timers, quakes, "")
+		row, rebuildErr := s.recompute(ctx, s.db.Queries(), circleID, id, circle,
+			timers, quakes, "")
 		if rebuildErr != nil {
 			return nil, false, rebuildErr
 		}
@@ -374,10 +400,15 @@ func (s *Service) circle(
 	return row, nil
 }
 
+// cachedStates is every derived row this circle holds, keyed by target.
+//
+// It takes the query set for the same reason [Service.circle] does, and for one more: it is half
+// of the pair the board renders. The other half is the effective timer, and reading the two
+// through different query sets is what issue #17 was.
 func (s *Service) cachedStates(
-	ctx context.Context, circleID core.CircleID,
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID,
 ) (map[core.RaidTargetID]*sqlitegen.TargetStateCache, error) {
-	rows, err := s.db.Queries().ListTargetStates(ctx, circleID.String())
+	rows, err := q.ListTargetStates(ctx, circleID.String())
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
@@ -395,9 +426,9 @@ func (s *Service) cachedStates(
 // reportedTargets is every target this circle has reported anything about, which is exactly the
 // set that can have a cached state at all.
 func (s *Service) reportedTargets(
-	ctx context.Context, circleID core.CircleID,
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID,
 ) ([]core.RaidTargetID, error) {
-	rows, err := s.db.Queries().ListTodReportTargets(ctx, circleID.String())
+	rows, err := q.ListTodReportTargets(ctx, circleID.String())
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
@@ -457,9 +488,9 @@ func micros(v *int64) *core.Micros {
 
 // memberships is the circle's member rows, keyed by id, for rendering `reporters[]`.
 func (s *Service) memberships(
-	ctx context.Context, circleID core.CircleID,
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID,
 ) (map[string]sqlitegen.Membership, error) {
-	rows, err := s.db.Queries().ListMemberships(ctx, circleID.String())
+	rows, err := q.ListMemberships(ctx, circleID.String())
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}

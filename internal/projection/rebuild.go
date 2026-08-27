@@ -71,32 +71,66 @@ type Reporter struct {
 func (s *Service) Get(
 	ctx context.Context, circleID core.CircleID, targetID core.RaidTargetID, attribution bool,
 ) (Derived, error) {
-	// A derivation, not a write path: the pool, chosen at the call.
-	q := s.db.Queries()
-	circle, err := s.circle(ctx, q, circleID)
-	if err != nil {
+	// The derivation's inputs come from one snapshot, so reports, timer, quakes, revocations and
+	// the circle's config all describe one state of the database.
+	//
+	// **This one is defensive, and saying so is the point.** Unlike [Service.Board] it never holds
+	// the pair a timer write commits together: it re-derives from the report log instead of
+	// reading `target_state_cache`, so its answer comes from one timer whichever instant each read
+	// landed on. The only pair it reads that any transaction writes atomically is a `raid_target`
+	// and its aliases, and no alias reaches the derivation. So there is no interleaving to force,
+	// no behavioural gate to write, and this is not recorded in docs/concepts/invariants.md as
+	// though there were.
+	//
+	// It is here because the alternative is one derivation in this package reading the pool while
+	// the rest read a snapshot, and because it WRITES what it derives: the day some transaction
+	// does commit two of these rows, the wrong answer would be cached rather than merely drawn.
+	//
+	// `catalogue.Get` is outside it and reads the target and its aliases on the pool, so the
+	// `Target` rendered here carries that same admin-path tear — see the note on [Service.Board].
+	var (
+		circle  sqlitegen.Circle
+		timer   catalogue.ResolvedTimer
+		quakes  []consensus.Quake
+		rows    []sqlitegen.TodReport
+		revoked map[string]bool
+		members map[string]sqlitegen.Membership
+	)
+	if err := s.db.InReadSnapshot(ctx, func(
+		ctx context.Context, q *sqlitegen.Queries,
+	) error {
+		var err error
+		if circle, err = s.circle(ctx, q, circleID); err != nil {
+			return err
+		}
+		if timer, err = s.catalogue.ResolveTimer(
+			ctx, q, circleID, targetID, core.Server(circle.Server)); err != nil {
+			return err
+		}
+		if quakes, err = s.latestQuake(ctx, q, circleID); err != nil {
+			return err
+		}
+		if rows, err = q.ListTodReportsForTarget(ctx,
+			sqlitegen.ListTodReportsForTargetParams{
+				CircleID: circleID.String(), TargetID: targetID.String(),
+			}); err != nil {
+			return apierr.Wrap(apierr.CodeInternalError, err, "")
+		}
+		if revoked, err = s.revokedReporters(ctx, q, circleID); err != nil {
+			return err
+		}
+		if !attribution {
+			return nil
+		}
+		// Inside too: `reporters[]` names the members behind THESE rows, and reading the
+		// memberships afterwards could name a revocation the counts above do not include.
+		members, err = s.memberships(ctx, q, circleID)
+		return err
+	}); err != nil {
 		return Derived{}, err
 	}
+
 	target, err := s.catalogue.Get(ctx, targetID)
-	if err != nil {
-		return Derived{}, err
-	}
-	timer, err := s.catalogue.ResolveTimer(ctx, q, circleID, targetID, core.Server(circle.Server))
-	if err != nil {
-		return Derived{}, err
-	}
-	quakes, err := s.latestQuake(ctx, q, circleID)
-	if err != nil {
-		return Derived{}, err
-	}
-	rows, err := q.ListTodReportsForTarget(ctx,
-		sqlitegen.ListTodReportsForTargetParams{
-			CircleID: circleID.String(), TargetID: targetID.String(),
-		})
-	if err != nil {
-		return Derived{}, apierr.Wrap(apierr.CodeInternalError, err, "")
-	}
-	revoked, err := s.revokedReporters(ctx, q, circleID)
 	if err != nil {
 		return Derived{}, err
 	}
@@ -107,7 +141,12 @@ func (s *Service) Get(
 
 	now := s.clock.Now()
 	state := consensus.Derive(reports, quakes, timer.Timer, now, configOf(circle))
-	stored, err := s.storeOrDrop(ctx, q, circleID, targetID, state,
+	// The refresh is a write, so it is the writing pool: a snapshot is `query_only` and would
+	// refuse it. It carries the same residual as the board's read-miss rebuild — a timer
+	// committing after the snapshot leaves this row derived under a window that has since moved,
+	// until the next report or the nightly verify replaces it — and the same reason for leaving
+	// it there.
+	stored, err := s.storeOrDrop(ctx, s.db.Queries(), circleID, targetID, state,
 		rows, changeReason(state, rows, ""))
 	if err != nil {
 		return Derived{}, err
@@ -115,10 +154,6 @@ func (s *Service) Get(
 
 	view := toDerived(target, circle.Server, timer, state, stored)
 	if attribution {
-		members, memberErr := s.memberships(ctx, circleID)
-		if memberErr != nil {
-			return Derived{}, memberErr
-		}
 		view.Reporters, err = reportersOf(state, rows, members)
 		if err != nil {
 			return Derived{}, apierr.Wrap(apierr.CodeInternalError, err, "")
@@ -528,13 +563,29 @@ func (s *Service) recomputeForTimerChange(
 // rebuild that ran a query per mob would be the slowest thing the binary does, on a schedule
 // nobody watches.
 func (s *Service) Rebuild(ctx context.Context, circleID core.CircleID) (int, error) {
-	q := s.db.Queries()
-	circle, err := s.circle(ctx, q, circleID)
-	if err != nil {
-		return 0, err
-	}
-	states, err := s.deriveAll(ctx, circle)
-	if err != nil {
+	// One snapshot for the whole derivation, so the reports, timers, quakes and revocations it
+	// folds all describe one state of the database.
+	//
+	// Defensive, exactly as [Service.Get] is and for the same reason: it reads the log rather than
+	// the cache, so it never holds the pair a timer write commits together, and the one atomic
+	// pair it does read — a `raid_target` and its aliases — reaches no part of the derivation.
+	// There is no behavioural gate for it and this claims none. What makes it worth doing anyway
+	// is that this is the operator's `tod-serve rebuild-states`, run against a live instance, and
+	// it WRITES every row it derives.
+	var (
+		circle sqlitegen.Circle
+		states []derivedState
+	)
+	if err := s.db.InReadSnapshot(ctx, func(
+		ctx context.Context, q *sqlitegen.Queries,
+	) error {
+		var err error
+		if circle, err = s.circle(ctx, q, circleID); err != nil {
+			return err
+		}
+		states, err = s.deriveAll(ctx, q, circle)
+		return err
+	}); err != nil {
 		return 0, err
 	}
 	// Through storeOrDrop, not store: the predicate that decides whether a target has a row lives
@@ -543,8 +594,9 @@ func (s *Service) Rebuild(ctx context.Context, circleID core.CircleID) (int, err
 	// it stays true if that ever stops being so.
 	written := 0
 	for _, derived := range states {
-		row, storeErr := s.storeOrDrop(ctx, q, circleID, derived.targetID, derived.state,
-			derived.rows, derived.reason)
+		// The writing pool: the snapshot above is `query_only`, and this is the write.
+		row, storeErr := s.storeOrDrop(ctx, s.db.Queries(), circleID, derived.targetID,
+			derived.state, derived.rows, derived.reason)
 		if storeErr != nil {
 			return 0, storeErr
 		}
@@ -596,14 +648,18 @@ type derivedState struct {
 // A target whose every kill has been retracted is NOT one of those. Its rows are still there — the
 // log is append-only, so a retraction adds — so it is derived here like any other, and it keeps a
 // cached row saying there is no current ToD.
+//
+// **It takes the query set and issues every read through it**, so a caller can hand it a snapshot
+// and get a derivation whose reports, timers, quakes and revocations all describe one state of the
+// database. Binding its own pool here is what made [Service.Verify] able to diff a cached row
+// against a recomputation from a different instant and call the difference drift.
 func (s *Service) deriveAll(
-	ctx context.Context, circle sqlitegen.Circle,
+	ctx context.Context, q *sqlitegen.Queries, circle sqlitegen.Circle,
 ) ([]derivedState, error) {
 	circleID, err := core.ParseID[core.Circle](circle.ID)
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	q := s.db.Queries()
 	rows, err := q.ListTodReportsForCircle(ctx, circle.ID)
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
