@@ -255,10 +255,21 @@ either — `nparseplugins.prokopto.dev` runs on this same droplet and this same 
 identical HSTS label, holds a **Let's Encrypt** certificate, and returns
 `strict-transport-security: max-age=31536000`.
 
-And it deliberately omits one thing: a `loadbalancer.healthcheck`. With a single replica that can
-only ever empty the pool, and a router with no servers answers **404** — indistinguishable from the
-"no router yet" state this whole section is about. The deploy workflow checks the service itself,
-which is a better place to check it from.
+It also sets a `loadbalancer.healthcheck` on `/healthz`, and that label is what makes a failure
+**legible**. Measured against a real Traefik v3 with the Docker provider, because the whole question
+is which status code you see:
+
+| What you get | What it means |
+|---|---|
+| **404** | No router matched the host. Either the container is not up, or its labels are wrong |
+| **503** | A router matched, and every health-checked server behind it is unhealthy |
+| **502** | A router matched, the container is up, and nothing is listening on the port |
+
+The third row of the measurement is the one worth knowing: **without** that label, Traefik's Docker
+provider drops an unhealthy container from the service entirely, so an unhealthy container gives you
+a **404** — identical to a host Traefik has never heard of. With it, the same failure is a 503 that
+says what it is. An earlier revision of this file removed the check on the opposite assumption; the
+table above is what settled it.
 
 That third row is the reason this section exists. It is the same class of failure as everything else
 this runbook is built around: the wrong thing works well enough to look right.
