@@ -369,6 +369,17 @@ complete state the migration is about to change.
 Step 9's last check is not ceremony either. Without it, a `pull` that silently changed nothing looks
 exactly like a successful deploy — every other check passes against the container already there.
 
+### If a step goes green and the next one fails on `/healthz`
+
+Look at whether the deploy step actually printed `up -d`. A `docker compose run` or `exec` in a
+script fed to `bash -s` over ssh **attaches the script's own stdin** and eats the rest of it — bash
+reads EOF and the step exits **0**, having silently skipped everything after that command. `-T` does
+not fix it; `</dev/null` does. Gate `ACT003` now refuses a workflow that omits it.
+
+That is not a hypothetical: it is what the first production deploy of this pipeline did on
+2026-08-25. `migrate` ran, `up -d` never did, the step went green, and the verification afterwards
+spent thirty attempts reporting the symptom while the container had never been started.
+
 ### If the migration fails
 
 The workflow puts **both halves** of the previous release back — `compose.yaml.prev` over

@@ -43,7 +43,7 @@ else
   vacant PIN001 "workflows pinned to SHAs"
 fi
 
-# --- ACT001 / ACT002 — the GitHub Actions gates ------------------------------------------------
+# --- ACT001 / ACT002 / ACT003 — the GitHub Actions gates ---------------------------------------
 # The logic lives in scripts/act-gates.sh, which takes a DIRECTORY, so that test/repo/act_test.go
 # can point it at deliberately broken fixtures and require it to fire. That is not tidiness: the
 # first version of ACT001 — in the repository this was ported from — inspected only `run: |` and
@@ -58,6 +58,11 @@ fi
 # ACT002: `bash -n` over every extracted script. Workflow shell is not compiled, not linted and not
 # executed until a tag is pushed or a deploy is approved, so a broken script ships and is found at
 # the worst possible moment.
+#
+# ACT003: a `docker compose run` or `exec` that reads the script's own stdin. A workflow script
+# routinely reaches a remote shell ON stdin, both of those attach stdin, and the first one then eats
+# the rest of the script — bash reads EOF and the step exits 0 having skipped everything after it.
+# This gate exists because that shipped: `migrate` ran, `up -d` did not, the deploy went green.
 if compgen -G ".github/workflows/*.yml" >/dev/null; then
   if out=$(bash scripts/act-gates.sh expressions .github/workflows 2>&1); then
     pass ACT001 "no workflow interpolates an expression into a shell script"
@@ -72,9 +77,17 @@ if compgen -G ".github/workflows/*.yml" >/dev/null; then
     report ACT002 "${out%%$'\n'*}"
     printf '%s\n' "${out#*$'\n'}"
   fi
+
+  if out=$(bash scripts/act-gates.sh stdin .github/workflows 2>&1); then
+    pass ACT003 "$out workflow shell script(s) keep \`docker compose run/exec\` off the script's stdin"
+  else
+    report ACT003 "${out%%$'\n'*}"
+    printf '%s\n' "${out#*$'\n'}"
+  fi
 else
   vacant ACT001 "workflows keep expressions out of shell scripts"
   vacant ACT002 "workflow shell scripts parse"
+  vacant ACT003 "workflow scripts survive a docker compose run"
 fi
 
 # --- ENV001 / IMG001 — the deployment gates ----------------------------------------------------

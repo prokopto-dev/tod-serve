@@ -96,6 +96,34 @@ jobs:
       #
       # Values are passed through `env:` rather than interpolated into the script, so a crafted
       # dispatch input is data and never a line of shell (gate ACT001).
+      # The three repository variables this deploy cannot run without.
+      #
+      # Checked FIRST, because the failure without it is unhelpful and expensive: an unset
+      # TOD_DEPLOY_HOST reaches `scp` as an empty string and fails with
+      # `ssh: Could not resolve hostname : Name or service not known` — eight steps in, after the
+      # approval has been spent. That happened on the first real deploy of this workflow.
+      #
+      # They are VARIABLES rather than secrets precisely so this message can name them; a masked
+      # value would render the same failure as `hostname ***`.
+      - name: The deploy variables are set
+        env:
+          HOST: ${{ vars.TOD_DEPLOY_HOST }}
+          USER_NAME: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${HOST:-}" ]        || missing="${missing} vars.TOD_DEPLOY_HOST"
+          [ -n "${USER_NAME:-}" ]   || missing="${missing} vars.DEPLOY_USER"
+          [ -n "${DEPLOY_PATH:-}" ] || missing="${missing} vars.DEPLOY_PATH"
+          if [ -n "$missing" ]; then
+            echo "FATAL: unset repository variable(s):${missing}" >&2
+            echo "Settings -> Secrets and variables -> Actions -> Variables." >&2
+            echo "See docs/operations/deployment.md, step 4." >&2
+            exit 1
+          fi
+          echo "deploying to ${USER_NAME}@${HOST}:${DEPLOY_PATH}"
+
       - name: Resolve the image and the commit it was built from
         id: release
         env:
@@ -443,6 +471,18 @@ jobs:
           # manifest every later command resolves.
           docker pull "$image_ref"
 
+          # EVERY `docker compose run` AND `exec` BELOW REDIRECTS STDIN, and that is not decoration.
+          #
+          # This whole script arrives on the remote shell's STDIN — `ssh … bash -s` — and both
+          # `compose run` and `compose exec` ATTACH STDIN by default. Without `</dev/null` the first
+          # one swallows the rest of the script: bash reads EOF, exits 0, and the deploy reports
+          # success having silently skipped everything after it. That is not hypothetical. It is
+          # what happened on 2026-08-25: `migrate` ran, `up -d` never did, this step went green, and
+          # the verification below spent thirty attempts reporting the symptom.
+          #
+          # `-T` alone does NOT fix it — that disables the TTY, not the stdin attachment. Gate
+          # ACT003 checks every workflow for this.
+
           # --- QUIESCE, and only then snapshot and migrate ---------------------------------------
           #
           # THIS SERVICE IS ONE SQLITE WRITER (ADR-0001), and everything downstream of that
@@ -471,7 +511,7 @@ jobs:
             # `run --rm`, not `exec`: there is deliberately nothing running to exec into. The image
             # in .env is still the OLD one here, so this is the binary that wrote the database
             # taking its own snapshot.
-            if ! docker compose run --rm tod-serve backup --to "/backups/pre-${stamp}.db"; then
+            if ! docker compose run --rm -T tod-serve backup --to "/backups/pre-${stamp}.db" </dev/null; then
               echo "FATAL: could not snapshot the database; refusing to deploy." >&2
               echo "Migrations are forward-only and this file is the only undo there is." >&2
               echo "Restarting the old container; nothing has been changed." >&2
@@ -496,7 +536,7 @@ jobs:
             #
             # The greps fail CLOSED. If doctor's wording ever changes, this stops the deploy rather
             # than waving it through.
-            report="$(docker compose run --rm tod-serve doctor --db "/backups/pre-${stamp}.db" 2>&1 || true)"
+            report="$(docker compose run --rm -T tod-serve doctor --db "/backups/pre-${stamp}.db" 2>&1 </dev/null || true)"
             printf '%s\n' "$report"
             if ! printf '%s' "$report" | grep -q 'migrations are up to date' ||
                ! printf '%s' "$report" | grep -q 'integrity check passed'; then
@@ -554,7 +594,7 @@ jobs:
           # A one-shot service in compose.yaml would do this on every `up`, restarts included, which
           # is the failure the whole rule exists for. Here it runs once, after a human approved it,
           # as the only process holding the database.
-          if ! docker compose run --rm tod-serve migrate; then
+          if ! docker compose run --rm -T tod-serve migrate </dev/null; then
             echo "FATAL: the migration failed. Putting the previous release back." >&2
             # BOTH halves, because they are a pair: the old image has to come back up under the
             # compose file it was released with, not under the one that shipped with the release
@@ -712,7 +752,7 @@ jobs:
           cd "$1"
           # `exec`, so this runs inside the container that is already serving rather than starting a
           # second one against the same volume.
-          report="$(docker compose exec -T tod-serve /usr/local/bin/tod-serve doctor 2>&1 || true)"
+          report="$(docker compose exec -T tod-serve /usr/local/bin/tod-serve doctor 2>&1 </dev/null || true)"
           printf '%s\n' "$report"
 
           # A FIRST DEPLOY HAS NOT BEEN BOOTSTRAPPED YET, and that is not a failed deploy.
