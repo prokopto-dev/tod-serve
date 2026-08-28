@@ -12,7 +12,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
+	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 )
@@ -57,6 +60,7 @@ func newDoctorCommand() *cobra.Command {
 			checkDatabase(cmd.Context(), db, ok, bad)
 			instance, haveInstance := checkInstance(cmd.Context(), db, ok, warn, bad)
 			enabled := checkProviders(cmd.Context(), db, ok, warn, bad)
+			checkAdministrable(cmd.Context(), db, ok, bad)
 			checkHostAgreement(hostClaims(instance, haveInstance, enabled), ok, bad)
 
 			if problems > 0 {
@@ -157,6 +161,79 @@ func checkProviders(ctx context.Context, db *store.DB, ok, warn, bad func(string
 		bad("no identity provider is enabled: nobody can join any circle")
 	}
 	return live
+}
+
+// checkAdministrable answers the question doctor did not ask: can ANYBODY administer this
+// instance over the API?
+//
+// An instance nobody holds `instance.security.manage` on cannot add an identity provider, so its
+// only administrator is whoever has a shell on the box — and nothing on screen says so. The
+// console hides the Instance nav entry rather than explaining it, every CLI command succeeds, and
+// the deployment runbook's bootstrap used to end one grant short of a working operator. This is
+// where somebody looks, so this is where it is said.
+//
+// It asks [authz.ExpandInstance] rather than the ledger's rows, for the same reason the request
+// path does: `instance.owner` expands to the whole instance realm, so an identity granted it IS an
+// administrator, and a doctor reading raw rows would report a problem an operator had already
+// fixed. The two would then disagree about the same database, which is worse than either answer.
+//
+// **It is a PROBLEM and not a warning**, and it stays one on a fresh database. That state is
+// genuinely broken — it is simply broken in the way a brand-new instance is — and the deploy
+// waives it BY NAME alongside the missing instance row rather than by doctor going quiet, because
+// "nothing is bootstrapped yet" and "somebody's instance stopped having an administrator" are the
+// same report and only the deploy knows which it is looking at. The recovery path stays open
+// either way: `tod-serve instance grant` holds the database and needs no credential.
+func checkAdministrable(ctx context.Context, db *store.DB, ok, bad func(string)) {
+	grants, err := newGrantService(db)
+	if err != nil {
+		bad("the instance grant ledger is unusable: " + err.Error())
+		return
+	}
+	rows, err := grants.Current(ctx)
+	if err != nil {
+		bad("instance grants are unreadable: " + err.Error())
+		return
+	}
+
+	held := map[core.IdentityID][]authz.Permission{}
+	for _, g := range rows {
+		// Revoked decisions are in this listing too — `writeGrants` shows them on purpose — and a
+		// revocation is exactly what this check must not count.
+		if g.Decision == instancegrant.DecisionGranted {
+			held[g.IdentityID] = append(held[g.IdentityID], g.Permission)
+		}
+	}
+	admins := 0
+	for _, perms := range held {
+		if authz.ExpandInstance(authz.NewSet(perms...)).Has(authz.PermissionInstanceSecurityManage) {
+			admins++
+		}
+	}
+
+	if admins == 0 {
+		bad(fmt.Sprintf(
+			"nobody can administer this instance: no identity holds %s, so no principal can add "+
+				"or change an identity provider over the API.\n"+
+				"           Fix it here: `tod-serve %s %s` for an id, then\n"+
+				"           `tod-serve %s %s --%s <id> --%s %s`",
+			authz.PermissionInstanceSecurityManage,
+			verbInstance, verbIdentities,
+			verbInstance, verbGrant, flagIdentity, flagPermission, authz.PermissionInstanceOwner))
+		return
+	}
+	// The count is said out loud rather than a bare tick: "somebody can administer this" and "one
+	// person can, and they are on holiday" are different facts about the same instance.
+	ok(fmt.Sprintf("%d %s administer this instance (%s)",
+		admins, plural(admins, "identity can", "identities can"),
+		authz.PermissionInstanceSecurityManage))
+}
+
+// plural picks the wording. A report that says "1 identities" is a report somebody stops reading.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // hostClaim is one written-down copy of this instance's origin, and where it was written down.

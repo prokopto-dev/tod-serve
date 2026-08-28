@@ -6,9 +6,10 @@
 # operator follows are instructions CI runs on every build, rather than a page that was true once.
 #
 # It is deliberately the whole path and not a health check: migrate, init, seed, boot, redeem the
-# one-time owner code over HTTP, use the token that comes back, report a ToD, read the board, and
-# take a backup and check it. Every one of those is a step a real first deploy takes, and each has
-# a different way of being broken in an image that passes `/healthz`.
+# one-time owner code over HTTP, use the token that comes back, GRANT `instance.owner` to the
+# identity that redeeming created and reach the admin surface with it, report a ToD, read the
+# board, and take a backup and check it. Every one of those is a step a real first deploy takes,
+# and each has a different way of being broken in an image that passes `/healthz`.
 #
 # It runs `deploy/compose.local.yaml` rather than plain `docker run`, so the file that says "anyone
 # can run this at home" is the file being exercised. `compose.yaml` is NOT run here: it needs
@@ -174,9 +175,12 @@ ok "the console is served, with its own security headers"
 # --- redeem the one-time owner code, over HTTP ----------------------------------------------------
 # The code `init` printed, used the way a person actually uses it. This is the only way into a
 # fresh instance: nobody holds a credential and no route could authorise one.
+# The response HEADERS are kept as well as the body: an instance-realm route is session-only at
+# every scope, so the administrator half of this walkthrough cannot be driven with the PAT.
 curl -fsS --max-time 10 -X POST "$BASE/api/v1/join" \
   -H 'Content-Type: application/json' \
   -H "Idempotency-Key: smoke-join-$$" \
+  -D "$WORK/join.headers" \
   -d "{\"invite_code\":\"$CODE\",\"provider\":\"local\",\"credential\":{\"kind\":\"none\"},
        \"display_name\":\"Smoke Operator\",\"client\":{\"name\":\"smoke\",\"version\":\"1.0.0\"}}" \
   -o "$WORK/join.json" || { cat "$WORK/join.json" 2>/dev/null; die "join was refused"; }
@@ -206,6 +210,48 @@ curl -fsS --max-time 10 "$BASE/api/v1/me" -H "Authorization: Bearer $TOKEN" -o "
   || die "the token did not authenticate"
 grep -q "$CIRCLE" "$WORK/me.json" || { cat "$WORK/me.json"; die "/me does not name the circle"; }
 ok "the token authenticates and names the circle"
+
+# --- the last bootstrap step: somebody who can administer the instance -----------------------------
+# This is the end of docs/operations/deployment.md's first deploy, and it is here because the
+# runbook used to stop one command short of it: `instance.owner` was grantable, no route required
+# it, and `EffectiveForSession` was a plain union — so the grant the runbook told an operator to
+# make succeeded, wrote an audited ledger row, and handed them nothing.
+#
+# The cookie is read out of the response rather than kept in a jar: it carries the `__Host-`
+# prefix, so it is `Secure`, and curl will not send a Secure cookie back over the plain HTTP this
+# local profile serves. The SERVER is happy to accept it — the prefix is a rule about how a cookie
+# may be SET — so the header is built by hand here rather than the cookie being weakened for a test.
+SESSION="$(grep -i '^set-cookie: __Host-tod_session=' "$WORK/join.headers" \
+  | sed 's/.*__Host-tod_session=//' | cut -d';' -f1 | tr -d '\r')"
+[ -n "$SESSION" ] || { cat "$WORK/join.headers"; die "join set no session cookie"; }
+
+# Driven in both directions, because only the pair proves anything. A 403 first: without it the
+# 200 below could be a route that authorises everybody.
+STATUS="$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
+  -H "Cookie: __Host-tod_session=$SESSION" "$BASE/api/v1/admin/identity-providers")"
+[ "$STATUS" = "403" ] || die "the admin surface answered $STATUS before any grant, wanted 403"
+
+"${COMPOSE[@]}" run --rm tod-serve instance identities > "$WORK/identities.txt" \
+  || { cat "$WORK/identities.txt"; die "instance identities failed"; }
+IDENTITY="$(grep -oE '\b[0-9A-HJKMNP-TV-Z]{26}\b' "$WORK/identities.txt" | head -n 1)"
+[ -n "$IDENTITY" ] || { cat "$WORK/identities.txt"; die "instance identities printed no id"; }
+
+"${COMPOSE[@]}" run --rm tod-serve instance grant \
+  --identity "$IDENTITY" --permission instance.owner --reason "smoke" > "$WORK/grant.txt" \
+  || { cat "$WORK/grant.txt"; die "instance grant failed"; }
+
+# The SAME session, unchanged. The ledger is read on every request, so a grant takes effect on the
+# holder's next one rather than when their session expires.
+# `|| true` on the cat: with `-f` curl leaves no output file on a 403, and `set -e` applies inside
+# the branch following the final `||` — so a failing `cat` here would exit the script with the
+# status and none of the sentence, which is a smoke failure that says nothing about itself.
+curl -fsS --max-time 10 -H "Cookie: __Host-tod_session=$SESSION" \
+  "$BASE/api/v1/admin/identity-providers" -o "$WORK/providers.json" \
+  || { cat "$WORK/providers.json" 2>/dev/null || true
+       die "the admin surface is still refused after granting instance.owner"; }
+grep -q '"key":"local"' "$WORK/providers.json" \
+  || { cat "$WORK/providers.json"; die "the admin listing does not name the local provider"; }
+ok "instance.owner makes the instance administrable over the API, from the same session"
 
 # --- a ToD report, by NAME, which is what the plugin sends ----------------------------------------
 # `target_name` runs the resolve ladder server-side, so a client never has to hold a catalogue.
@@ -259,6 +305,10 @@ ok "a backup was taken against the running server"
   || { cat "$WORK/doctor.txt"; die "the backup did not pass doctor"; }
 grep -q 'integrity check passed' "$WORK/doctor.txt" || { cat "$WORK/doctor.txt"; die "no integrity check in the doctor report"; }
 grep -q 'no problems found' "$WORK/doctor.txt" || { cat "$WORK/doctor.txt"; die "doctor found problems in the backup"; }
+# And the copy carries the grant, not merely the schema: doctor reports who can administer the
+# instance, and a backup that lost the ledger would say nobody can.
+grep -q 'identity can administer this instance' "$WORK/doctor.txt" \
+  || { cat "$WORK/doctor.txt"; die "the backup has no administrator; the grant did not survive"; }
 ok "the backup passes integrity_check, foreign_key_check and doctor"
 
 # The copy holds the REPORT, not merely a schema. verify-states recomputes every target state from

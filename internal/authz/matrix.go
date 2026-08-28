@@ -120,15 +120,22 @@ func RolePermissions(r Role) Set {
 }
 
 // EffectiveForSession returns what a browser session may do: its role's permissions in its circle,
-// plus the instance-realm permissions its IDENTITY has been granted (ADR-0012). A session is not
-// narrowed by scopes; it is narrowed by step-up, which is a separate question asked per operation
-// — see [RequiresStepUp].
+// plus the instance-realm permissions its IDENTITY has been granted (ADR-0012), EXPANDED by
+// [ExpandInstance]. A session is not narrowed by scopes; it is narrowed by step-up, which is a
+// separate question asked per operation — see [RequiresStepUp].
 //
 // The instance set is a parameter rather than something this package reads, because it comes from
 // a table and this package holds no store. It is a union rather than a second lookup at the call
 // site so that "what may this principal do" has one answer computed in one place — the same reason
 // [EffectiveForToken] owns the intersection.
-func EffectiveForSession(r Role, instance Set) Set { return RolePermissions(r).Union(instance) }
+//
+// The expansion is here rather than at the ledger, deliberately. `instance_grant` records the
+// DECISION somebody made, and a ledger that stored five rows because one was granted would be a
+// ledger whose revocation of `instance.owner` left four rows behind. What was decided and what it
+// reaches are two different facts, and only the second belongs in this function.
+func EffectiveForSession(r Role, instance Set) Set {
+	return RolePermissions(r).Union(ExpandInstance(instance))
+}
 
 // EffectiveForToken returns role permissions ∩ token scopes: the capability floor, stated as code.
 //
@@ -139,6 +146,12 @@ func EffectiveForSession(r Role, instance Set) Set { return RolePermissions(r).U
 // token is bound to a membership, so a leaked token cannot reach one however the ledger reads.
 // TestScopes_NoScopeGrants_AnInstanceRealmPermission keeps the intersection empty from the other
 // side, so this stays true if a scope is ever widened.
+//
+// [Implies] is deliberately not applied here, and adding it would be the one way widening
+// `instance.owner` could do harm: a PAT would reach the instance realm through an expansion of a
+// set it is not supposed to have at all. There is no set to expand — the signature is what
+// enforces that — and TestPrincipal_APATCarryingEveryInstanceGrant_ReachesNoneOfThem asserts it
+// from the caller's side, where a Principal DOES carry a field an expansion could read.
 func EffectiveForToken(r Role, scopes []Scope) Set {
 	return RolePermissions(r).Intersect(GrantedByScopes(scopes))
 }

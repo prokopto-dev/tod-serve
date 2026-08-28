@@ -840,6 +840,13 @@ jobs:
           # EVERY problem is collected, and then the ones a genuine first deploy is ALLOWED to have
           # are subtracted by name. Anything left is red.
           #
+          # There are THREE of them, and the third arrived with `instance.owner`: doctor now says
+          # so when no identity can administer the instance, which on a first installation is true
+          # for the same reason the other two are — nothing has been bootstrapped into the volume
+          # this run created. It is a PROBLEM rather than a warning because on any LATER deploy it
+          # means somebody's instance stopped having an administrator, and that is invisible from
+          # outside: every HTTP check below passes on an instance nobody can configure.
+          #
           # The previous shape branched on the string "no instance row" and exited 0. Two things
           # were wrong with it. A missing instance row is not proof of a first deploy — an
           # established database whose singleton was deleted, or which was restored from the wrong
@@ -856,13 +863,14 @@ jobs:
           if [ "$first_deploy" = "true" ]; then
             # And the waiver is only accepted against the report a first installation ACTUALLY
             # produces. "No problems to subtract" is not evidence of the bootstrap state — it is
-            # equally what a report that never arrived looks like — so the two problems being
-            # waived have to be PRESENT before anything is waived.
+            # equally what a report that never arrived looks like — so every problem being waived
+            # has to be PRESENT before anything is waived.
             #
             # SINGLE quotes below: a backtick inside a double-quoted string is command
             # substitution, and this line runs on the droplet — it would have tried to execute the
             # verb it names. ACT002 cannot see that; `bash -n` parses it happily.
-            for expected in 'no instance row' 'no identity provider is enabled'; do
+            for expected in 'no instance row' 'no identity provider is enabled' \
+                            'nobody can administer this instance'; do
               printf '%s' "$report" | grep -q "$expected" && continue
               echo "FAILED: this run created the data volume, so nothing can have been" >&2
               echo "bootstrapped into it — yet doctor does not report \"${expected}\"." >&2
@@ -870,10 +878,11 @@ jobs:
               exit 1
             done
             echo 'NOTE: this run installed the data volume, so tod-serve init cannot have run.'
-            echo "The two problems that follow from that are expected here and nowhere else."
+            echo "The three problems that follow from that are expected here and nowhere else."
             problems="$(printf '%s\n' "$problems" \
               | grep -v 'no instance row' \
-              | grep -v 'no identity provider is enabled' || true)"
+              | grep -v 'no identity provider is enabled' \
+              | grep -v 'nobody can administer this instance' || true)"
           fi
 
           if [ -n "$problems" ]; then
@@ -887,6 +896,8 @@ jobs:
 
           if [ "$first_deploy" = "true" ]; then
             echo "nothing else is wrong. Bootstrap it: docs/operations/deployment.md, first deploy."
+            echo "It ends with 'tod-serve instance grant --permission instance.owner'; the third"
+            echo "waived problem above is doctor saying that step has not happened yet."
           else
             # The success LINE, not the exit code, so a doctor that changed its wording stops the
             # deploy rather than being waved through by an empty grep.

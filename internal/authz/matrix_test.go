@@ -216,7 +216,8 @@ func TestEffectiveForSession_AnInstanceGrant_AddsExactlyThatPermission(t *testin
 		}
 		require.True(t, got.Has(authz.PermissionCatalogueManage))
 		// The other four instance keys were not granted, so they are not held. A ledger is not a
-		// role: holding one instance permission implies none of the rest.
+		// role: every narrower key stays separately grantable, and `instance.owner` is the one
+		// key that implies any of the others — see the expansion tests below.
 		for _, p := range authz.InstancePermissions() {
 			if p == authz.PermissionCatalogueManage {
 				continue
@@ -239,6 +240,88 @@ func TestEffectiveForToken_EveryScopeAtOnce_ReachesNoInstancePermission(t *testi
 		got := authz.EffectiveForToken(role, every)
 		for _, p := range authz.InstancePermissions() {
 			require.False(t, got.Has(p),
+				"a %q token holding every scope reaches the instance-realm %q", role, p)
+		}
+	}
+}
+
+// `instance.owner` expands to the whole instance realm, which is what its catalogue entry has
+// always claimed and what nothing did until [authz.Implies] existed.
+//
+// The want set is built from [authz.InstancePermissions] — the REALM — rather than from
+// [authz.Implies], so this compares the expansion against the catalogue instead of against
+// itself. An `Implies` that returned an arbitrary subset would pass a test written the other way.
+func TestEffectiveForSession_InstanceOwner_ExpandsToTheWholeInstanceRealm(t *testing.T) {
+	t.Parallel()
+	grant := authz.NewSet(authz.PermissionInstanceOwner)
+	for _, role := range authz.Roles() {
+		got := authz.EffectiveForSession(role, grant)
+		for _, p := range authz.InstancePermissions() {
+			require.True(t, got.Has(p),
+				"a %q session granted instance.owner does not hold the instance-realm %q", role, p)
+		}
+		// And it widens the instance realm and nothing else: an expansion that reached into the
+		// role matrix would hand an observer with one grant whatever an owner's role implies.
+		want := authz.RolePermissions(role).Union(authz.NewSet(authz.InstancePermissions()...))
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("session capability for %q with instance.owner (-want +got):\n%s", role, diff)
+		}
+	}
+}
+
+// Every other key implies nothing, and the expansion is one pass deep.
+//
+// The second half is what lets [authz.ExpandInstance] be a single loop rather than a fixed point:
+// if a key `instance.owner` expands to ever implied something itself, one pass would silently drop
+// it and a session would hold a permission the catalogue says it does not.
+func TestImplies_TheExpansion_IsOnePassDeep(t *testing.T) {
+	t.Parallel()
+	expanding := 0
+	for _, def := range authz.Permissions() {
+		implied := authz.Implies(def.Key)
+		if def.Key != authz.PermissionInstanceOwner {
+			require.Zero(t, implied.Len(), "%q implies %s and only instance.owner may", def.Key, implied)
+			continue
+		}
+		expanding++
+		require.Positive(t, implied.Len())
+		for _, into := range implied.Slice() {
+			require.True(t, authz.IsInstanceRealm(into),
+				"instance.owner expands to the circle-realm %q, which a ledger cannot grant", into)
+			require.Zero(t, authz.Implies(into).Len(),
+				"instance.owner expands to %q, which implies more; one pass would drop it", into)
+		}
+	}
+	require.Equal(t, 1, expanding, "no key expands; the search space was empty")
+
+	// An unknown key expands to nothing rather than to everything, the same way an unknown role
+	// grants nothing: a key that fell out of the catalogue must fail closed.
+	require.Zero(t, authz.Implies(authz.Permission("nonsense")).Len())
+	require.Zero(t, authz.ExpandInstance(authz.Set{}).Len())
+}
+
+// The expansion never reaches a token, at any role, at every scope at once, whatever the ledger
+// records — because [authz.EffectiveForToken] takes no instance set to expand.
+//
+// This is the one way widening `instance.owner` could do harm: a key that reaches everything is
+// only safe while a leaked PAT cannot reach the key. ADR-0012's capability floor is what says it
+// cannot, and this is that claim stated against the widened catalogue rather than the old one.
+// TestPrincipal_APATCarryingEveryInstanceGrant_ReachesNoneOfThem is the same assertion one layer
+// up, where a Principal carries a field an expansion could actually read.
+func TestEffectiveForSession_TheExpansion_NeverReachesAToken(t *testing.T) {
+	t.Parallel()
+	every := make([]authz.Scope, 0, len(authz.Scopes()))
+	for _, def := range authz.Scopes() {
+		every = append(every, def.Key)
+	}
+	for _, role := range authz.Roles() {
+		byToken := authz.EffectiveForToken(role, every)
+		// The session with the same role and the grant DOES hold them, which is what stops this
+		// passing because the permissions are unreachable for everybody.
+		bySession := authz.EffectiveForSession(role, authz.NewSet(authz.PermissionInstanceOwner))
+		for _, p := range authz.InstancePermissions() {
+			require.True(t, bySession.Has(p), "the session arm of this test is vacuous for %q", p)
+			require.False(t, byToken.Has(p),
 				"a %q token holding every scope reaches the instance-realm %q", role, p)
 		}
 	}

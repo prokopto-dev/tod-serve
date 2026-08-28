@@ -85,9 +85,20 @@ func (p Principal) Can(perm authz.Permission) bool { return p.Effective().Has(pe
 // The realm branch is here rather than in the caller because asking a role about an instance-realm
 // key would answer false for a principal who holds the grant, and a 403 saying "your role does not
 // hold it" is exactly the confidently wrong answer this project is built against.
+//
+// The instance side asks [authz.ExpandInstance] rather than the raw ledger set for the same
+// reason. An identity granted `instance.owner` HAS been granted `instance.security.manage`, so a
+// bare `Has` would answer no here while [Principal.Can] answered yes — and the two disagreeing is
+// how `forbidden` and `insufficient_scope` end up pointing somebody at the wrong fix.
+//
+// A TOKEN holds no instance-realm permission, whatever this struct's `InstanceGrants` says. That
+// is the same floor [authz.EffectiveForToken] states as a signature, and it is checked here on the
+// credential KIND rather than left to the field being empty: the authenticator populates it only
+// on the session path, so today the two agree — and a `Holds` resting on that would answer
+// `insufficient_scope` the day they stopped, sending somebody to mint a scope no token can carry.
 func (p Principal) Holds(perm authz.Permission) bool {
 	if authz.IsInstanceRealm(perm) {
-		return p.InstanceGrants.Has(perm)
+		return p.Kind != KindPAT && authz.ExpandInstance(p.InstanceGrants).Has(perm)
 	}
 	return authz.RolePermissions(p.Role).Has(perm)
 }

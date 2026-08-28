@@ -74,6 +74,14 @@ it exists to make possible.
 - **Bad, because instance grants are console-only in this change.** `instance.owner` is grantable
   and reaches no route, so a console can use the identity providers but cannot hand that ability to
   a second operator without shell access.
+
+  > **Amended.** "Reaches no route" turned out to mean "grants nothing at all". `EffectiveForSession`
+  > was a plain union, so the `instance.owner` grant this ADR's bootstrap ends with wrote an
+  > audited ledger row and handed the operator no capability — while the very next thing the
+  > runbook asks of them needs `instance.security.manage`. `instance.owner` now EXPANDS to every
+  > instance-realm key, so that bootstrap produces a working administrator, and `tod-serve doctor`
+  > reports a PROBLEM when nobody holds one. Granting instance permissions over the API is still
+  > console-only, and that half of this bullet stands.
 - **Bad, because the effective grant is a query, not a row**, run per request behind a session
   where a capability list would have been one indexed read.
 - **Bad, because the ledger grows without bound**, in decisions rather than grants, and nothing
