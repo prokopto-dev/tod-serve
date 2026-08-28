@@ -185,9 +185,15 @@ func checkProviders(ctx context.Context, db *store.DB, ok, warn, bad func(string
 // instance is fine when nobody can log in to it, which is the exact failure the check exists for.
 //
 // `ListCirclesForIdentity` is the predicate rather than a new query, because it is already the one
-// `listCircles` serves: `revoked_at IS NULL AND deleted_at IS NULL`, joined on `identity_id` so a
-// service membership — which has none, a bot has an owner rather than an identity — cannot qualify.
-// Asking the question the API asks is what stops doctor growing a second definition of "can act".
+// `listCircles` serves: `revoked_at IS NULL AND deleted_at IS NULL`. Asking the question the API
+// asks is what stops doctor growing a second definition of "can act".
+//
+// It counts only HUMAN memberships, and that is a schema fact rather than a filter this function
+// applies: it joins on `identity_id`, and `ck_membership_human_has_an_identity` is the
+// biconditional `(kind = 'human') = (identity_id IS NOT NULL)`, so a service membership carrying
+// one is unrepresentable. Which matters here — a bot has an owner rather than an identity, and a
+// token reaches no instance-realm permission at any scope, so counting one would be the same
+// false-healthy in a narrower form.
 //
 // **It is a PROBLEM and not a warning**, and it stays one on a fresh database. That state is
 // genuinely broken — it is simply broken in the way a brand-new instance is — and the deploy
