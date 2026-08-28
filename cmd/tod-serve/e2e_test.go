@@ -370,6 +370,15 @@ func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, empty, "no instance permission has been granted")
 
+	// And `doctor` says so, which is where an operator looks. An instance nobody can administer is
+	// a broken instance even when every HTTP check passes, and nothing said it before: the console
+	// hides the Instance nav entry rather than explaining it and every command here exits 0.
+	unadministrable, err := captureCLI(t, "doctor", "--db", path)
+	require.Error(t, err, "doctor exited 0 on an instance nobody can administer:\n%s", unadministrable)
+	require.Contains(t, unadministrable, "nobody can administer this instance")
+	require.Contains(t, unadministrable, string(authz.PermissionInstanceOwner),
+		"doctor names the problem and not the fix")
+
 	// --- the operator joins, which is what creates the identity ---------------------------------
 	srv := newE2EServer(t, ctx, path)
 	joined, session := srv.join(t, ownerCode, "Operator")
@@ -399,17 +408,29 @@ func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 	require.Contains(t, string(byToken), `"code":"session_required"`)
 
 	// --- the console grants it -------------------------------------------------------------------
+	// `instance.owner`, which is what `init` printed above and what the deployment runbook says,
+	// rather than the narrower key this route declares. Those were different commands until
+	// `instance.owner` expanded to the instance realm: the grant the operator was told to make
+	// wrote a durable, audited decision that nothing consulted, and the next thing they were told
+	// to do answered 403. Driving the DOCUMENTED key is the point of this test.
 	granted, err := captureCLI(t, "instance", "grant", "--db", path,
-		"--identity", identityID, "--permission", string(authz.PermissionInstanceSecurityManage),
+		"--identity", identityID, "--permission", string(authz.PermissionInstanceOwner),
 		"--reason", "first operator")
 	require.NoError(t, err)
 	require.Contains(t, granted, "granted")
 
 	// Granting it twice is refused rather than appending a row where nothing happened.
 	_, err = captureCLI(t, "instance", "grant", "--db", path,
-		"--identity", identityID, "--permission", string(authz.PermissionInstanceSecurityManage))
+		"--identity", identityID, "--permission", string(authz.PermissionInstanceOwner))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "already records")
+
+	// The LEDGER holds one decision, not five. What was decided and what it reaches are two
+	// different facts, and storing the expansion would leave four rows behind on a revocation.
+	ledger, err := captureCLI(t, "instance", "grants", "--db", path)
+	require.NoError(t, err)
+	require.Contains(t, ledger, string(authz.PermissionInstanceOwner))
+	require.NotContains(t, ledger, string(authz.PermissionInstanceSecurityManage))
 
 	// --- and the same session, unchanged, now reaches the admin surface -------------------------
 	listed := srv.call(t, e2eRequest{
@@ -422,6 +443,14 @@ func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 	require.NoError(t, json.Unmarshal(listed, &page))
 	require.Len(t, page.Items, 1)
 	require.Equal(t, "local", page.Items[0].Key)
+
+	// And doctor now agrees, reading the same expansion the request above did. A doctor counting
+	// raw ledger rows would report a problem this operator had already fixed, and the two
+	// disagreeing about one database is worse than either answer alone.
+	administrable, err := captureCLI(t, "doctor", "--db", path)
+	require.NoError(t, err, "doctor still reports a problem after the documented grant:\n%s",
+		administrable)
+	require.Contains(t, administrable, "1 identity can administer this instance")
 
 	// --- configuring the Discord provider, which is the whole point ------------------------------
 	const clientSecret = "e2e-discord-client-secret"
@@ -479,7 +508,7 @@ func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 
 	// --- and the grant is revocable, which is what makes granting it worth doing ------------------
 	_, err = captureCLI(t, "instance", "revoke", "--db", path,
-		"--identity", identityID, "--permission", string(authz.PermissionInstanceSecurityManage),
+		"--identity", identityID, "--permission", string(authz.PermissionInstanceOwner),
 		"--reason", "handed over")
 	require.NoError(t, err)
 
@@ -488,6 +517,13 @@ func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 		Session: session, Want: http.StatusForbidden,
 	})
 	require.Contains(t, string(after), `"code":"forbidden"`)
+
+	// The expansion goes away with the decision that made it, and doctor says so again. Without
+	// this the whole expansion could be one-way — granted once and never taken back — which is the
+	// property ADR-0012 chose an append-only ledger over a capability list to avoid.
+	revoked, err := captureCLI(t, "doctor", "--db", path)
+	require.Error(t, err, "doctor exited 0 after the last administrator was revoked:\n%s", revoked)
+	require.Contains(t, revoked, "nobody can administer this instance")
 
 	// Both decisions survive. The ledger IS the audit record for an instance permission, because
 	// audit_log.circle_id is NOT NULL and an instance grant belongs to no circle.

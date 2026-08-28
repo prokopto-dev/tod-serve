@@ -12,7 +12,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
+	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 )
@@ -57,6 +60,7 @@ func newDoctorCommand() *cobra.Command {
 			checkDatabase(cmd.Context(), db, ok, bad)
 			instance, haveInstance := checkInstance(cmd.Context(), db, ok, warn, bad)
 			enabled := checkProviders(cmd.Context(), db, ok, warn, bad)
+			checkAdministrable(cmd.Context(), db, ok, bad)
 			checkHostAgreement(hostClaims(instance, haveInstance, enabled), ok, bad)
 
 			if problems > 0 {
@@ -157,6 +161,151 @@ func checkProviders(ctx context.Context, db *store.DB, ok, warn, bad func(string
 		bad("no identity provider is enabled: nobody can join any circle")
 	}
 	return live
+}
+
+// checkAdministrable answers the question doctor did not ask: can ANYBODY administer this
+// instance over the API?
+//
+// An instance nobody holds `instance.security.manage` on cannot add an identity provider, so its
+// only administrator is whoever has a shell on the box — and nothing on screen says so. The
+// console hides the Instance nav entry rather than explaining it, every CLI command succeeds, and
+// the deployment runbook's bootstrap used to end one grant short of a working operator. This is
+// where somebody looks, so this is where it is said.
+//
+// It asks [authz.ExpandInstance] rather than the ledger's rows, for the same reason the request
+// path does: `instance.owner` expands to the whole instance realm, so an identity granted it IS an
+// administrator, and a doctor reading raw rows would report a problem an operator had already
+// fixed. The two would then disagree about the same database, which is worse than either answer.
+//
+// **A grant is not enough, and that is the second half.** An instance grant is on an IDENTITY, and
+// an identity only reaches a request through a membership: `Authenticator.membership` reads one on
+// EVERY call and refuses a revoked one, or one in a deleted circle. The ledger outlives both — a
+// revocation is a membership row, not a grant row — so an identity can hold `instance.owner` while
+// every credential it could present is refused. Counting it would be this report saying an
+// instance is fine when nobody can log in to it, which is the exact failure the check exists for.
+//
+// `ListCirclesForIdentity` is the predicate rather than a new query, because it is already the one
+// `listCircles` serves: `revoked_at IS NULL AND deleted_at IS NULL`. Asking the question the API
+// asks is what stops doctor growing a second definition of "can act".
+//
+// It counts only HUMAN memberships, and that is a schema fact rather than a filter this function
+// applies: it joins on `identity_id`, and `ck_membership_human_has_an_identity` is the
+// biconditional `(kind = 'human') = (identity_id IS NOT NULL)`, so a service membership carrying
+// one is unrepresentable. Which matters here — a bot has an owner rather than an identity, and a
+// token reaches no instance-realm permission at any scope, so counting one would be the same
+// false-healthy in a narrower form.
+//
+// **It is a PROBLEM and not a warning**, and it stays one on a fresh database. That state is
+// genuinely broken — it is simply broken in the way a brand-new instance is — and the deploy
+// waives it BY NAME alongside the missing instance row rather than by doctor going quiet, because
+// "nothing is bootstrapped yet" and "somebody's instance stopped having an administrator" are the
+// same report and only the deploy knows which it is looking at. The recovery path stays open
+// either way: `tod-serve instance grant` holds the database and needs no credential.
+func checkAdministrable(ctx context.Context, db *store.DB, ok, bad func(string)) {
+	grants, err := newGrantService(db)
+	if err != nil {
+		bad("the instance grant ledger is unusable: " + err.Error())
+		return
+	}
+	rows, err := grants.Current(ctx)
+	if err != nil {
+		bad("instance grants are unreadable: " + err.Error())
+		return
+	}
+
+	held := map[core.IdentityID][]authz.Permission{}
+	for _, g := range rows {
+		// Revoked decisions are in this listing too — `writeGrants` shows them on purpose — and a
+		// revocation is exactly what this check must not count.
+		if g.Decision == instancegrant.DecisionGranted {
+			held[g.IdentityID] = append(held[g.IdentityID], g.Permission)
+		}
+	}
+	granted, admins := 0, 0
+	for identityID, perms := range held {
+		if !authz.ExpandInstance(authz.NewSet(perms...)).Has(authz.PermissionInstanceSecurityManage) {
+			continue
+		}
+		granted++
+		live, err := canAuthenticate(ctx, db, identityID)
+		if err != nil {
+			bad(err.Error())
+			return
+		}
+		if live {
+			admins++
+		}
+	}
+
+	if admins == 0 {
+		// Two states, two REMEDIES, so two messages. "Nobody was granted it" is answered by a
+		// grant. "They hold it and cannot log in" is not: the ledger already records the decision,
+		// so `instance grant` refuses it with ErrNoChange, and an operator following that advice
+		// would be told nothing to do about an instance nobody can administer.
+		//
+		// Both open with the same clause, deliberately: `.github/workflows/deploy.yml` subtracts
+		// this problem by name on a first installation, and a wording that varied would waive one
+		// state and fail the other for no reason either of them chose.
+		//
+		// The identities that were dropped are COUNTED rather than passed over. A filter that
+		// silently removes the last administrator is how this check would come to report the exact
+		// state it was written to find.
+		const lead = "nobody can administer this instance: "
+		if granted == 0 {
+			bad(fmt.Sprintf(
+				lead+"no identity holds %s, so no principal can add or change an identity "+
+					"provider over the API.\n"+
+					"           Fix it here: `tod-serve %s %s` for an id, then\n"+
+					"           `tod-serve %s %s --%s <id> --%s %s`",
+				authz.PermissionInstanceSecurityManage,
+				verbInstance, verbIdentities,
+				verbInstance, verbGrant, flagIdentity, flagPermission,
+				authz.PermissionInstanceOwner))
+			return
+		}
+		bad(fmt.Sprintf(
+			lead+"%d %s %s and %s live membership — revoked, or in a circle "+
+				"that was deleted — so no session can carry it.\n"+
+				"           The grant is already recorded, so granting it again is refused. "+
+				"Reinstate a membership,\n"+
+				"           or grant %s to somebody who has one: `tod-serve %s %s`",
+			granted, plural(granted, "identity holds", "identities hold"),
+			authz.PermissionInstanceSecurityManage,
+			plural(granted, "has no", "none of them has a"),
+			authz.PermissionInstanceOwner, verbInstance, verbIdentities))
+		return
+	}
+	// The count is said out loud rather than a bare tick: "somebody can administer this" and "one
+	// person can, and they are on holiday" are different facts about the same instance.
+	ok(fmt.Sprintf("%d %s administer this instance (%s)",
+		admins, plural(admins, "identity can", "identities can"),
+		authz.PermissionInstanceSecurityManage))
+}
+
+// canAuthenticate reports whether this identity has a membership a credential could actually be
+// bound to: live, human, and in a circle that still exists.
+//
+// It is a query per candidate rather than one join, and that is affordable because the candidates
+// are the identities already holding an instance permission — a handful on any instance, and this
+// is a diagnostic somebody runs by hand.
+func canAuthenticate(ctx context.Context, db *store.DB, identityID core.IdentityID) (bool, error) {
+	// The parameter is a pointer because `membership.identity_id` is nullable — a service
+	// membership has none. A non-nil one is what asks about a person.
+	id := identityID.String()
+	rows, err := db.Queries().ListCirclesForIdentity(ctx, &id)
+	if err != nil {
+		return false, fmt.Errorf(
+			"memberships for identity %s are unreadable: %w", identityID, err)
+	}
+	return len(rows) > 0, nil
+}
+
+// plural picks the wording. A report that says "1 identities" is a report somebody stops reading.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // hostClaim is one written-down copy of this instance's origin, and where it was written down.

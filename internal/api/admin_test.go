@@ -517,6 +517,32 @@ func TestGetCurrentPrincipal_AnInstanceGrant_ReachesTheEffectivePermissions(t *t
 	require.NotContains(t, view.Permissions, string(authz.PermissionOpsRead))
 }
 
+// `/me` is how the CONSOLE discovers what to show, and `instance.owner` has to reach it whole.
+//
+// `web/src/app/Shell.tsx` gates the Instance nav entry on `instance.security.manage` and simply
+// HIDES it when the effective set does not carry one — so an operator who followed the runbook,
+// granted `instance.owner` and saw no Instance tab had nothing on screen pointing at the cause.
+// Nothing in `web/` changes for this: the expansion reaches the console because the console reads
+// this response, which is why the assertion belongs here.
+func TestGetCurrentPrincipal_InstanceOwner_ListsEveryInstanceRealmPermission(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	session, owner := h.adminSession(t)
+	h.grantInstance(owner, authz.PermissionInstanceOwner)
+
+	got := h.do(request{Method: http.MethodGet, Path: api.BasePath + "/me", Session: session})
+	require.Equal(t, http.StatusOK, got.Status, got.Body)
+	var view api.PrincipalView
+	require.NoError(t, json.Unmarshal([]byte(got.Body), &view))
+
+	want := append(authz.RolePermissions(authz.RoleOwner).Slice(), authz.InstancePermissions()...)
+	require.ElementsMatch(t, permissionStrings(want), view.Permissions)
+
+	// The one the console actually branches on, named rather than left to the set comparison: it
+	// is the difference between an Instance tab and no explanation.
+	require.Contains(t, view.Permissions, string(authz.PermissionInstanceSecurityManage))
+}
+
 func permissionStrings(perms []authz.Permission) []string {
 	out := make([]string, 0, len(perms))
 	for _, p := range perms {

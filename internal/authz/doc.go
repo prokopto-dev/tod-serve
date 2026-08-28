@@ -31,7 +31,20 @@
 // not read the table: which grants an identity holds is a question for the store, and
 // [EffectiveForSession] takes the answer as an argument.
 //
-// A token reaches none of them at any scope. That is not a rule stated here so much as an
-// arithmetic consequence: no scope in [Scopes] grants an instance-realm key, so the intersection
-// in [EffectiveForToken] is empty however the ledger reads.
+// # One expansion
+//
+// `instance.owner` grants every other instance-realm key, through [Implies] and [ExpandInstance]
+// (ADR-0015). It is the only implication in the catalogue and it runs in one direction from one
+// key, which is what keeps it short of the instance role enum ADR-0012 rejected: every narrower
+// key is still separately grantable, so handing somebody `ops.read` for a dashboard hands over
+// nothing else.
+//
+// The expansion is applied in [EffectiveForSession] rather than at the ledger. What was DECIDED
+// and what it reaches are two different facts, and a ledger that stored the expansion would leave
+// four rows standing when the one that caused them was revoked.
+//
+// A token reaches none of them at any scope, expansion included. That is not a rule stated here so
+// much as an arithmetic consequence: no scope in [Scopes] grants an instance-realm key, so the
+// intersection in [EffectiveForToken] is empty however the ledger reads — and that function takes
+// no instance set to expand in the first place.
 package authz

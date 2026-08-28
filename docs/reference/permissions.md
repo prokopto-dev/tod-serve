@@ -100,3 +100,13 @@ Session and step-up only. No PAT scope reaches any of these, and `TestCapability
 ### Not in the floor, deliberately
 
 `invite.create` is reachable by a token while `token.mint` is not. An invite is time-boxed, single-use, role-capped below `owner` and fully audited, so a leaked bot token can add a visible, revocable member — not seize the circle. A minted PAT has none of those properties.
+
+## Expansions
+
+A permission that grants others — [ADR-0015](../adr/0015-instance-owner-implies-the-instance-realm.md). Everything not listed here grants exactly itself: this is the only implication in the catalogue, and `TestPermissions_EveryPermission_IsRequiredByARouteOrExpandsToOnesThatAre` is what stops a key expanding into nothing while its summary says otherwise.
+
+| Permission | Also grants |
+|---|---|
+| `instance.owner` | `catalogue.manage`, `instance.circle.create`, `instance.security.manage`, `ops.read` |
+
+An expansion widens a SESSION and never a token: `EffectiveForToken` takes no instance set, so a leaked personal access token reaches none of it at any scope.

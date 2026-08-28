@@ -256,6 +256,55 @@ func InstancePermissions() []Permission {
 	return out
 }
 
+// Implies returns what holding p grants BEYOND p itself, and is empty for every key but one.
+//
+// `instance.owner` expands to the whole instance realm. Its catalogue entry has always described
+// it as "whatever an instance administrator can do that has no narrower key", and until this
+// function existed that description was a fiction: [EffectiveForSession] was a plain union, no
+// route requires `instance.owner`, and so the grant the deployment runbook told an operator to
+// make handed them nothing. The expansion is what makes the description true.
+//
+// It is EXPANSION rather than a second matrix on purpose, and ADR-0015 is where that is argued:
+// ADR-0012 rejected implication as the GRANTING MODEL — a role enum, or a boolean with the rest
+// derived in storage — and this implies in one direction from one key, at the authorization
+// boundary, with every narrower key still separately grantable. So granting `ops.read` for a
+// dashboard still hands over nothing else, which is ADR-0012's consequence and is unchanged.
+//
+// The expansion is derived from [Realm] rather than listed, so an instance-realm permission added
+// to the catalogue is one an instance owner holds without anybody remembering to append to
+// anything. TestPermissions_EveryPermission_IsRequiredByARouteOrExpandsToOnesThatAre is what stops
+// this becoming a key that expands into nothing again.
+//
+// It says nothing about tokens, and must not: [EffectiveForToken] takes no instance set, so a
+// leaked PAT reaches nothing here however this reads. That is the ADR-0012 capability floor, and
+// TestEffectiveForSession_TheExpansion_NeverReachesAToken asserts it from this side.
+func Implies(p Permission) Set {
+	if p != PermissionInstanceOwner {
+		return Set{}
+	}
+	var out []Permission
+	for _, key := range InstancePermissions() {
+		if key != PermissionInstanceOwner {
+			out = append(out, key)
+		}
+	}
+	return NewSet(out...)
+}
+
+// ExpandInstance returns the instance-realm permissions an identity effectively holds, given the
+// ones `instance_grant` records for it.
+//
+// One pass, not a fixed point: [Implies] is non-empty for exactly one key and expands to keys that
+// imply nothing, and TestImplies_TheExpansion_IsOnePassDeep is what keeps that true. A transitive
+// closure here would be machinery for a graph this catalogue does not have.
+func ExpandInstance(granted Set) Set {
+	out := granted
+	for _, p := range granted.Slice() {
+		out = out.Union(Implies(p))
+	}
+	return out
+}
+
 // IsInstanceRealm reports whether the permission is granted at the instance level rather than by a
 // circle membership's role. An unknown key is not: a permission that fell out of the catalogue must
 // fail closed in both directions.

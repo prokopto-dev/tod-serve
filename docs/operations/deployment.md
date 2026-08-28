@@ -276,10 +276,12 @@ this runbook is built around: the wrong thing works well enough to look right.
 
 ### 6. First deploy
 
-The image has never run against this volume, so the first time through has two steps the workflow
-does not do: creating the instance, and loading the catalogue. Both are one-off, and both are
-commands rather than API calls because on a fresh database nobody holds a credential and there is no
-principal any HTTP route could authorise.
+The image has never run against this volume, so the first time through has three steps the workflow
+does not do: loading the catalogue, creating the instance, and granting somebody the ability to
+administer it. All three are one-off, and all three are commands rather than API calls because on a
+fresh database nobody holds a credential and there is no principal any HTTP route could authorise.
+`deploy/smoke.sh` is the executed version of everything below and CI runs it on every build, so
+these instructions are ones a machine follows rather than a page that was true once.
 
 ```bash
 gh workflow run Deploy -f image_tag=edge -f source_ref=main
@@ -308,9 +310,33 @@ docker compose run --rm tod-serve instance identities
 docker compose run --rm tod-serve instance grant --identity <id> --permission instance.owner
 ```
 
-That grant is what makes the instance administrable over the API, adding the Discord provider
-included — see [ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md) and
-[the Discord walkthrough](discord-app.md).
+**That grant is the end of the bootstrap, and until it is made nobody can administer this
+instance.** `instance.owner` expands to every instance-realm permission — registering an identity
+provider, managing the raid-target catalogue, creating a circle, reading diagnostics — so this one
+command is what makes the next section possible. It is granted to an **identity**, never to a
+membership, so no personal access token reaches it at any scope
+([ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md)); administering the instance is
+something you do signed in to the console.
+
+> **This used to stop one command short.** `instance.owner` was grantable and no route required it,
+> so the command above succeeded, wrote an audited ledger row, and handed the operator nothing —
+> and the next section then failed with `403 forbidden`. The console compounded it by hiding the
+> Instance nav entry rather than explaining why it was missing. Two things changed: the permission
+> now expands, and `tod-serve doctor` reports a **PROBLEM** when no identity holds
+> `instance.security.manage`, so an instance nobody can administer says so where an operator looks.
+
+Check the bootstrap finished before going on. `doctor` names the state directly:
+
+```bash
+docker compose run --rm tod-serve doctor | grep administer
+#   ok       1 identity can administer this instance (instance.security.manage)
+```
+
+`tod-serve instance grant` needs the database and no credential, which is also why it is the
+**recovery** path: an instance whose last administrator was revoked is still administrable from
+here, and that is why there is no `last_owner` rule at the instance level. Grant a second operator
+early — the count `doctor` prints is there so "one administrator" and "one administrator on
+holiday" are not the same line.
 
 **Timers are not bundled and never will be.** Respawn and variance numbers are community-derived and
 disputed; an instance without them reports `no_timer` everywhere and still records every ToD
@@ -338,7 +364,9 @@ echo | openssl s_client -connect tod.prokopto.dev:443 -servername tod.prokopto.d
 
 The deploy runs `doctor` for you at the end and fails red on a problem — including the one nothing
 else catches, a `public_url`, `$TOD_PUBLIC_URL` and `redirect_uri` that do not name the same origin.
-It excuses exactly one state, `no instance row`, because on a first deploy `init` has not run yet.
+It excuses exactly three, and only on a first installation: `no instance row`, `no identity provider
+is enabled` and `nobody can administer this instance`. All three are what a volume this run created
+looks like; on any later deploy each of them means somebody's instance lost something.
 
 `/readyz` says *why* when it is not ready. "the database is behind the migrations this binary
 embeds" means the migrate step did not run; "the database is not reachable" means the `/data` volume

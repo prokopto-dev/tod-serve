@@ -6,6 +6,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
+	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 )
@@ -14,8 +18,21 @@ import (
 //
 // It is a fully HEALTHY instance apart from whatever the caller makes disagree, because a doctor
 // test that leaves other problems in place would pass on its exit code without the check under test
-// ever firing.
+// ever firing. That includes an ADMINISTRATOR: an instance nobody holds `instance.security.manage`
+// on is a problem in its own right, and one that would otherwise fail every case below.
 func healthyInstance(t *testing.T, publicURL, redirectURI string) string {
+	t.Helper()
+	path := instanceWithNoAdministrator(t, publicURL, redirectURI)
+	db := openCopy(t, path)
+	grantAdministrator(t, db, testProviderID, testCircleID, authz.PermissionInstanceOwner)
+	require.NoError(t, db.Close())
+	return path
+}
+
+// instanceWithNoAdministrator is [healthyInstance] up to the last bootstrap step: an instance row
+// and one enabled provider, and nobody who can administer it. It is what `tod-serve init` leaves
+// behind, which is why it is a fixture of its own rather than an inlined half of the one above.
+func instanceWithNoAdministrator(t *testing.T, publicURL, redirectURI string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "tod.db")
 	_, err := captureCLI(t, "migrate", "--db", path)
@@ -32,14 +49,141 @@ func healthyInstance(t *testing.T, publicURL, redirectURI string) string {
 	issuer := "https://issuer.example.com"
 	_, err = db.Queries().CreateIdentityProvider(t.Context(),
 		sqlitegen.CreateIdentityProviderParams{
-			ID: "01M0000000000000000000000A", Key: "oidc", Kind: "oidc",
+			ID: testProviderID, Key: "oidc", Kind: "oidc",
 			DisplayName: "OIDC", Enabled: 1, VerifiableSubject: 1,
 			Issuer: &issuer, ClientID: &clientID, RedirectUri: &redirectURI,
 			CreatedAt: 1, UpdatedAt: 1,
 		})
 	require.NoError(t, err)
+	_, err = db.Queries().CreateCircle(t.Context(), sqlitegen.CreateCircleParams{
+		CircleID: testCircleID, Name: "Ops", NameNorm: "ops", Server: "blue", Timezone: "UTC",
+		MinReportersToSupersede: 2, RevokeInvalidatesInvites: 0,
+		State: schemaenum.CircleStateActive, CreatedAt: 1, UpdatedAt: 1,
+	})
+	require.NoError(t, err)
 	require.NoError(t, db.Close())
 	return path
+}
+
+const (
+	// testProviderID is the provider [instanceWithNoAdministrator] writes, and the one an identity
+	// hangs off.
+	testProviderID = "01M0000000000000000000000A"
+	// testCircleID is the circle an administrator's membership lives in. A grant is not enough on
+	// its own — see [checkAdministrable] — so the fixture has to write one.
+	testCircleID = "01M0000000000000000000000Z"
+)
+
+// grantAdministrator finishes the bootstrap: it creates the identity a redeemed owner code would
+// have created, and grants it `instance.owner` through the real ledger.
+//
+// It exists because "an instance with an instance row and a provider" is NOT a healthy instance —
+// nobody can administer it — and a doctor fixture that stopped there would leave every assertion
+// about some other check passing over an unrelated PROBLEM. Which is the confusion this whole
+// change is about: `init` having run is not the end of the bootstrap.
+//
+// The identity is inserted directly because an identity is created by JOINING a circle and that
+// needs a server; the GRANT goes through `instancegrant.Service` over the real table, so a schema
+// the service could not actually write is a red test rather than a green one.
+func grantAdministrator(
+	t *testing.T, db *store.DB, providerID, circleID string, perms ...authz.Permission,
+) core.IdentityID {
+	t.Helper()
+	return seedIdentity(t, db, providerID, circleID, 0, perms...)
+}
+
+// seedIdentity writes the nth identity on this instance, A LIVE HUMAN MEMBERSHIP for it, and each
+// permission as granted.
+//
+// The membership is not decoration. An instance grant is on an identity, but the identity only
+// reaches a request through a membership — `Authenticator.membership` reads one on every call and
+// refuses a revoked one, or one in a deleted circle. So an identity with a grant and no live
+// membership holds a permission nothing can carry, and a fixture that omitted the membership
+// would let [checkAdministrable] pass by counting exactly that.
+//
+// `n` is the caller's, not a counter: package-level mutable state is banned here and a fixture
+// that numbered itself would hand two parallel tests the same id. It is the last ULID character,
+// so `n` is bounded by the alphabet — which is more identities than any doctor test needs.
+func seedIdentity(
+	t *testing.T, db *store.DB, providerID, circleID string, n int, perms ...authz.Permission,
+) core.IdentityID {
+	t.Helper()
+	require.Less(t, n, 26, "seedIdentity only has one character to number identities with")
+	suffix := string(rune('A' + n))
+	id := "01M0000000000000000000000" + suffix
+	_, err := db.Queries().CreateIdentity(t.Context(), sqlitegen.CreateIdentityParams{
+		ID: id, ProviderID: providerID,
+		Subject: "operator-" + suffix, DisplayName: "Operator " + suffix,
+		CreatedAt: 1, UpdatedAt: 1,
+	})
+	require.NoError(t, err)
+	_, err = db.Queries().CreateMembership(t.Context(), sqlitegen.CreateMembershipParams{
+		ID: membershipIDFor(suffix), CircleID: circleID, IdentityID: &id,
+		Kind:        schemaenum.MembershipKindHuman,
+		DisplayName: "Operator " + suffix, DisplayNameNorm: "operator-" + suffix,
+		Role:     string(authz.RoleOwner),
+		JoinedAt: 1, CreatedAt: 1, UpdatedAt: 1,
+	})
+	require.NoError(t, err)
+
+	identityID, err := core.ParseID[core.Identity](id)
+	require.NoError(t, err)
+	grants, err := newGrantService(db)
+	require.NoError(t, err)
+	for _, perm := range perms {
+		_, err = grants.Decide(t.Context(), instancegrant.DecideRequest{
+			IdentityID: identityID, Permission: perm,
+			Decision: instancegrant.DecisionGranted, Reason: "fixture",
+		})
+		require.NoError(t, err)
+	}
+	return identityID
+}
+
+// membershipIDFor is the membership [seedIdentity] writes for the nth identity.
+func membershipIDFor(suffix string) string { return "01M0000000000000000000001" + suffix }
+
+// revokeMembershipOf is one of the two ways a grant outlives the principal that could carry it.
+func revokeMembershipOf(t *testing.T, db *store.DB, n int) {
+	t.Helper()
+	at := int64(2)
+	id := membershipIDFor(string(rune('A' + n)))
+	_, err := db.Queries().RevokeMembership(t.Context(), sqlitegen.RevokeMembershipParams{
+		RevokedAt: &at, RevokedByMembershipID: &id, UpdatedAt: at,
+		CircleID: testCircleID, ID: id,
+	})
+	require.NoError(t, err)
+}
+
+// deleteTestCircle is the other: the membership is intact and the circle it is in is a tombstone.
+func deleteTestCircle(t *testing.T, db *store.DB) {
+	t.Helper()
+	at := int64(2)
+	_, err := db.Queries().SoftDeleteCircle(t.Context(), sqlitegen.SoftDeleteCircleParams{
+		DeletedAt: &at, UpdatedAt: at, CircleID: testCircleID,
+	})
+	require.NoError(t, err)
+}
+
+// finishBootstrap does to an `init`ed database what redeeming the owner code and running
+// `tod-serve instance grant` does: it gives the instance somebody who can administer it.
+//
+// `init` alone does not, and that is the whole shape of the bug this is part of fixing — a
+// database `init` has run on looks bootstrapped, answers every HTTP check, and has no
+// administrator.
+func finishBootstrap(t *testing.T, path string) {
+	t.Helper()
+	db := openCopy(t, path)
+	providers, err := db.Queries().ListIdentityProviders(t.Context())
+	require.NoError(t, err)
+	require.NotEmpty(t, providers,
+		"init created no provider, so there is nothing to hang an identity off")
+	// The circle `init` created, not a fixture one: the membership has to be somewhere a
+	// credential could really be bound, and `checkAdministrable` now reads exactly that.
+	circles, err := db.Queries().ListLiveCircles(t.Context())
+	require.NoError(t, err)
+	require.NotEmpty(t, circles, "init created no circle, so a membership has nowhere to live")
+	grantAdministrator(t, db, providers[0].ID, circles[0].ID, authz.PermissionInstanceOwner)
 }
 
 // TestDoctor_APublicURLTheProvidersDisagreeWith_IsAProblem — the hostname is written down five
@@ -135,6 +279,160 @@ func TestDoctor_APublicURLTheProvidersDisagreeWith_IsAProblem(t *testing.T) {
 				require.Contains(t, err.Error(), "problem")
 				return
 			}
+			require.NoError(t, err, "doctor found a problem it should not have: %s\n%s", tt.why, out)
+		})
+	}
+}
+
+// TestDoctor_WhoCanAdministerTheInstance_IsAProblemWhenNobodyCan is the gate on an instance
+// nobody can administer.
+//
+// The failure it exists for cost a real setup session. `instance.owner` was grantable and no route
+// required it, so the deployment runbook's bootstrap ended with a command that succeeded, wrote an
+// audited ledger row, and handed the operator nothing — and then sent them to register the Discord
+// provider, which needs `instance.security.manage`. The console hides the Instance nav entry
+// rather than explaining it, so nothing on screen pointed at the cause. `doctor` is where an
+// operator looks when nothing on screen does.
+//
+// The `instance.owner` row is the case that matters: doctor has to consult the same expansion the
+// request path does, or it reports a problem the operator has already fixed. The `ops.read` row is
+// the other half — a grant that is not administration must not count, or every instance with a
+// dashboard user looks administrable.
+func TestDoctor_WhoCanAdministerTheInstance_IsAProblemWhenNobodyCan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		seed        func(t *testing.T, db *store.DB)
+		wantProblem bool
+		wantLine    string
+		why         string
+	}{
+		{
+			name:        "nobody holds anything",
+			seed:        func(*testing.T, *store.DB) {},
+			wantProblem: true,
+			wantLine:    "nobody can administer this instance",
+			why:         "an instance whose only administrator is a shell on the box",
+		},
+		{
+			name: "instance.owner, which is what the runbook says to grant",
+			seed: func(t *testing.T, db *store.DB) {
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
+			},
+			wantProblem: false,
+			wantLine:    "1 identity can administer this instance",
+			why: "instance.owner expands to the instance realm, so doctor must read the " +
+				"expansion and not the row",
+		},
+		{
+			name: "the narrower key on its own",
+			seed: func(t *testing.T, db *store.DB) {
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceSecurityManage)
+			},
+			wantProblem: false,
+			wantLine:    "1 identity can administer this instance",
+			why:         "the key the route actually declares still counts on its own",
+		},
+		{
+			name: "an instance-realm grant that is not administration",
+			seed: func(t *testing.T, db *store.DB) {
+				seedIdentity(t, db, testProviderID, testCircleID, 0,
+					authz.PermissionOpsRead, authz.PermissionInstanceCircleCreate)
+			},
+			wantProblem: true,
+			wantLine:    "nobody can administer this instance",
+			why: "ops.read is deliberately not in the capability floor and grants nothing " +
+				"else; counting it would call a dashboard user an administrator",
+		},
+		{
+			name: "granted and then revoked",
+			seed: func(t *testing.T, db *store.DB) {
+				id := seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
+				grants, err := newGrantService(db)
+				require.NoError(t, err)
+				_, err = grants.Decide(t.Context(), instancegrant.DecideRequest{
+					IdentityID: id, Permission: authz.PermissionInstanceOwner,
+					Decision: instancegrant.DecisionRevoked, Reason: "handed over",
+				})
+				require.NoError(t, err)
+			},
+			wantProblem: true,
+			wantLine:    "nobody can administer this instance",
+			why: "the ledger is append-only, so the revocation is a NEW ROW and the listing " +
+				"still contains the grant; counting rows rather than decisions would miss it",
+		},
+		{
+			// The ledger outlives a membership: a grant is on an IDENTITY and the identity only
+			// reaches a request through one. `Authenticator.membership` refuses a revoked
+			// membership on every call, so this identity holds instance.owner and no credential
+			// it could ever present is accepted.
+			name: "the only administrator's membership is revoked",
+			seed: func(t *testing.T, db *store.DB) {
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
+				revokeMembershipOf(t, db, 0)
+			},
+			wantProblem: true,
+			wantLine:    "live membership",
+			why: "a grant nothing can carry is not an administrator, and reporting one is the " +
+				"confidently wrong answer: it says the instance is fine when nobody can log in",
+		},
+		{
+			// The other way the same thing happens, and it is a separate row because it is a
+			// separate refusal: the membership is intact and the CIRCLE is a tombstone.
+			name: "the only administrator's circle is deleted",
+			seed: func(t *testing.T, db *store.DB) {
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
+				deleteTestCircle(t, db)
+			},
+			wantProblem: true,
+			wantLine:    "live membership",
+			why: "a deleted circle stops its members acting on their very next request, so the " +
+				"grant is as unreachable as it is under a revocation",
+		},
+		{
+			// And the count is of LIVE administrators. Without this the two rows above could pass
+			// by the check refusing everybody the moment any membership is revoked anywhere.
+			name: "one administrator revoked and one still live",
+			seed: func(t *testing.T, db *store.DB) {
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
+				revokeMembershipOf(t, db, 0)
+				seedIdentity(t, db, testProviderID, testCircleID, 1, authz.PermissionInstanceOwner)
+			},
+			wantProblem: false,
+			wantLine:    "1 identity can administer this instance",
+			why:         "the revoked one is not counted and the live one still is",
+		},
+		{
+			name: "two administrators",
+			seed: func(t *testing.T, db *store.DB) {
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
+				seedIdentity(t, db, testProviderID, testCircleID, 1, authz.PermissionInstanceSecurityManage)
+			},
+			wantProblem: false,
+			wantLine:    "2 identities can administer this instance",
+			why: "the count is said out loud: one administrator on holiday and several are " +
+				"different facts about the same instance",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := instanceWithNoAdministrator(t, "https://tod.example.com",
+				"https://tod.example.com/api/v1/auth/callback/oidc")
+			db := openCopy(t, path)
+			tt.seed(t, db)
+			require.NoError(t, db.Close())
+
+			out, err := captureCLI(t, "doctor", "--db", path)
+			require.Contains(t, out, tt.wantLine, "%s\n%s", tt.why, out)
+			if tt.wantProblem {
+				require.Error(t, err, "doctor exited 0: %s\n%s", tt.why, out)
+				return
+			}
+			// The exit code, not just the line: the deploy reads the code, and a PROBLEM
+			// anywhere else in the report would make the assertion above pass over a red run.
 			require.NoError(t, err, "doctor found a problem it should not have: %s\n%s", tt.why, out)
 		})
 	}

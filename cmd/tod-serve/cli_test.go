@@ -217,6 +217,11 @@ func TestDoctor_OnAFreshDatabase_NamesTheMissingPieces(t *testing.T) {
 	require.Error(t, err, "a database with no instance row is not healthy")
 	require.Contains(t, out, "tod-serve init")
 	require.Contains(t, out, "no identity provider is enabled")
+	// The third thing a fresh database is missing, and the one nothing said before: no identity
+	// holds `instance.security.manage`, so nobody can administer it over the API. It is named
+	// here as well as in the end-to-end walk because `.github/workflows/deploy.yml` subtracts
+	// exactly these three strings on a first installation and fails red on a fourth.
+	require.Contains(t, out, "nobody can administer this instance")
 	require.Contains(t, out, "integrity check passed")
 	require.Contains(t, out, "foreign key check passed")
 }
@@ -232,6 +237,10 @@ func TestDoctor_OnABootstrappedInstance_IsHealthyAndStillWarnsAboutLocal(t *test
 		"--name", "Test Instance", "--public-url", "https://tod.example.com",
 		"--circle", "Riot Blue", "--server", "blue",
 		"--local", "--accept-local", "--acknowledge-weak-revocation"))
+	// `init` is not the end of the bootstrap. It prints the grant as the last step and this is
+	// that step: without it the instance has no administrator, which is a PROBLEM of its own and
+	// would make "no problems found" below assert nothing about `local` or the public URL.
+	finishBootstrap(t, path)
 
 	out, err := captureCLI(t, "doctor", "--db", path)
 	require.NoError(t, err)
@@ -249,6 +258,7 @@ func TestDoctor_WithNoPublicURL_WarnsWithoutFailing(t *testing.T) {
 	require.NoError(t, runCLI(t, "init", "--db", path, "--name", "Test Instance",
 		"--circle", "Riot Blue", "--server", "blue",
 		"--local", "--accept-local", "--acknowledge-weak-revocation"))
+	finishBootstrap(t, path)
 
 	out, err := captureCLI(t, "doctor", "--db", path)
 	require.NoError(t, err)

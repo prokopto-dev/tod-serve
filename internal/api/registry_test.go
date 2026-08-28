@@ -217,37 +217,11 @@ func TestRouteRegistry_EveryInstanceRealmRoute_IsSessionOnly(t *testing.T) {
 	require.Positive(t, seen, "no route carries an instance-realm permission; the filter is wrong")
 }
 
-// And every instance-realm permission in the catalogue reaches at least one route, so a key that
-// can be granted and used for nothing is a red test rather than a discovery.
-//
-// It is a KNOWN-GAP list rather than a bare assertion, because `instance.owner` genuinely reaches
-// no route yet: instance grants are managed from the console in this milestone (ADR-0012). Naming
-// it here is what stops that being forgotten — adding a route for it turns this red.
-func TestPermissions_EveryInstanceRealmKey_ReachesARouteOrIsNamedHere(t *testing.T) {
-	t.Parallel()
-	unreached := map[authz.Permission]string{
-		authz.PermissionInstanceOwner: "instance grants are managed from the console; ADR-0012 " +
-			"names the routes that would use this as the follow-up",
-	}
-
-	reached := map[authz.Permission]bool{}
-	for _, r := range api.Routes() {
-		for _, p := range r.Permissions {
-			reached[p] = true
-		}
-	}
-	for _, p := range authz.InstancePermissions() {
-		reason, named := unreached[p]
-		require.NotEqual(t, reached[p], named,
-			"%q must either reach a route or be named as unreached here, not both or neither", p)
-		if named {
-			require.NotEmpty(t, reason)
-		}
-	}
-	for p := range unreached {
-		require.True(t, authz.IsInstanceRealm(p), "%q is named here and is not instance-realm", p)
-	}
-}
+// The other direction — every permission in the catalogue is required by some route, consulted by
+// some handler, or expands to ones that are — is
+// TestPermissions_EveryPermission_IsRequiredByARouteOrExpandsToOnesThatAre in test/repo. It
+// replaces the known-gap list that used to sit here, which held `instance.owner` for as long as
+// `instance.owner` granted nothing.
 
 // Every POST that creates domain state requires `Idempotency-Key`. This is the architectural test
 // docs/concepts/invariants.md names, over the registry rather than over a list.
