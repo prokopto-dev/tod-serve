@@ -21,7 +21,7 @@ so it is CLI-only and the admin console cannot administer the instance at all.
 |---|---|---|
 | A — `instance_grant`, a capability list keyed `(identity, permission)` | No new vocabulary: what is granted is a permission the catalogue defines, and nothing is implied by anything else | Revocation is a `DELETE`, so the table remembers nothing. `audit_log.circle_id` is `NOT NULL` and an instance event belongs to no circle, so the history needs a second audit mechanism |
 | B — An instance role enum mirroring circle roles | Familiar shape; one column on `identity` | Exactly the second authorization model `internal/authz` warns against: a second matrix, a second ordering rule. And it grants by implication — `ops.read` arrives because somebody is an admin |
-| C — `is_instance_owner` on `identity`, the other four derived | One boolean, no new table | Derivation *is* implication: nothing could hand somebody `ops.read` for a dashboard without also handing them the identity providers, which is the whole reason `circle.manage` and `circle.security.manage` are separate keys. *(Revisited by [ADR-0015](0015-instance-owner-implies-the-instance-realm.md): at the authorization boundary, not storage.)* |
+| C — `is_instance_owner` on `identity`, the other four derived | One boolean, no new table | Derivation *is* implication: nothing could hand somebody `ops.read` for a dashboard without also handing them the identity providers, which is the whole reason `circle.manage` and `circle.security.manage` are separate keys. *(Revisited by [ADR-0015](0015-instance-owner-implies-the-instance-realm.md).)* |
 | **D — `instance_grant` as an append-only, hash-chained ledger of decisions** | A's capability list with A's missing half built in: every grant and revocation is a durable, attributed, chained row. One table, no second audit log | The current state is a derivation rather than a row, and the table grows with decisions rather than grants |
 
 ## Decision outcome
@@ -71,7 +71,8 @@ it exists to make possible.
 - Good, because the instance-realm routes become reachable by a decision somebody made and can be
   shown to have made, rather than by a role they happen to hold.
 - Good, because granting `ops.read` for a dashboard hands over nothing else: every key is separate
-  because every key was granted separately.
+  because every key was granted separately. *(One exception since:
+  [ADR-0015](0015-instance-owner-implies-the-instance-realm.md).)*
 - Good, because a revocation survives, and the chain makes a hand-deleted row visible.
 - **Bad, because instance grants are console-only in this change.** `instance.owner` is grantable
   and reaches no route, so a console can use the identity providers but cannot hand that ability to
