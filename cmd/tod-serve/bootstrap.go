@@ -346,17 +346,23 @@ Redeem this ONE-TIME owner code to become its owner. It is shown once and never 
 Redeem it at POST /api/v1/join, or paste it into the join page:
   <public url>/join#%s
 
-Redeeming it creates an IDENTITY. Instance administration hangs off that identity and not
-off this circle's owner role, so the last bootstrap step is at this console:
+Redeeming it creates an IDENTITY, and instance administration hangs off that identity
+rather than off this circle's owner role. If NOBODY administers this instance yet,
+redeeming this code grants that identity %s in the same transaction, and there is no
+further step: the API is administrable, adding the Discord provider included.
 
-  tod-serve %s %s              # find the identity the owner code created
+Once somebody does, that branch is closed for good. Handing administration to a second
+operator, or recovering an instance whose grants were all revoked, is done here:
+
+  tod-serve %s %s              # find the identity a join created
   tod-serve %s %s --%s <id> --%s %s
 
-That grant is what makes the instance administrable over the API — adding the Discord
-provider included. See docs/adr/0012-instance-grants-are-a-capability-ledger.md.
+See docs/adr/0012-instance-grants-are-a-capability-ledger.md and
+docs/adr/0016-first-run-setup-is-an-env-token-and-a-derived-window.md.
 `,
 		view.Name, view.Server, view.ID, providerKeys(view), view.RevocationStrength,
 		code, expiresAt, code,
+		authz.PermissionInstanceOwner,
 		verbInstance, verbIdentities,
 		verbInstance, verbGrant, flagIdentity, flagPermission,
 		authz.PermissionInstanceOwner)

@@ -17,6 +17,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/identity/discord"
 	"github.com/prokopto-dev/tod-serve/internal/identity/identitysql"
+	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
@@ -42,6 +43,7 @@ type fixture struct {
 	invites  *invite.Service
 	members  *membership.Service
 	identity *identity.Service
+	grants   *instancegrant.Service
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -74,15 +76,20 @@ func newFixture(t *testing.T) *fixture {
 		Store: db, Clock: clk, IDs: ids, Entropy: rand.Reader, Log: log,
 	})
 	require.NoError(t, err)
+	grants, err := instancegrant.New(instancegrant.Config{
+		Store: db, Clock: clk, IDs: ids, Log: log,
+	})
+	require.NoError(t, err)
 	members, err := membership.New(membership.Config{
 		Store: db, Clock: clk, IDs: ids, Minter: minter, Identity: identities,
-		Log: log, Entropy: rand.Reader,
+		Grants: grants, Log: log, Entropy: rand.Reader,
 	})
 	require.NoError(t, err)
 
 	return &fixture{
 		t: t, store: db, clock: clk, ids: ids, minter: minter,
 		circles: circles, invites: invites, members: members, identity: identities,
+		grants: grants,
 	}
 }
 

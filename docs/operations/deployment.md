@@ -96,13 +96,19 @@ Then, **on the droplet**, fill in `/opt/tod-serve/.env` and lock it down:
 chmod 600 /opt/tod-serve/.env
 openssl rand -base64 48     # -> TOD_TOKEN_PEPPER
 openssl rand -base64 48     # -> TOD_SESSION_KEY
+openssl rand -base64 48     # -> TOD_SETUP_TOKEN, used once and then deleted
 ```
 
 Set `TOD_DEPLOY_HOST` to the name in DNS, and `TRAEFIK_NETWORK` to whatever `docker network ls`
 shows Traefik on.
 
+> **The third one is the only one you delete.** `TOD_SETUP_TOKEN` authorises the first-run wizard
+> at `/setup` and nothing else, and leaving it unset is the safe default — `serve` starts fine
+> without it and the setup routes refuse everybody. Set it for the first deploy, use it once, then
+> remove the line and `docker compose up -d`.
+>
 > **`serve` refuses to start on the placeholders.** `deploy/env.example` ships
-> `CHANGE_ME_generate_with_openssl_rand_base64_48` for both secrets, and the binary rejects any
+> `CHANGE_ME_generate_with_openssl_rand_base64_48` for all three, and the binary rejects any
 > secret beginning with `CHANGE_ME_`, naming `openssl rand -base64 48` in the error. That file is
 > published in a public repository, and a working instance running on a value everybody can read is
 > the worst thing it could produce.
@@ -276,67 +282,73 @@ this runbook is built around: the wrong thing works well enough to look right.
 
 ### 6. First deploy
 
-The image has never run against this volume, so the first time through has three steps the workflow
-does not do: loading the catalogue, creating the instance, and granting somebody the ability to
-administer it. All three are one-off, and all three are commands rather than API calls because on a
-fresh database nobody holds a credential and there is no principal any HTTP route could authorise.
-`deploy/smoke.sh` is the executed version of everything below and CI runs it on every build, so
-these instructions are ones a machine follows rather than a page that was true once.
+The image has never run against this volume, so the first time through has one step the workflow
+does not do: **setting the instance up in a browser**, at `https://tod.prokopto.dev/setup`. It is
+one form, it is authorised by `TOD_SETUP_TOKEN` from `.env`, and it replaces the four
+`docker compose run` round trips this section used to describe. `deploy/smoke.sh` is the executed
+version of everything below and CI runs it on every build, so these instructions are ones a machine
+follows rather than a page that was true once.
+
+Setup happens over HTTP and the bootstrap does not, and the difference is worth stating once: on a
+fresh database nobody holds a credential and there is no principal any route could authorise, so
+something has to write the first rows. `TOD_SETUP_TOKEN` is what authorises that, and the window
+closes on a fact rather than a flag — see
+[ADR-0016](../adr/0016-first-run-setup-is-an-env-token-and-a-derived-window.md).
 
 ```bash
 gh workflow run Deploy -f image_tag=edge -f source_ref=main
 ```
 
-Then, **on the droplet, as the deploy user, in `/opt/tod-serve`**:
+Then open **`https://tod.prokopto.dev/setup`** and paste the `TOD_SETUP_TOKEN` you generated into
+`.env`. An instance with no administrator sends you there from `/` on its own: `/api/v1/meta`
+answers `setup_available: true` and the console routes on it.
 
-```bash
-# The raid-target catalogue: names, zones, expansions. Embedded in the binary.
-docker compose run --rm tod-serve seed targets
+The form asks for the instance name, the public URL (prefilled from `TOD_PUBLIC_URL`), one identity
+provider, and the first circle's name and server. Submitting it creates all of them, seeds the
+raid-target catalogue, and redirects you straight to `/join#TODI-…` with a **one-time owner code**.
+Redeem it there.
 
-# The instance singleton and the first circle. It prints a ONE-TIME owner code.
-docker compose run --rm tod-serve init \
-  --name "Your Instance" --public-url "https://tod.prokopto.dev" \
-  --circle "Your Guild" --server blue
-```
-
-`init` prints a `TODI-…` code, once, and never stores it. Redeem it at
-`https://tod.prokopto.dev/join#TODI-…` — that link is built from `--public-url`, which must be the
-same origin `TOD_PUBLIC_URL` names, or the join page is somewhere else. Redeeming it makes you the
-circle's owner and creates an **identity**; the last bootstrap step hangs off that identity rather
-than off the owner role, and `init` prints it too:
-
-```bash
-docker compose run --rm tod-serve instance identities
-docker compose run --rm tod-serve instance grant --identity <id> --permission instance.owner
-```
-
-**That grant is the end of the bootstrap, and until it is made nobody can administer this
-instance.** `instance.owner` expands to every instance-realm permission — registering an identity
-provider, managing the raid-target catalogue, creating a circle, reading diagnostics — so this one
-command is what makes the next section possible. It is granted to an **identity**, never to a
-membership, so no personal access token reaches it at any scope
-([ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md)); administering the instance is
+**Redeeming that code is the end of the bootstrap.** It makes you the circle's owner, creates an
+**identity**, and — because nobody administered this instance yet — grants that identity
+`instance.owner` in the same transaction. There is no console step: `instance.owner` expands to
+every instance-realm permission, so registering an identity provider, curating the catalogue,
+creating a circle and reading diagnostics all work from that browser session immediately. The grant
+is on an **identity**, never on a membership, so no personal access token reaches it at any scope
+([ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md)): administering the instance is
 something you do signed in to the console.
 
-> **This used to stop one command short.** `instance.owner` was grantable and no route required it,
-> so the command above succeeded, wrote an audited ledger row, and handed the operator nothing —
-> and the next section then failed with `403 forbidden`. The console compounded it by hiding the
-> Instance nav entry rather than explaining why it was missing. Two things changed: the permission
-> now expands, and `tod-serve doctor` reports a **PROBLEM** when no identity holds
-> `instance.security.manage`, so an instance nobody can administer says so where an operator looks.
-
-Check the bootstrap finished before going on. `doctor` names the state directly:
+Check it before going on. `doctor` names the state directly:
 
 ```bash
 docker compose run --rm tod-serve doctor | grep administer
 #   ok       1 identity can administer this instance (instance.security.manage)
 ```
 
-`tod-serve instance grant` needs the database and no credential, which is also why it is the
-**recovery** path: an instance whose last administrator was revoked is still administrable from
-here, and that is why there is no `last_owner` rule at the instance level. Grant a second operator
-early — the count `doctor` prints is there so "one administrator" and "one administrator on
-holiday" are not the same line.
+**Then delete `TOD_SETUP_TOKEN` from `.env` and `docker compose up -d`.** You do not have to — the
+routes refuse everybody once any identity administers the instance, and that condition is derived
+from the grant ledger rather than from a flag anybody can reset — but a takeover credential with no
+remaining job is one to remove.
+
+#### The way back, and it has not moved
+
+`tod-serve init`, `tod-serve circle create` and `tod-serve instance grant` all still exist, need the
+database and no credential, and are the **recovery** path: an instance whose last administrator was
+revoked is still administrable from here, which is why there is no `last_owner` rule at the instance
+level.
+
+```bash
+docker compose run --rm tod-serve instance identities
+docker compose run --rm tod-serve instance grant --identity <id> --permission instance.owner
+```
+
+Grant a second operator early — the count `doctor` prints is there so "one administrator" and "one
+administrator on holiday" are not the same line.
+
+> **The wizard is a takeover surface, and it is worth knowing exactly what guards it.** Three
+> separate refusals, each with its own test: `TOD_SETUP_TOKEN` unset, a wrong token, and an
+> administrator already existing. The first two answer an identical `404` on purpose — a refusal
+> that told them apart would tell a stranger which instances are worth guessing at — and the third
+> answers `409` only to a caller who already presented the right token.
 
 **Timers are not bundled and never will be.** Respawn and variance numbers are community-derived and
 disputed; an instance without them reports `no_timer` everywhere and still records every ToD
@@ -572,17 +584,24 @@ work, and nothing is written that a retry cannot write again.
 port and that is the whole difference. The hardening is identical.
 
 ```bash
-cp deploy/env.example .env        # then generate the two secrets; `serve` refuses the placeholders
+cp deploy/env.example .env        # then generate the secrets; `serve` refuses the placeholders
 docker compose -f deploy/compose.local.yaml run --rm tod-serve migrate
-docker compose -f deploy/compose.local.yaml run --rm tod-serve seed targets
-docker compose -f deploy/compose.local.yaml run --rm tod-serve init \
-  --name "Home" --public-url "http://localhost:8080" --circle "Us" --server blue
 docker compose -f deploy/compose.local.yaml up -d
 ```
 
-`deploy/smoke.sh` runs exactly this on every CI build, against the image that would ship. If you
-want to know whether these instructions work, that script is the answer — it is this walkthrough,
-executed.
+Then open `http://localhost:8080/setup`, paste your `TOD_SETUP_TOKEN`, and fill in the one form.
+It creates the instance, the identity provider, the first circle and the raid-target catalogue, and
+sends you to the join page with a one-time owner code — redeeming it makes you the administrator.
+There is no `init` and no `seed targets` to run.
+
+> **Read the TLS section below before you sign in over plain HTTP.** The console's session cookie is
+> `__Host-` prefixed and two of three browser engines refuse to store one over `http://`. The wizard
+> itself works either way — it authenticates with a header, not a cookie — but the join it hands you
+> off to will leave you looking at a page that says the session was refused.
+
+`deploy/smoke.sh` runs exactly this on every CI build, against the image that would ship, wizard
+included. If you want to know whether these instructions work, that script is the answer — it is
+this walkthrough, executed.
 
 ### The console needs TLS, and this was measured
 

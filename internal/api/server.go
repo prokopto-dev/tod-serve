@@ -20,6 +20,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
 	"github.com/prokopto-dev/tod-serve/internal/projection"
+	"github.com/prokopto-dev/tod-serve/internal/setup"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/tod"
 )
@@ -41,6 +42,32 @@ type MetricsConfig struct {
 	// the listener is enabled: an enabled endpoint with no token is refused at construction rather
 	// than served openly.
 	Token core.Secret
+}
+
+// SetupConfig is first-run setup: the token that authorises it, and nothing else.
+//
+// The token is the ONLY thing between a fresh public instance and whoever loads the page first, so
+// this type is where "unset" and "wrong" are made into the same answer. ADR-0016.
+type SetupConfig struct {
+	// Token mirrors `TOD_SETUP_TOKEN`. Empty means first-run setup is unreachable: the operator
+	// has not armed it, or has disarmed it since, and there is no default and no unauthenticated
+	// mode.
+	Token core.Secret
+}
+
+// authorises reports whether the presented value reaches first-run setup.
+//
+// **The comparison runs before the configured-at-all check, and that order is the mechanism.**
+// `core.Secret.Equal` is `subtle.ConstantTimeCompare`, and both refusals leave through the same
+// return — so an instance with no `TOD_SETUP_TOKEN` set and one with a wrong token guessed do the
+// same work and answer the same way. Telling those two apart would tell a stranger which hosts are
+// worth guessing at.
+//
+// The empty-token case is checked rather than left to the comparison, because an unset token
+// matching an empty presented value is the failure this whole route is a takeover surface for.
+func (c SetupConfig) authorises(presented string) bool {
+	match := c.Token.Equal(core.Secret(presented))
+	return !c.Token.IsZero() && match
 }
 
 // Config is everything the API needs. Nothing here has a default: a component that silently
@@ -97,6 +124,13 @@ type Config struct {
 	IDs *core.Generator
 	// Metrics configures the separate metrics listener.
 	Metrics MetricsConfig
+	// Setup runs first-run setup, and is required: an API wired without it would answer the
+	// wizard's routes with a 500 on a database where nothing else can answer at all.
+	Setup *setup.Service
+	// SetupToken configures what authorises those routes. Its ZERO VALUE is the safe one — an
+	// unset `TOD_SETUP_TOKEN` means setup is unreachable — which is why it is a value rather than
+	// a pointer and why [Config.validate] does not require it.
+	SetupToken SetupConfig
 	// InviteRateLimit is the ONE bucket every public route that accepts an invite code draws on.
 	// Its zero value is the default.
 	InviteRateLimit RateLimit
@@ -144,6 +178,8 @@ func (c Config) validate() error {
 		return errors.New("api config: logger is nil")
 	case c.IDs == nil:
 		return errors.New("api config: id generator is nil")
+	case c.Setup == nil:
+		return errors.New("api config: setup service is nil")
 	case c.Metrics.Enabled && c.Metrics.Token.IsZero():
 		// Refused rather than served openly. An operator who turned metrics on and forgot the
 		// token must find out at startup, not from whoever scraped it.
@@ -213,14 +249,21 @@ func newBuilder(
 	}
 }
 
-// securitySchemes declares how a caller authenticates. There are exactly three, and the absence of
-// a fourth is the point: `Authorization: Bearer` and the session cookie are the only API
-// credentials, and the metrics token is not an API credential at all.
+// securitySchemes declares how a caller authenticates. There are exactly four, and the shape of the
+// list is the point: `Authorization: Bearer` and the session cookie are the only API credentials,
+// and the other two are environment variables that reach one operational surface each and no
+// domain route at all.
 func securitySchemes() map[string]*huma.SecurityScheme {
+	// The OpenAPI spellings, named because three of the four schemes share them and a typo in one
+	// would publish a scheme a generated client cannot use.
+	const (
+		httpScheme   = "http"
+		bearerScheme = "bearer"
+	)
 	return map[string]*huma.SecurityScheme{
 		SchemeBearer: {
-			Type:        "http",
-			Scheme:      "bearer",
+			Type:        httpScheme,
+			Scheme:      bearerScheme,
 			Description: "A personal access token, `tods_pat_…`. Never in a query string.",
 		},
 		SchemeSession: {
@@ -230,11 +273,32 @@ func securitySchemes() map[string]*huma.SecurityScheme {
 			Description: "A browser session. The only credential that reaches the capability floor.",
 		},
 		SchemeMetricsToken: {
-			Type:        "http",
-			Scheme:      "bearer",
+			Type:        httpScheme,
+			Scheme:      bearerScheme,
 			Description: "TOD_METRICS_TOKEN, on the separate metrics listener. Never a PAT scope.",
 		},
+		SchemeSetupToken: {
+			Type:   httpScheme,
+			Scheme: bearerScheme,
+			Description: "TOD_SETUP_TOKEN, for first-run setup only. Never a PAT scope, and it " +
+				"stops working the moment this instance has an administrator.",
+		},
 	}
+}
+
+// checkSetupToken is the whole authorisation of first-run setup.
+//
+// Every refusal here is ONE answer — `404 not_found` with the same detail — because two of them
+// have to be indistinguishable and the third is easiest to keep that way by not branching at all.
+// A missing header, a malformed one, a wrong token and an instance with `TOD_SETUP_TOKEN` unset
+// are the same sentence to a caller who does not hold the token, which is the only caller this
+// message is written for.
+func (b *Builder) checkSetupToken(ctx huma.Context) error {
+	presented, _ := cutBearer(ctx.Header("Authorization"))
+	if b.cfg.SetupToken.authorises(presented) {
+		return nil
+	}
+	return apierr.New(apierr.CodeNotFound, "no such operation")
 }
 
 // handler wraps the router in the middleware every request passes through, outermost first.
@@ -320,6 +384,7 @@ func New(cfg Config) (*Server, error) {
 func (s *Server) registerAll() error {
 	return errors.Join(
 		s.registerMeta(),
+		s.registerSetup(),
 		s.registerPrincipal(),
 		s.registerTokens(),
 		s.registerCircles(),

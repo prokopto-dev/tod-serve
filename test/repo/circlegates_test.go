@@ -35,6 +35,18 @@ func TestCircleEnumeration_IsReachableOnlyFromTheProjection(t *testing.T) {
 		"internal/projection": true,
 		// Generated. sqlc writes the method itself, which is not a use of it.
 		"internal/store/sqlitegen": true,
+		// First-run setup, and the ONE caller-facing exception. It is admitted on a narrower
+		// argument than "it is an operator": the enumeration reaches a caller only through a
+		// route carrying `Auth: AuthSetupToken`, and such a route answers `404` without
+		// `TOD_SETUP_TOKEN` and `409` once any identity administers the instance —
+		// `api.SetupRoutes()` and the three refusals derived from it are what hold that, not this
+		// comment. So the reader is somebody who could grant themselves ownership of every circle
+		// listed, on an instance where nobody yet can. ADR-0016.
+		//
+		// It is here rather than replaced by a count because the wizard has to be able to finish
+		// a setup that died half-way: an operator whose owner code was never redeemed needs to
+		// name the circle a fresh one should admit them to, and cannot name what it will not show.
+		"internal/setup": true,
 	}
 
 	found := 0

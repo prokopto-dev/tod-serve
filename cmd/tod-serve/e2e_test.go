@@ -29,6 +29,13 @@ import (
 const (
 	e2ePepper     = "e2e-token-pepper"
 	e2eSessionKey = "e2e-session-key"
+	// e2eSetupToken arms first-run setup. It is what an operator writes into `.env` beside the
+	// two above, and the only thing between a fresh public instance and whoever loads it first.
+	e2eSetupToken = "e2e-setup-token"
+	// e2ePublicURL is what `.env` sets before `serve` starts. The wizard prefills its form from it
+	// and the OAuth callback returns to it, so an instance meant to be set up in a browser has to
+	// know it before there is any row to read it from.
+	e2ePublicURL = "https://tod.example.com"
 )
 
 // codePattern finds the owner code the CLI prints. It matches the canonical form only: a test that
@@ -153,12 +160,30 @@ type e2eServer struct {
 
 func newE2EServer(t *testing.T, ctx context.Context, path string) *e2eServer {
 	t.Helper()
+	return newE2EServerWith(t, ctx, path, core.Secret(e2eSetupToken))
+}
+
+// newE2EServerWithoutSetupToken wires the same binary with `TOD_SETUP_TOKEN` unset, which is the
+// state an upgraded instance and a finished one are both in.
+func newE2EServerWithoutSetupToken(t *testing.T, ctx context.Context, path string) *e2eServer {
+	t.Helper()
+	return newE2EServerWith(t, ctx, path, "")
+}
+
+func newE2EServerWith(
+	t *testing.T, ctx context.Context, path string, setupToken core.Secret,
+) *e2eServer {
+	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	db, err := store.Open(ctx, path, log)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
-	svc, err := wire(ctx, db, log, core.Secret(e2ePepper), core.Secret(e2eSessionKey))
+	// Passed rather than read from the environment: `$TOD_PUBLIC_URL` is part of the `.env` step
+	// every deployment does before `serve` starts, and `t.Setenv` cannot be used in a package
+	// whose tests are all parallel. This is the value that file would have supplied.
+	svc, err := wire(ctx, db, log,
+		core.Secret(e2ePepper), core.Secret(e2eSessionKey), e2ePublicURL+"/join")
 	require.NoError(t, err)
 	server, err := api.New(api.Config{
 		Version: "0.0.0-e2e", Store: db, Auth: svc.authn, Sessions: svc.codec,
@@ -166,6 +191,7 @@ func newE2EServer(t *testing.T, ctx context.Context, path string) *e2eServer {
 		Identities: svc.identity, Catalogue: svc.catalogue,
 		Tods: svc.tods, States: svc.states, Invalidator: svc.states,
 		Clock: svc.clock, Log: log, IDs: svc.ids,
+		Setup: svc.setup, SetupToken: api.SetupConfig{Token: setupToken},
 		OnResponseViolation: func(v api.Violation) { t.Errorf("response contract: %s", v) },
 	})
 	require.NoError(t, err)
@@ -341,6 +367,12 @@ func captureCLI(t *testing.T, args ...string) (string, error) {
 // console writes a grant against an identity; the join created that identity; the middleware reads
 // the ledger on the next request. Any one of those passing in isolation proves nothing about the
 // operator's actual morning.
+//
+// Since ADR-0016 the FIRST redemption needs no console step at all: redeeming an owner grant while
+// nobody administers the instance grants that identity `instance.owner` in the join's own
+// transaction. So the console arm is driven here by a SECOND operator, on a second circle, after
+// the window has closed — which is the state that arm actually exists for, and the only one left
+// in which a grant has to be written by hand.
 func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -390,49 +422,29 @@ func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 	require.NotEmpty(t, identityID, "instance identities printed no id:\n%s", identities)
 	require.Contains(t, identities, "local")
 
-	// --- an owner, stepped up, with no grant: refused, and the code says which half failed ------
-	// The session is the one `/join` set on the response above: a real credential a browser could
-	// have, rather than one this test encoded for itself.
-	refused := srv.call(t, e2eRequest{
-		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
-		Session: session, Want: http.StatusForbidden,
-	})
-	require.Contains(t, string(refused), `"code":"forbidden"`)
-
-	// A token belonging to the same person is refused differently, because the fix is different:
-	// no PAT reaches an instance-realm permission at any scope.
-	byToken := srv.call(t, e2eRequest{
-		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
-		Token: joined.Token.Secret, Want: http.StatusForbidden,
-	})
-	require.Contains(t, string(byToken), `"code":"session_required"`)
-
-	// --- the console grants it -------------------------------------------------------------------
-	// `instance.owner`, which is what `init` printed above and what the deployment runbook says,
-	// rather than the narrower key this route declares. Those were different commands until
-	// `instance.owner` expanded to the instance realm: the grant the operator was told to make
-	// wrote a durable, audited decision that nothing consulted, and the next thing they were told
-	// to do answered 403. Driving the DOCUMENTED key is the point of this test.
-	granted, err := captureCLI(t, "instance", "grant", "--db", path,
-		"--identity", identityID, "--permission", string(authz.PermissionInstanceOwner),
-		"--reason", "first operator")
-	require.NoError(t, err)
-	require.Contains(t, granted, "granted")
-
-	// Granting it twice is refused rather than appending a row where nothing happened.
-	_, err = captureCLI(t, "instance", "grant", "--db", path,
-		"--identity", identityID, "--permission", string(authz.PermissionInstanceOwner))
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "already records")
-
+	// --- redeeming the owner grant made them the administrator, with no console step ------------
 	// The LEDGER holds one decision, not five. What was decided and what it reaches are two
 	// different facts, and storing the expansion would leave four rows behind on a revocation.
 	ledger, err := captureCLI(t, "instance", "grants", "--db", path)
 	require.NoError(t, err)
 	require.Contains(t, ledger, string(authz.PermissionInstanceOwner))
 	require.NotContains(t, ledger, string(authz.PermissionInstanceSecurityManage))
+	// Recorded as decided by NOBODY: the instance had no administrator and somebody presented the
+	// code, which is a fact about the instance rather than a person's judgement.
+	require.Contains(t, ledger, "console")
+	require.Contains(t, ledger, "first administrator")
 
-	// --- and the same session, unchanged, now reaches the admin surface -------------------------
+	// A token belonging to the same person is still refused, because the fix is different: no PAT
+	// reaches an instance-realm permission at any scope, whatever the ledger says.
+	byToken := srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
+		Token: joined.Token.Secret, Want: http.StatusForbidden,
+	})
+	require.Contains(t, string(byToken), `"code":"session_required"`)
+
+	// --- and the session `/join` set reaches the admin surface immediately ----------------------
+	// The session is the one `/join` set on the response above: a real credential a browser could
+	// have, rather than one this test encoded for itself.
 	listed := srv.call(t, e2eRequest{
 		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
 		Session: session, Want: http.StatusOK,
@@ -448,9 +460,57 @@ func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 	// raw ledger rows would report a problem this operator had already fixed, and the two
 	// disagreeing about one database is worse than either answer alone.
 	administrable, err := captureCLI(t, "doctor", "--db", path)
-	require.NoError(t, err, "doctor still reports a problem after the documented grant:\n%s",
+	require.NoError(t, err, "doctor still reports a problem after the first redemption:\n%s",
 		administrable)
 	require.Contains(t, administrable, "1 identity can administer this instance")
+
+	// --- a SECOND operator: the window is shut, so the console is the only way in ---------------
+	// This is the arm ADR-0012 is about, driven in the state it exists for. The bootstrap branch
+	// is derived from "nobody administers this instance" and that is now false, so redeeming a
+	// second owner code makes an owner of a CIRCLE and nothing more.
+	secondOut, err := captureCLI(t, "circle", "create", "--db", path,
+		"--name", "Ops Two", "--server", "green",
+		"--accept-local", "--acknowledge-weak-revocation")
+	require.NoError(t, err)
+	secondCode := codePattern.FindString(secondOut)
+	require.NotEmpty(t, secondCode)
+
+	_, secondSession := srv.join(t, secondCode, "Second")
+	secondRefused := srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
+		Session: secondSession, Want: http.StatusForbidden,
+	})
+	require.Contains(t, string(secondRefused), `"code":"forbidden"`,
+		"the bootstrap branch fired twice; it is derived and must close for good")
+
+	stillOne, err := captureCLI(t, "doctor", "--db", path)
+	require.NoError(t, err)
+	require.Contains(t, stillOne, "1 identity can administer this instance")
+
+	// --- the console grants it -------------------------------------------------------------------
+	// `instance.owner`, which is what `circle create` printed above and what the deployment runbook
+	// says, rather than the narrower key this route declares. Those were different commands until
+	// `instance.owner` expanded to the instance realm: the grant the operator was told to make
+	// wrote a durable, audited decision that nothing consulted, and the next thing they were told
+	// to do answered 403. Driving the DOCUMENTED key is the point of this test.
+	secondIdentity := identityNamed(t, path, "Second")
+	granted, err := captureCLI(t, "instance", "grant", "--db", path,
+		"--identity", secondIdentity, "--permission", string(authz.PermissionInstanceOwner),
+		"--reason", "second operator")
+	require.NoError(t, err)
+	require.Contains(t, granted, "granted")
+
+	// Granting it twice is refused rather than appending a row where nothing happened.
+	_, err = captureCLI(t, "instance", "grant", "--db", path,
+		"--identity", secondIdentity, "--permission", string(authz.PermissionInstanceOwner))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already records")
+
+	secondListed := srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
+		Session: secondSession, Want: http.StatusOK,
+	})
+	require.Contains(t, string(secondListed), `"key":"local"`)
 
 	// --- configuring the Discord provider, which is the whole point ------------------------------
 	const clientSecret = "e2e-discord-client-secret"
@@ -507,16 +567,26 @@ func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 	require.Contains(t, string(immutable), `"code":"field_immutable"`)
 
 	// --- and the grant is revocable, which is what makes granting it worth doing ------------------
-	_, err = captureCLI(t, "instance", "revoke", "--db", path,
-		"--identity", identityID, "--permission", string(authz.PermissionInstanceOwner),
-		"--reason", "handed over")
-	require.NoError(t, err)
+	// Both of them, because there are two administrators now and doctor counts identities rather
+	// than rows: revoking one and asserting nobody can administer the instance would be a test
+	// that passed on a miscount.
+	for _, identity := range []string{identityID, secondIdentity} {
+		_, err = captureCLI(t, "instance", "revoke", "--db", path,
+			"--identity", identity, "--permission", string(authz.PermissionInstanceOwner),
+			"--reason", "handed over")
+		require.NoError(t, err)
+	}
 
 	after := srv.call(t, e2eRequest{
 		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
 		Session: session, Want: http.StatusForbidden,
 	})
 	require.Contains(t, string(after), `"code":"forbidden"`)
+	afterSecond := srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/admin/identity-providers",
+		Session: secondSession, Want: http.StatusForbidden,
+	})
+	require.Contains(t, string(afterSecond), `"code":"forbidden"`)
 
 	// The expansion goes away with the decision that made it, and doctor says so again. Without
 	// this the whole expansion could be one-way — granted once and never taken back — which is the
@@ -531,9 +601,167 @@ func TestEndToEnd_FreshDatabaseToConfiguringAnIdentityProvider(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, history, "granted")
 	require.Contains(t, history, "revoked")
-	require.Contains(t, history, "first operator")
+	require.Contains(t, history, "first administrator")
+	require.Contains(t, history, "second operator")
 	require.Contains(t, history, "handed over")
 	require.Contains(t, history, "console")
+}
+
+// identityNamed finds one identity's id in `instance identities` by the display name a join gave
+// it. Scanning for a name rather than taking the first ULID on the page is what makes a test with
+// two operators in it mean anything: `ulidPattern.FindString` over the whole listing returns
+// whichever row sorted first, which is not the row the caller asked about.
+func identityNamed(t *testing.T, path, displayName string) string {
+	t.Helper()
+	out, err := captureCLI(t, "instance", "identities", "--db", path)
+	require.NoError(t, err)
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, displayName) {
+			continue
+		}
+		id := ulidPattern.FindString(line)
+		require.NotEmpty(t, id, "no id on the row for %q: %s", displayName, line)
+		return id
+	}
+	require.FailNow(t, "no identity named "+displayName+" in:\n"+out)
+	return ""
+}
+
+// TestEndToEnd_SetupWizardToConfiguringAnIdentityProvider is the acceptance path for ADR-0016,
+// and it is the whole reason the wizard exists.
+//
+// It starts where an operator starts — `migrate`, and nothing else — and finishes holding a
+// BROWSER SESSION that can register an identity provider. Anything less would prove the routes
+// exist rather than that setup works: `/admin/identity-providers` is instance-realm, session-only
+// and in the capability floor, so reaching it means the wizard produced a code, the code produced
+// an identity, and the redemption produced the `instance.owner` grant that makes the instance
+// administrable. No `docker compose run` anywhere in it, which is the point.
+//
+// It is one test rather than six for the same reason the two above are: the failure it catches is
+// the one where the steps do not COMPOSE.
+func TestEndToEnd_SetupWizardToConfiguringAnIdentityProvider(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "tod.db")
+
+	// --- migrate, and NOTHING else. No init, no circle create, no instance grant --------------
+	require.NoError(t, runCLI(t, "migrate", "--db", path))
+	srv := newE2EServer(t, ctx, path)
+
+	// --- what a browser reads before it has any credential --------------------------------------
+	var meta api.ServerMeta
+	require.NoError(t, json.Unmarshal(srv.get(t, "/api/v1/meta", "", http.StatusOK), &meta))
+	require.False(t, meta.Configured)
+	require.True(t, meta.SetupAvailable, "a fresh instance with a setup token routes to /setup")
+
+	// --- the wizard refuses a stranger, and says nothing about which half is missing ------------
+	srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/setup", Want: http.StatusNotFound,
+	})
+	srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/setup",
+		Token: e2eSetupToken + "x", Want: http.StatusNotFound,
+	})
+
+	// --- one form: instance, provider, circle, catalogue seed -----------------------------------
+	runBody := `{"name":"Wizard Instance","public_url":"https://tod.example.com",
+	             "provider":{"key":"local","kind":"local","display_name":"This server",
+	                         "acknowledge_weak_revocation":true},
+	             "circle":{"name":"Riot Blue","server":"blue"}}`
+	var result api.SetupResult
+	require.NoError(t, json.Unmarshal(srv.call(t, e2eRequest{
+		Method: http.MethodPost, Path: "/api/v1/setup", Token: e2eSetupToken,
+		Body: runBody, Want: http.StatusOK,
+	}), &result))
+	require.Equal(t, "Riot Blue", result.CircleName)
+	// The circle accepts `local`, so revocation in it is advisory and the wizard says so at the
+	// moment the operator chose it rather than in a document they have not opened.
+	require.Equal(t, "weak", result.RevocationStrength)
+	require.Positive(t, result.RaidTargetsAdded, "the catalogue seed did not run")
+
+	ownerCode := codePattern.FindString(result.OwnerCode)
+	require.Equal(t, result.OwnerCode, ownerCode, "the wizard returned a code no client can redeem")
+	// The browser is sent to the code in the FRAGMENT. A fragment reaches no server, no proxy and
+	// no `Referer` — the same rule the CLI's printed link obeys.
+	require.Equal(t, "/join#"+ownerCode, result.JoinPath)
+	require.NotContains(t, result.JoinPath, "?")
+
+	// --- the operator redeems it, exactly as the browser would ----------------------------------
+	joined, session := srv.join(t, ownerCode, "Operator")
+	require.True(t, joined.Created)
+	require.Equal(t, "owner", joined.Membership.Role)
+	require.Equal(t, result.CircleID, joined.Circle.ID)
+
+	// --- and THAT is what made them an administrator, with no console step ----------------------
+	grants, err := captureCLI(t, "instance", "grants", "--db", path)
+	require.NoError(t, err)
+	require.Contains(t, grants, string(authz.PermissionInstanceOwner))
+	require.Contains(t, grants, "granted")
+	// Written by nobody: the instance had no administrator and somebody presented the code, which
+	// is a fact about the instance rather than a person's decision.
+	require.Contains(t, grants, "console")
+
+	// The window is shut, and it shut on the GRANT rather than on a flag anybody set.
+	require.NoError(t, json.Unmarshal(srv.get(t, "/api/v1/meta", "", http.StatusOK), &meta))
+	require.True(t, meta.Configured)
+	require.False(t, meta.SetupAvailable)
+	srv.call(t, e2eRequest{
+		Method: http.MethodGet, Path: "/api/v1/setup",
+		Token: e2eSetupToken, Want: http.StatusConflict,
+	})
+
+	// --- the acceptance criterion: this session configures an identity provider -----------------
+	const clientSecret = "e2e-wizard-discord-secret"
+	created := srv.call(t, e2eRequest{
+		Method: http.MethodPost, Path: "/api/v1/admin/identity-providers", Session: session,
+		Body: `{"key":"discord","kind":"discord","display_name":"Discord",
+		        "client_id":"1234567890","client_secret":` + quote(clientSecret) + `,
+		        "redirect_uri":"https://tod.example.com/api/v1/auth/callback/discord",
+		        "token_endpoint":"https://discord.com/api/oauth2/token","enabled":true}`,
+		Want: http.StatusOK,
+	})
+	require.NotContains(t, string(created), clientSecret)
+	var provider api.AdminIdentityProviderResponse
+	require.NoError(t, json.Unmarshal(created, &provider))
+	require.Equal(t, "discord", provider.Key)
+	require.True(t, provider.VerifiableSubject)
+
+	// --- and the CLI path still exists, because it is the way back ------------------------------
+	// `init` refuses a second instance rather than overwriting one; `circle create` still works.
+	_, err = captureCLI(t, "init", "--db", path, "--name", "Second")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already initialised")
+	second, err := captureCLI(t, "circle", "create", "--db", path,
+		"--name", "Rival Green", "--server", "green")
+	require.NoError(t, err)
+	require.NotEmpty(t, codePattern.FindString(second))
+}
+
+// TestEndToEnd_SetupWizard_WithoutATokenTheInstanceIsUnreachable is the first refusal at the
+// binary's own boundary rather than at the API's.
+//
+// `serve` reads `TOD_SETUP_TOKEN` from the environment and passes whatever it finds; an operator
+// who never set one, or who deleted the line after setting up, gets an instance where the wizard
+// refuses everybody — including a caller presenting the empty string, which is what the unset
+// value would compare equal to if the comparison were the only check.
+func TestEndToEnd_SetupWizard_WithoutATokenTheInstanceIsUnreachable(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "tod.db")
+	require.NoError(t, runCLI(t, "migrate", "--db", path))
+
+	srv := newE2EServerWithoutSetupToken(t, ctx, path)
+	for _, token := range []string{"", e2eSetupToken, "anything at all"} {
+		srv.call(t, e2eRequest{
+			Method: http.MethodGet, Path: "/api/v1/setup", Token: token,
+			Want: http.StatusNotFound,
+		})
+	}
+
+	var meta api.ServerMeta
+	require.NoError(t, json.Unmarshal(srv.get(t, "/api/v1/meta", "", http.StatusOK), &meta))
+	require.False(t, meta.SetupAvailable,
+		"an instance that cannot complete setup must not advertise the wizard")
 }
 
 // providerByKey finds one provider in a listing, failing rather than returning a zero value: a

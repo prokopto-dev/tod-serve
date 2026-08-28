@@ -871,6 +871,19 @@ export type RevokedResponse = {
   weak_providers: Array<string> | null
 }
 
+export type RunSetupInputBody = {
+  circle: SetupCircleRequest
+  /** The instance's name */
+  name: string
+  provider: SetupProviderRequest
+  /** Where this instance is reachable. It must match the redirect URI registered with the identity provider EXACTLY */
+  public_url?: string
+  /** Let any authenticated principal create a circle */
+  self_service_circle_creation?: boolean
+  /** IANA timezone, display only. Defaults to UTC */
+  timezone?: string
+}
+
 export type ServerMeta = {
   api_versions: Array<string> | null
   /** RFC 3339 with microsecond precision, always UTC. */
@@ -878,6 +891,7 @@ export type ServerMeta = {
   configured: boolean
   name: string
   self_service_circle_creation: boolean
+  setup_available: boolean
   version: string
 }
 
@@ -894,6 +908,95 @@ export type SetCircleProvidersInputBody = {
   acknowledge_weak_revocation?: boolean
   /** The complete set this circle accepts. Omitting one stops NEW joins through it and revokes nobody */
   providers: Array<Item> | null
+}
+
+export type SetupCircle = {
+  /** A ULID: 26 characters of Crockford base32, lexicographically time-ordered. */
+  id: string
+  name: string
+  server: string
+}
+
+export type SetupCircleRequest = {
+  description?: string
+  /** An EXISTING circle to issue the owner code for. Required once this instance has any circle */
+  id?: string
+  /** The first circle's name */
+  name?: string
+  /** blue, green or red. Immutable after creation */
+  server?: 'blue' | 'green' | 'red'
+  timezone?: string
+}
+
+export type SetupProvider = {
+  display_name: string
+  enabled: boolean
+  key: string
+  kind: string
+  verifiable_subject: boolean
+}
+
+export type SetupProviderRequest = {
+  /** Required for the local provider: revocation through a provider with no verifiable subject does not stop a revoked member rejoining under a new name */
+  acknowledge_weak_revocation?: boolean
+  /** OIDC only */
+  authorization_endpoint?: string
+  /** The operator's own OAuth application. Required for discord and oidc, forbidden for local */
+  client_id?: string
+  /** Write-only: it is never returned by any operation */
+  client_secret?: string
+  /** What the join page calls it */
+  display_name?: string
+  /** OIDC only */
+  issuer?: string
+  /** OIDC only */
+  jwks_uri?: string
+  /** The wire key /join dispatches on */
+  key: string
+  /** discord, oidc or local. Immutable after this: it decides verifiable_subject */
+  kind: 'discord' | 'oidc' | 'local'
+  redirect_uri?: string
+  /** OIDC only. Defaults to sub */
+  subject_claim?: string
+  token_endpoint?: string
+}
+
+export type SetupResult = {
+  /** RFC 3339 with microsecond precision, always UTC. */
+  as_of: string
+  /** A ULID: 26 characters of Crockford base32, lexicographically time-ordered. */
+  circle_id: string
+  circle_name: string
+  join_path: string
+  owner_code: string
+  /** RFC 3339 with microsecond precision, always UTC. */
+  owner_code_expires_at: string
+  raid_targets_added: number
+  raid_targets_present: number
+  revocation_strength: string
+  steps: Array<SetupStep> | null
+}
+
+export type SetupState = {
+  administrator_exists: boolean
+  /** RFC 3339 with microsecond precision, always UTC. */
+  as_of: string
+  available: boolean
+  circles: Array<SetupCircle> | null
+  configured: boolean
+  instance_name: string
+  providers: Array<SetupProvider> | null
+  public_url: string
+  raid_targets: number
+  self_service_circle_creation: boolean
+  timezone: string
+}
+
+export type SetupStep = {
+  detail?: string
+  name: string
+  /** created, updated or already_present */
+  outcome: string
 }
 
 export type Target = {
@@ -1172,6 +1275,7 @@ export type OperationId =
   | 'getMember'
   | 'getRaidTarget'
   | 'getServerMeta'
+  | 'getSetupState'
   | 'getTargetState'
   | 'getTodReport'
   | 'listAdminIdentityProviders'
@@ -1197,6 +1301,7 @@ export type OperationId =
   | 'revokeInvite'
   | 'revokeMember'
   | 'revokeToken'
+  | 'runSetup'
   | 'setCircleProviders'
   | 'updateCircle'
   | 'updateIdentityProvider'
@@ -1446,6 +1551,20 @@ export const OPERATIONS = {
     id: 'getServerMeta',
     method: 'GET',
     path: '/api/v1/meta',
+    pathParams: [],
+    queryParams: [],
+    scopes: [],
+    sessionOnly: false,
+    stepUp: false,
+    circleScoped: false,
+    idempotency: '',
+    etag: false,
+    ifMatch: false,
+  },
+  getSetupState: {
+    id: 'getSetupState',
+    method: 'GET',
+    path: '/api/v1/setup',
     pathParams: [],
     queryParams: [],
     scopes: [],
@@ -1806,6 +1925,20 @@ export const OPERATIONS = {
     etag: false,
     ifMatch: false,
   },
+  runSetup: {
+    id: 'runSetup',
+    method: 'POST',
+    path: '/api/v1/setup',
+    pathParams: [],
+    queryParams: [],
+    scopes: [],
+    sessionOnly: false,
+    stepUp: false,
+    circleScoped: false,
+    idempotency: 'handler',
+    etag: false,
+    ifMatch: false,
+  },
   setCircleProviders: {
     id: 'setCircleProviders',
     method: 'PUT',
@@ -1985,6 +2118,10 @@ export type GetRaidTargetResult = TargetResponse
 /** Version, API versions, feature flags, and whether self-service circle creation is on */
 export type GetServerMetaInput = EmptyInput
 export type GetServerMetaResult = ServerMeta
+
+/** What first-run setup has to work with: the instance row, providers, circles and catalogue */
+export type GetSetupStateInput = EmptyInput
+export type GetSetupStateResult = SetupState
 
 /** One target: state, window, evidence and alternatives */
 export interface GetTargetStateInput {
@@ -2227,6 +2364,12 @@ export interface RevokeTokenInput {
 }
 export type RevokeTokenResult = TokenResponse
 
+/** Create the instance, its first provider and its first circle, and return a one-time owner code */
+export interface RunSetupInput {
+  body: RunSetupInputBody
+}
+export type RunSetupResult = SetupResult
+
 /** Set which identity providers the circle accepts, which changes its revocation strength */
 export interface SetCircleProvidersInput {
   /** The circle */
@@ -2309,6 +2452,8 @@ export const api = {
     send(OPERATIONS.getRaidTarget, input, opts),
   getServerMeta: (input: GetServerMetaInput, opts?: CallOptions): Promise<Result<GetServerMetaResult>> =>
     send(OPERATIONS.getServerMeta, input, opts),
+  getSetupState: (input: GetSetupStateInput, opts?: CallOptions): Promise<Result<GetSetupStateResult>> =>
+    send(OPERATIONS.getSetupState, input, opts),
   getTargetState: (input: GetTargetStateInput, opts?: CallOptions): Promise<Result<GetTargetStateResult>> =>
     send(OPERATIONS.getTargetState, input, opts),
   getTodReport: (input: GetTodReportInput, opts?: CallOptions): Promise<Result<GetTodReportResult>> =>
@@ -2359,6 +2504,8 @@ export const api = {
     send(OPERATIONS.revokeMember, input, opts),
   revokeToken: (input: RevokeTokenInput, opts?: CallOptions): Promise<Result<RevokeTokenResult>> =>
     send(OPERATIONS.revokeToken, input, opts),
+  runSetup: (input: RunSetupInput, opts?: CallOptions): Promise<Result<RunSetupResult>> =>
+    send(OPERATIONS.runSetup, input, opts),
   setCircleProviders: (input: SetCircleProvidersInput, opts?: CallOptions): Promise<Result<SetCircleProvidersResult>> =>
     send(OPERATIONS.setCircleProviders, input, opts),
   updateCircle: (input: UpdateCircleInput, opts?: CallOptions): Promise<Result<UpdateCircleResult>> =>

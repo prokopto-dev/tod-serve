@@ -90,6 +90,23 @@ func (b *Builder) routeMiddleware(r Route) func(huma.Context, func(huma.Context)
 			return
 		}
 
+		// First-run setup, before anything that resolves a principal — there is nobody to resolve
+		// on the database this route exists for. Both halves are here rather than in the handler
+		// so that a setup route added later cannot be served with one of them missing: the token
+		// is checked first, and only a caller who passed it learns whether setup is over.
+		if r.Auth == AuthSetupToken {
+			if err := b.checkSetupToken(ctx); err != nil {
+				b.writeProblem(ctx, err)
+				return
+			}
+			if err := b.checkSetupOpen(ctx); err != nil {
+				b.writeProblem(ctx, err)
+				return
+			}
+			next(ctx)
+			return
+		}
+
 		p, err := b.authorize(ctx, r)
 		if err != nil {
 			b.writeProblem(ctx, err)

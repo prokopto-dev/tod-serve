@@ -31,6 +31,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/membership"
 	"github.com/prokopto-dev/tod-serve/internal/projection"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
+	"github.com/prokopto-dev/tod-serve/internal/setup"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 	"github.com/prokopto-dev/tod-serve/internal/tod"
@@ -44,6 +45,12 @@ const (
 	testPepper     = core.Secret("integration-test-pepper")
 	testSessionKey = core.Secret("integration-test-session-key")
 	testMetricsTok = core.Secret("integration-test-metrics-token")
+	// testSetupTok arms first-run setup on the default harness. Constant rather than random so a
+	// failure reproduces, and long enough that the wrong-token test can differ from it in one
+	// character without also differing in LENGTH — `subtle.ConstantTimeCompare` returns early on a
+	// length mismatch, so a shorter wrong token would be a weaker test than it looks.
+	testSetupTok = core.Secret("integration-test-setup-token")
+	testWrongTok = core.Secret("integration-test-setup-tokeN")
 )
 
 // harness is a wired server over a real migrated SQLite database in t.TempDir().
@@ -115,6 +122,11 @@ func newHarness(t *testing.T) *harness {
 		Log:         log,
 		IDs:         ids,
 		Metrics:     api.MetricsConfig{Enabled: true, Token: testMetricsTok},
+		Setup:       svc.setup,
+		// Armed on the DEFAULT harness, so that "setup is reachable" is the state every test in
+		// this package runs against and a route that stopped refusing correctly is a red test
+		// somewhere rather than a green one everywhere.
+		SetupToken: api.SetupConfig{Token: testSetupTok},
 		// Response validation runs across the WHOLE integration suite: every request any test in
 		// this package makes is checked against the response contract, including the ones the
 		// framework answers before a handler runs.
@@ -144,6 +156,7 @@ type wiredServices struct {
 	tods       *tod.Service
 	states     *projection.Service
 	grants     *instancegrant.Service
+	setup      *setup.Service
 }
 
 func newServices(
@@ -168,9 +181,16 @@ func newServices(
 	})
 	require.NoError(t, err)
 
+	// The real ledger over the real table. There is no fake: what an instance-realm route answers
+	// depends on rows, and a stub that returned a set would test the middleware against itself.
+	grants, err := instancegrant.New(instancegrant.Config{
+		Store: db, Clock: clk, IDs: ids, Log: log,
+	})
+	require.NoError(t, err)
+
 	members, err := membership.New(membership.Config{
 		Store: db, Clock: clk, IDs: ids, Minter: minter, Identity: identities,
-		Log: log, Entropy: rand.Reader,
+		Grants: grants, Log: log, Entropy: rand.Reader,
 	})
 	require.NoError(t, err)
 
@@ -188,16 +208,15 @@ func newServices(
 	})
 	require.NoError(t, err)
 
-	// The real ledger over the real table. There is no fake: what an instance-realm route answers
-	// depends on rows, and a stub that returned a set would test the middleware against itself.
-	grants, err := instancegrant.New(instancegrant.Config{
-		Store: db, Clock: clk, IDs: ids, Log: log,
+	first, err := setup.New(setup.Config{
+		Store: db, Circles: circles, Invites: invites, Identities: identities,
+		Catalogue: catalogues, Clock: clk, Log: log,
 	})
 	require.NoError(t, err)
 
 	return wiredServices{
 		circles: circles, invites: invites, members: members, identities: identities,
-		catalogue: catalogues, tods: tods, states: states, grants: grants,
+		catalogue: catalogues, tods: tods, states: states, grants: grants, setup: first,
 	}
 }
 
@@ -234,6 +253,8 @@ func newHarnessWithConsole(t *testing.T) *harness {
 		IDs:                 h.ids,
 		Console:             stubConsole(),
 		Metrics:             api.MetricsConfig{Enabled: true, Token: testMetricsTok},
+		Setup:               svc.setup,
+		SetupToken:          api.SetupConfig{Token: testSetupTok},
 		OnResponseViolation: func(v api.Violation) { t.Errorf("response contract: %s", v) },
 	})
 	require.NoError(t, err)
@@ -268,6 +289,48 @@ func newHarnessWithoutMetrics(t *testing.T) *harness {
 		Clock:               h.clock,
 		Log:                 log,
 		IDs:                 h.ids,
+		Setup:               svc.setup,
+		SetupToken:          api.SetupConfig{Token: testSetupTok},
+		OnResponseViolation: func(v api.Violation) { t.Errorf("response contract: %s", v) },
+	})
+	require.NoError(t, err)
+	h.server, h.handler = server, server.Handler()
+	return h
+}
+
+// newHarnessWithoutSetupToken builds the same server with `TOD_SETUP_TOKEN` unset.
+//
+// It is the FIRST of the three refusals, and it gets its own constructor rather than a flag on the
+// default one so that the state under test is the state a finished instance is actually in: not
+// "setup with a token nobody guessed", but setup with nothing to guess.
+func newHarnessWithoutSetupToken(t *testing.T) *harness {
+	t.Helper()
+	h := newHarness(t)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := newServices(t, h.store, h.clock, h.ids, h.minter, log)
+	authn, err := auth.NewAuthenticator(
+		h.store, h.minter, h.codec, svc.grants, h.clock, log, auth.DefaultStepUpWindow)
+	require.NoError(t, err)
+
+	server, err := api.New(api.Config{
+		Version:     "0.0.0-test",
+		Store:       h.store,
+		Auth:        authn,
+		Sessions:    h.codec,
+		Circles:     svc.circles,
+		Members:     svc.members,
+		Invites:     svc.invites,
+		Identities:  svc.identities,
+		Catalogue:   svc.catalogue,
+		Tods:        svc.tods,
+		States:      svc.states,
+		Invalidator: h.invalidator,
+		Clock:       h.clock,
+		Log:         log,
+		IDs:         h.ids,
+		Setup:       svc.setup,
+		// No SetupToken. The zero value is the whole point: an operator who never armed setup, or
+		// who removed the variable afterwards, has an instance where the routes refuse everybody.
 		OnResponseViolation: func(v api.Violation) { t.Errorf("response contract: %s", v) },
 	})
 	require.NoError(t, err)

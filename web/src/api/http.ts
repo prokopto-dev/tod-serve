@@ -39,6 +39,19 @@ export interface CallOptions {
    * `(membership, key)`, so it replays across a token rotation too.
    */
   idempotencyKey?: string
+  /**
+   * bearer is `Authorization: Bearer …`, and the console sends one on exactly one screen.
+   *
+   * Every ordinary operation here authenticates with the `__Host-tod_session` cookie, which the
+   * browser attaches itself — there is no token in this console and no place to keep one. First-run
+   * setup has no session to send, because on the database it runs against no credential has ever
+   * been issued, so it carries `TOD_SETUP_TOKEN` instead.
+   *
+   * It is passed per call and held only in a component's state: never in `localStorage`, never in
+   * `sessionStorage`, and never in a URL this app constructs. The operator pastes it, or it arrives
+   * in the FRAGMENT of a link they were given, and it is cleared from the address bar on read.
+   */
+  bearer?: string
   signal?: AbortSignal
 }
 
@@ -192,6 +205,9 @@ export async function send<T>(
   }
   if (opts.ifMatch) headers.set('If-Match', opts.ifMatch)
   if (opts.ifNoneMatch) headers.set('If-None-Match', opts.ifNoneMatch)
+  // A HEADER, never a query parameter: canonical §7 refuses a token in a URL with no exception,
+  // and the server refuses one too. This is the only place in the console that sets it.
+  if (opts.bearer) headers.set('Authorization', `Bearer ${opts.bearer}`)
 
   let response: Response
   try {

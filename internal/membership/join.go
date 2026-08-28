@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
+	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 	"github.com/prokopto-dev/tod-serve/internal/store"
@@ -112,6 +114,10 @@ func (s *Service) Join(ctx context.Context, req JoinRequest) (Joined, error) {
 	}
 
 	var out Joined
+	// Set inside the transaction and read after it COMMITS: a log line about the instance
+	// acquiring its first administrator, written from inside a transaction that then rolled back,
+	// would be the one entry in the log nobody could reconcile against the ledger.
+	var bootstrapped bool
 	err = s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
 		// Re-resolved under the write lock. The row read before the credential was verified is a
 		// snapshot; this is the authority, and it is what decides which circle somebody joins.
@@ -160,6 +166,14 @@ func (s *Service) Join(ctx context.Context, req JoinRequest) (Joined, error) {
 			if parseErr != nil {
 				return parseErr
 			}
+			// Reached when the instance's last administrator was revoked and the operator issued
+			// themselves a fresh owner code: same identity, same circle, no new membership. The
+			// bootstrap has to be here as well as below, or the one door built for recovering an
+			// unadministrable instance is shut against the person most likely to be behind it.
+			bootstrapped, txErr = s.grantFirstAdministrator(ctx, q, live, identityID)
+			if txErr != nil {
+				return txErr
+			}
 			out, txErr = s.finish(ctx, q, finishRequest{
 				Key: req.IdempotencyKey, Hash: joinHash(req, live),
 				MembershipID: membershipID, CircleID: live.CircleID,
@@ -198,6 +212,11 @@ func (s *Service) Join(ctx context.Context, req JoinRequest) (Joined, error) {
 			return txErr
 		}
 
+		bootstrapped, txErr = s.grantFirstAdministrator(ctx, q, live, identityID)
+		if txErr != nil {
+			return txErr
+		}
+
 		action := audit.ActionMemberJoined
 		if live.Kind == invite.KindOwnerGrant {
 			// A grant leaves no `invite_redemption` row — that table's `invite_id` is NOT NULL —
@@ -225,7 +244,61 @@ func (s *Service) Join(ctx context.Context, req JoinRequest) (Joined, error) {
 	if err != nil {
 		return Joined{}, coded(err)
 	}
+	if bootstrapped {
+		s.log.InfoContext(ctx, "instance bootstrapped: first administrator admitted",
+			slog.String("identity_id", out.Membership.IdentityID),
+			slog.String("circle_id", out.Circle.ID.String()),
+			slog.String("permission", string(authz.PermissionInstanceOwner)))
+	}
 	return out, nil
+}
+
+// bootstrapGrantReason is what the ledger records for the grant nobody decided: the instance had
+// no administrator, and somebody holding the bootstrap owner code redeemed it.
+const bootstrapGrantReason = "first administrator: redeemed the bootstrap owner code"
+
+// grantFirstAdministrator gives the redeeming identity `instance.owner` when — and only when —
+// nothing on this instance yet administers it. ADR-0016.
+//
+// **Three things make this safe to have on a public route.**
+//
+// It is an owner GRANT and never an invite: `invite` carries `CHECK (role <> 'owner')`, so an
+// invite cannot reach this branch at all, and a grant is minted only by something that already
+// holds the database or by the setup route behind `TOD_SETUP_TOKEN`.
+//
+// The condition is DERIVED rather than stored — [instancegrant.AdministratorExists] — so it cannot
+// drift from who can actually administer the instance, and it closes for good at the first one.
+//
+// The read and the append share the caller's transaction. SQLite has a single writer, so a second
+// redemption racing the first sees the committed grant rather than the state both started from;
+// splitting them across a commit boundary is what would let two codes each mint an owner.
+//
+// `DecidedBy` is left ZERO, exactly as `tod-serve instance grant` leaves it. Nobody decided this:
+// the instance had no administrator and somebody presented the code, which is a fact about the
+// instance rather than a person's judgement, and recording a decider would be the stronger claim.
+func (s *Service) grantFirstAdministrator(
+	ctx context.Context, q *sqlitegen.Queries, live invite.Resolved, identityID string,
+) (bool, error) {
+	if live.Kind != invite.KindOwnerGrant {
+		return false, nil
+	}
+	exists, err := instancegrant.AdministratorExists(ctx, q)
+	if err != nil || exists {
+		return false, err
+	}
+	id, err := core.ParseID[core.Identity](identityID)
+	if err != nil {
+		return false, err
+	}
+	if _, err = s.grants.DecideInTx(ctx, q, instancegrant.DecideRequest{
+		IdentityID: id,
+		Permission: authz.PermissionInstanceOwner,
+		Decision:   instancegrant.DecisionGranted,
+		Reason:     bootstrapGrantReason,
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Authenticate re-authenticates an existing membership on a new device.
