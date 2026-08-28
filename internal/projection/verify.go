@@ -81,26 +81,78 @@ func (s *Service) Verify(ctx context.Context) (VerifyReport, error) {
 	if err != nil {
 		return VerifyReport{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
-	report := VerifyReport{CirclesChecked: len(circles), AsOf: s.clock.Now()}
+	// `CirclesChecked` counts up as circles are actually checked rather than being set to
+	// `len(circles)` here, because a circle can be tombstoned between that listing and its turn
+	// below — and a count that claimed to have checked one this job deliberately skipped would be
+	// the wrong kind of reassuring.
+	report := VerifyReport{AsOf: s.clock.Now()}
 
-	for _, circle := range circles {
-		circleID, parseErr := core.ParseID[core.Circle](circle.ID)
+	for _, listed := range circles {
+		circleID, parseErr := core.ParseID[core.Circle](listed.ID)
 		if parseErr != nil {
 			return VerifyReport{}, apierr.Wrap(apierr.CodeInternalError, parseErr, "")
 		}
-		cached, cacheErr := s.cachedStates(ctx, circleID)
-		if cacheErr != nil {
-			return VerifyReport{}, cacheErr
+		// **The cached row and the recomputation it is diffed against come from one snapshot.**
+		// Read as separate pooled statements they came from two instants, and a timer committing
+		// between them made every affected field look like drift — an ERROR each, on a healthy
+		// instance, in the job whose whole value is that its alert means something. That is the
+		// cry-wolf failure this design is built against, and it is issue #17's defect wearing a
+		// different consequence: this reads the same pair, `target_state_cache` beside the timer
+		// that a window write commits with it.
+		//
+		// **Unlike [Service.Board] there is no behavioural gate on this one, and that is stated
+		// rather than glossed.** The interleaving is reachable — it was reproduced here, two to
+		// seven sweeps in forty — but only by padding the circle with eighty reported targets so
+		// the sweep's vulnerable gap lined up with the write, which is a phase relationship tuned
+		// on one machine. A sampled test that misses one run in eight, costs seventy seconds under
+		// `-race` and might be silently vacuous on other hardware is a gate nobody could trust the
+		// green of. `docs/concepts/invariants.md` records the fix and records that it is ungated.
+		var (
+			cached map[core.RaidTargetID]*sqlitegen.TargetStateCache
+			states []derivedState
+			gone   bool
+		)
+		if snapErr := s.db.InReadSnapshot(ctx, func(
+			ctx context.Context, q *sqlitegen.Queries,
+		) error {
+			// **The circle is re-read HERE, and the row from `ListLiveCircles` above is not used
+			// for anything but its id.** `min_reporters_to_supersede` is an input to the
+			// derivation — it decides when a later cluster supersedes an earlier one — so an
+			// `updateCircle` committing between that listing and this snapshot would recompute
+			// under the OLD threshold and diff the answer against a cache the CURRENT threshold
+			// produced. This job would then either miss real drift or repair a correct row into a
+			// stale one, which is the one thing a repair must never do.
+			circle, err := s.circle(ctx, q, circleID)
+			if coded, ok := apierr.From(err); ok && coded.Code() == apierr.CodeNotFound {
+				// Tombstoned since the listing. Skipping is what the tombstone means — a deleted
+				// circle must not come back onto the recompute path — and it is counted by NOT
+				// being counted, plus the line below.
+				gone = true
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if cached, err = s.cachedStates(ctx, q, circleID); err != nil {
+				return err
+			}
+			states, err = s.deriveAll(ctx, q, circle)
+			return err
+		}); snapErr != nil {
+			return VerifyReport{}, snapErr
 		}
-		states, deriveErr := s.deriveAll(ctx, circle)
-		if deriveErr != nil {
-			return VerifyReport{}, deriveErr
+		if gone {
+			s.log.WarnContext(ctx, "circle was deleted during the verify sweep and was skipped",
+				slog.String("circle_id", circleID.String()))
+			continue
 		}
+		report.CirclesChecked++
 
 		for _, derived := range states {
 			report.TargetsChecked++
-			fresh, storeErr := s.store(ctx, s.db.Queries(), circleID, derived.targetID, derived.state,
-				derived.rows, derived.reason)
+			// The writing pool: the snapshot above is `query_only`, and the repair is a write.
+			fresh, storeErr := s.store(ctx, s.db.Queries(), circleID, derived.targetID,
+				derived.state, derived.rows, derived.reason)
 			if storeErr != nil {
 				return VerifyReport{}, storeErr
 			}
