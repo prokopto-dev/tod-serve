@@ -9,6 +9,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
+	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 )
@@ -23,7 +24,7 @@ func healthyInstance(t *testing.T, publicURL, redirectURI string) string {
 	t.Helper()
 	path := instanceWithNoAdministrator(t, publicURL, redirectURI)
 	db := openCopy(t, path)
-	grantAdministrator(t, db, testProviderID, authz.PermissionInstanceOwner)
+	grantAdministrator(t, db, testProviderID, testCircleID, authz.PermissionInstanceOwner)
 	require.NoError(t, db.Close())
 	return path
 }
@@ -54,13 +55,24 @@ func instanceWithNoAdministrator(t *testing.T, publicURL, redirectURI string) st
 			CreatedAt: 1, UpdatedAt: 1,
 		})
 	require.NoError(t, err)
+	_, err = db.Queries().CreateCircle(t.Context(), sqlitegen.CreateCircleParams{
+		CircleID: testCircleID, Name: "Ops", NameNorm: "ops", Server: "blue", Timezone: "UTC",
+		MinReportersToSupersede: 2, RevokeInvalidatesInvites: 0,
+		State: schemaenum.CircleStateActive, CreatedAt: 1, UpdatedAt: 1,
+	})
+	require.NoError(t, err)
 	require.NoError(t, db.Close())
 	return path
 }
 
-// testProviderID is the provider [instanceWithNoAdministrator] writes, and the one an identity
-// hangs off.
-const testProviderID = "01M0000000000000000000000A"
+const (
+	// testProviderID is the provider [instanceWithNoAdministrator] writes, and the one an identity
+	// hangs off.
+	testProviderID = "01M0000000000000000000000A"
+	// testCircleID is the circle an administrator's membership lives in. A grant is not enough on
+	// its own — see [checkAdministrable] — so the fixture has to write one.
+	testCircleID = "01M0000000000000000000000Z"
+)
 
 // grantAdministrator finishes the bootstrap: it creates the identity a redeemed owner code would
 // have created, and grants it `instance.owner` through the real ledger.
@@ -74,31 +86,47 @@ const testProviderID = "01M0000000000000000000000A"
 // needs a server; the GRANT goes through `instancegrant.Service` over the real table, so a schema
 // the service could not actually write is a red test rather than a green one.
 func grantAdministrator(
-	t *testing.T, db *store.DB, providerID string, perms ...authz.Permission,
+	t *testing.T, db *store.DB, providerID, circleID string, perms ...authz.Permission,
 ) core.IdentityID {
 	t.Helper()
-	return seedIdentity(t, db, providerID, 0, perms...)
+	return seedIdentity(t, db, providerID, circleID, 0, perms...)
 }
 
-// seedIdentity writes the nth identity on this instance and records each permission as granted.
+// seedIdentity writes the nth identity on this instance, A LIVE HUMAN MEMBERSHIP for it, and each
+// permission as granted.
+//
+// The membership is not decoration. An instance grant is on an identity, but the identity only
+// reaches a request through a membership — `Authenticator.membership` reads one on every call and
+// refuses a revoked one, or one in a deleted circle. So an identity with a grant and no live
+// membership holds a permission nothing can carry, and a fixture that omitted the membership
+// would let [checkAdministrable] pass by counting exactly that.
 //
 // `n` is the caller's, not a counter: package-level mutable state is banned here and a fixture
 // that numbered itself would hand two parallel tests the same id. It is the last ULID character,
 // so `n` is bounded by the alphabet — which is more identities than any doctor test needs.
 func seedIdentity(
-	t *testing.T, db *store.DB, providerID string, n int, perms ...authz.Permission,
+	t *testing.T, db *store.DB, providerID, circleID string, n int, perms ...authz.Permission,
 ) core.IdentityID {
 	t.Helper()
 	require.Less(t, n, 26, "seedIdentity only has one character to number identities with")
 	suffix := string(rune('A' + n))
+	id := "01M0000000000000000000000" + suffix
 	_, err := db.Queries().CreateIdentity(t.Context(), sqlitegen.CreateIdentityParams{
-		ID: "01M0000000000000000000000" + suffix, ProviderID: providerID,
+		ID: id, ProviderID: providerID,
 		Subject: "operator-" + suffix, DisplayName: "Operator " + suffix,
 		CreatedAt: 1, UpdatedAt: 1,
 	})
 	require.NoError(t, err)
+	_, err = db.Queries().CreateMembership(t.Context(), sqlitegen.CreateMembershipParams{
+		ID: membershipIDFor(suffix), CircleID: circleID, IdentityID: &id,
+		Kind:        schemaenum.MembershipKindHuman,
+		DisplayName: "Operator " + suffix, DisplayNameNorm: "operator-" + suffix,
+		Role:     string(authz.RoleOwner),
+		JoinedAt: 1, CreatedAt: 1, UpdatedAt: 1,
+	})
+	require.NoError(t, err)
 
-	identityID, err := core.ParseID[core.Identity]("01M0000000000000000000000" + suffix)
+	identityID, err := core.ParseID[core.Identity](id)
 	require.NoError(t, err)
 	grants, err := newGrantService(db)
 	require.NoError(t, err)
@@ -112,6 +140,31 @@ func seedIdentity(
 	return identityID
 }
 
+// membershipIDFor is the membership [seedIdentity] writes for the nth identity.
+func membershipIDFor(suffix string) string { return "01M0000000000000000000001" + suffix }
+
+// revokeMembershipOf is one of the two ways a grant outlives the principal that could carry it.
+func revokeMembershipOf(t *testing.T, db *store.DB, n int) {
+	t.Helper()
+	at := int64(2)
+	id := membershipIDFor(string(rune('A' + n)))
+	_, err := db.Queries().RevokeMembership(t.Context(), sqlitegen.RevokeMembershipParams{
+		RevokedAt: &at, RevokedByMembershipID: &id, UpdatedAt: at,
+		CircleID: testCircleID, ID: id,
+	})
+	require.NoError(t, err)
+}
+
+// deleteTestCircle is the other: the membership is intact and the circle it is in is a tombstone.
+func deleteTestCircle(t *testing.T, db *store.DB) {
+	t.Helper()
+	at := int64(2)
+	_, err := db.Queries().SoftDeleteCircle(t.Context(), sqlitegen.SoftDeleteCircleParams{
+		DeletedAt: &at, UpdatedAt: at, CircleID: testCircleID,
+	})
+	require.NoError(t, err)
+}
+
 // finishBootstrap does to an `init`ed database what redeeming the owner code and running
 // `tod-serve instance grant` does: it gives the instance somebody who can administer it.
 //
@@ -121,10 +174,16 @@ func seedIdentity(
 func finishBootstrap(t *testing.T, path string) {
 	t.Helper()
 	db := openCopy(t, path)
-	rows, err := db.Queries().ListIdentityProviders(t.Context())
+	providers, err := db.Queries().ListIdentityProviders(t.Context())
 	require.NoError(t, err)
-	require.NotEmpty(t, rows, "init created no provider, so there is nothing to hang an identity off")
-	grantAdministrator(t, db, rows[0].ID, authz.PermissionInstanceOwner)
+	require.NotEmpty(t, providers,
+		"init created no provider, so there is nothing to hang an identity off")
+	// The circle `init` created, not a fixture one: the membership has to be somewhere a
+	// credential could really be bound, and `checkAdministrable` now reads exactly that.
+	circles, err := db.Queries().ListLiveCircles(t.Context())
+	require.NoError(t, err)
+	require.NotEmpty(t, circles, "init created no circle, so a membership has nowhere to live")
+	grantAdministrator(t, db, providers[0].ID, circles[0].ID, authz.PermissionInstanceOwner)
 }
 
 // TestDoctor_APublicURLTheProvidersDisagreeWith_IsAProblem — the hostname is written down five
@@ -259,7 +318,7 @@ func TestDoctor_WhoCanAdministerTheInstance_IsAProblemWhenNobodyCan(t *testing.T
 		{
 			name: "instance.owner, which is what the runbook says to grant",
 			seed: func(t *testing.T, db *store.DB) {
-				seedIdentity(t, db, testProviderID, 0, authz.PermissionInstanceOwner)
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
 			},
 			wantProblem: false,
 			wantLine:    "1 identity can administer this instance",
@@ -269,7 +328,7 @@ func TestDoctor_WhoCanAdministerTheInstance_IsAProblemWhenNobodyCan(t *testing.T
 		{
 			name: "the narrower key on its own",
 			seed: func(t *testing.T, db *store.DB) {
-				seedIdentity(t, db, testProviderID, 0, authz.PermissionInstanceSecurityManage)
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceSecurityManage)
 			},
 			wantProblem: false,
 			wantLine:    "1 identity can administer this instance",
@@ -278,7 +337,7 @@ func TestDoctor_WhoCanAdministerTheInstance_IsAProblemWhenNobodyCan(t *testing.T
 		{
 			name: "an instance-realm grant that is not administration",
 			seed: func(t *testing.T, db *store.DB) {
-				seedIdentity(t, db, testProviderID, 0,
+				seedIdentity(t, db, testProviderID, testCircleID, 0,
 					authz.PermissionOpsRead, authz.PermissionInstanceCircleCreate)
 			},
 			wantProblem: true,
@@ -289,7 +348,7 @@ func TestDoctor_WhoCanAdministerTheInstance_IsAProblemWhenNobodyCan(t *testing.T
 		{
 			name: "granted and then revoked",
 			seed: func(t *testing.T, db *store.DB) {
-				id := seedIdentity(t, db, testProviderID, 0, authz.PermissionInstanceOwner)
+				id := seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
 				grants, err := newGrantService(db)
 				require.NoError(t, err)
 				_, err = grants.Decide(t.Context(), instancegrant.DecideRequest{
@@ -304,10 +363,51 @@ func TestDoctor_WhoCanAdministerTheInstance_IsAProblemWhenNobodyCan(t *testing.T
 				"still contains the grant; counting rows rather than decisions would miss it",
 		},
 		{
+			// The ledger outlives a membership: a grant is on an IDENTITY and the identity only
+			// reaches a request through one. `Authenticator.membership` refuses a revoked
+			// membership on every call, so this identity holds instance.owner and no credential
+			// it could ever present is accepted.
+			name: "the only administrator's membership is revoked",
+			seed: func(t *testing.T, db *store.DB) {
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
+				revokeMembershipOf(t, db, 0)
+			},
+			wantProblem: true,
+			wantLine:    "live membership",
+			why: "a grant nothing can carry is not an administrator, and reporting one is the " +
+				"confidently wrong answer: it says the instance is fine when nobody can log in",
+		},
+		{
+			// The other way the same thing happens, and it is a separate row because it is a
+			// separate refusal: the membership is intact and the CIRCLE is a tombstone.
+			name: "the only administrator's circle is deleted",
+			seed: func(t *testing.T, db *store.DB) {
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
+				deleteTestCircle(t, db)
+			},
+			wantProblem: true,
+			wantLine:    "live membership",
+			why: "a deleted circle stops its members acting on their very next request, so the " +
+				"grant is as unreachable as it is under a revocation",
+		},
+		{
+			// And the count is of LIVE administrators. Without this the two rows above could pass
+			// by the check refusing everybody the moment any membership is revoked anywhere.
+			name: "one administrator revoked and one still live",
+			seed: func(t *testing.T, db *store.DB) {
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
+				revokeMembershipOf(t, db, 0)
+				seedIdentity(t, db, testProviderID, testCircleID, 1, authz.PermissionInstanceOwner)
+			},
+			wantProblem: false,
+			wantLine:    "1 identity can administer this instance",
+			why:         "the revoked one is not counted and the live one still is",
+		},
+		{
 			name: "two administrators",
 			seed: func(t *testing.T, db *store.DB) {
-				seedIdentity(t, db, testProviderID, 0, authz.PermissionInstanceOwner)
-				seedIdentity(t, db, testProviderID, 1, authz.PermissionInstanceSecurityManage)
+				seedIdentity(t, db, testProviderID, testCircleID, 0, authz.PermissionInstanceOwner)
+				seedIdentity(t, db, testProviderID, testCircleID, 1, authz.PermissionInstanceSecurityManage)
 			},
 			wantProblem: false,
 			wantLine:    "2 identities can administer this instance",

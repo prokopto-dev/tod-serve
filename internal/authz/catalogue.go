@@ -264,10 +264,11 @@ func InstancePermissions() []Permission {
 // route requires `instance.owner`, and so the grant the deployment runbook told an operator to
 // make handed them nothing. The expansion is what makes the description true.
 //
-// It is EXPANSION rather than a second matrix on purpose. ADR-0012 rejected an instance role enum
-// because it would grant by implication across unrelated keys; this implies in one direction from
-// one key, and every narrower key stays separately grantable, so granting `ops.read` for a
-// dashboard still hands over nothing else.
+// It is EXPANSION rather than a second matrix on purpose, and ADR-0015 is where that is argued:
+// ADR-0012 rejected implication as the GRANTING MODEL — a role enum, or a boolean with the rest
+// derived in storage — and this implies in one direction from one key, at the authorization
+// boundary, with every narrower key still separately grantable. So granting `ops.read` for a
+// dashboard still hands over nothing else, which is ADR-0012's consequence and is unchanged.
 //
 // The expansion is derived from [Realm] rather than listed, so an instance-realm permission added
 // to the catalogue is one an instance owner holds without anybody remembering to append to

@@ -232,7 +232,9 @@ func PermissionsDoc() string {
 		"A minted PAT has none of those properties.\n")
 
 	b.WriteString("\n## Expansions\n\n")
-	b.WriteString("A permission that grants others. Everything not listed here grants exactly " +
+	b.WriteString("A permission that grants others — " +
+		"[ADR-0015](../adr/0015-instance-owner-implies-the-instance-realm.md). " +
+		"Everything not listed here grants exactly " +
 		"itself: this is the only implication in the catalogue, and " +
 		"`TestPermissions_EveryPermission_IsRequiredByARouteOrExpandsToOnesThatAre` is what " +
 		"stops a key expanding into nothing while its summary says otherwise.\n\n")

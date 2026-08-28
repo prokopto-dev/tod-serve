@@ -1,6 +1,8 @@
 # ADR-0012 — Instance permissions are a capability ledger on an identity
 
-**Status:** accepted · **Date:** 2026-08-20 · **Deciders:** Courtney Caldwell
+**Status:** accepted; implication superseded by
+[ADR-0015](0015-instance-owner-implies-the-instance-realm.md) · **Date:** 2026-08-20 ·
+**Deciders:** Courtney Caldwell
 
 ## Context and problem statement
 
@@ -19,7 +21,7 @@ so it is CLI-only and the admin console cannot administer the instance at all.
 |---|---|---|
 | A — `instance_grant`, a capability list keyed `(identity, permission)` | No new vocabulary: what is granted is a permission the catalogue defines, and nothing is implied by anything else | Revocation is a `DELETE`, so the table remembers nothing. `audit_log.circle_id` is `NOT NULL` and an instance event belongs to no circle, so the history needs a second audit mechanism |
 | B — An instance role enum mirroring circle roles | Familiar shape; one column on `identity` | Exactly the second authorization model `internal/authz` warns against: a second matrix, a second ordering rule. And it grants by implication — `ops.read` arrives because somebody is an admin |
-| C — `is_instance_owner` on `identity`, the other four derived | One boolean, no new table | Derivation *is* implication: nothing could hand somebody `ops.read` for a dashboard without also handing them the identity providers, which is the whole reason `circle.manage` and `circle.security.manage` are separate keys |
+| C — `is_instance_owner` on `identity`, the other four derived | One boolean, no new table | Derivation *is* implication: nothing could hand somebody `ops.read` for a dashboard without also handing them the identity providers, which is the whole reason `circle.manage` and `circle.security.manage` are separate keys. *(Revisited by [ADR-0015](0015-instance-owner-implies-the-instance-realm.md): at the authorization boundary, not storage.)* |
 | **D — `instance_grant` as an append-only, hash-chained ledger of decisions** | A's capability list with A's missing half built in: every grant and revocation is a durable, attributed, chained row. One table, no second audit log | The current state is a derivation rather than a row, and the table grows with decisions rather than grants |
 
 ## Decision outcome
@@ -73,8 +75,7 @@ it exists to make possible.
 - Good, because a revocation survives, and the chain makes a hand-deleted row visible.
 - **Bad, because instance grants are console-only in this change.** `instance.owner` is grantable
   and reaches no route, so a console can use the identity providers but cannot hand that ability to
-  a second operator without shell access. *(Since amended: `instance.owner` now expands to the
-  whole instance realm — see [invariants](../concepts/invariants.md).)*
+  a second operator without shell access.
 - **Bad, because the effective grant is a query, not a row**, run per request behind a session
   where a capability list would have been one indexed read.
 - **Bad, because the ledger grows without bound**, in decisions rather than grants, and nothing

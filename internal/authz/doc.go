@@ -33,10 +33,11 @@
 //
 // # One expansion
 //
-// `instance.owner` grants every other instance-realm key, through [Implies] and [ExpandInstance].
-// It is the only implication in the catalogue and it runs in one direction from one key, which is
-// what keeps it short of the instance role enum ADR-0012 rejected: every narrower key is still
-// separately grantable, so handing somebody `ops.read` for a dashboard hands over nothing else.
+// `instance.owner` grants every other instance-realm key, through [Implies] and [ExpandInstance]
+// (ADR-0015). It is the only implication in the catalogue and it runs in one direction from one
+// key, which is what keeps it short of the instance role enum ADR-0012 rejected: every narrower
+// key is still separately grantable, so handing somebody `ops.read` for a dashboard hands over
+// nothing else.
 //
 // The expansion is applied in [EffectiveForSession] rather than at the ledger. What was DECIDED
 // and what it reaches are two different facts, and a ledger that stored the expansion would leave
