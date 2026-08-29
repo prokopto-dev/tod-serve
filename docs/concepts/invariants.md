@@ -1,12 +1,18 @@
 # Invariants
 
-**Status:** design phase. Every mechanism below lands with the subsystem it guards; the **Lands in**
-column says when, and `landed` means it is enforced today — the named test or gate exists and runs
-in `make check`.
+**Status:** normative, and shipping. Almost every mechanism below is `landed` — the named test or
+gate exists and runs in `make check` or a CI job. The **Lands in** column says when for the few that
+are not.
 
 A rule without a mechanism is a wish. Every rule on this page names the thing that enforces it — a
 database trigger, a lint rule, a test, or a CI gate — because a rule enforced only by review is a
 rule that survives until the first tired Friday.
+
+**Some rows say the mechanism is missing, and they start `NOT HELD`.** They are here rather than
+deleted because the rule is still real and somebody has to be able to find the gap; a rule quietly
+dropped from this page is indistinguishable from one nobody ever wanted. A row that names a test,
+a script or a trigger is a claim that it exists — an audit at `09d1e9f` found three that did
+not, and they are now written the other way round.
 
 ## Data invariants
 
