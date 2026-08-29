@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -447,4 +448,100 @@ func repoGatesAllowlist(t *testing.T) []string {
 	require.GreaterOrEqual(t, end, 0, "INSTANCE_SCOPED is unterminated")
 
 	return strings.Split(rest[:end], "|")
+}
+
+// TestTenancy_EveryQueryAgainstATableWithACircleID_NamesIt asks the SCHEMA which tables are
+// circle-scoped instead of trusting a filename.
+//
+// TEN001 skips a whole FILE whose basename is on the instance-scoped allowlist. Two of the
+// fourteen allowlisted tables carry a `circle_id` anyway — `event_outbox` and `auth_flow`, both
+// nullable, both for the reason canonical §9 gives — so every query in those two files is exempt
+// from the tenancy gate by nothing more than what the file is called.
+//
+// That is not hypothetical, and it is aimed straight at the least-weathered thing in the roadmap.
+// `event_outbox` is what `subscribeCircleEvents` and `replayCircleEvents` are built on — the two
+// circle-scoped operations `uncoveredCircleRoutes` still lists — and `event_seq` is the ONE global
+// sequence across every circle on the instance. A Phase 6 replay filtering on `since_seq` and not
+// `circle_id` would stream another circle's events to a member of the right circle: the middleware
+// passes, because the circle in the path IS theirs, and only the `WHERE` stands in the way. Today
+// the one per-circle read is correct, and what says so is a prose comment in the file header.
+//
+// This closes it before the handler lands. The rule is the same rule; what changes is that
+// "circle-scoped" is read off `db/schema.hcl` — the single schema truth — rather than off the
+// allowlist, so a table cannot become exempt by being renamed onto a list.
+func TestTenancy_EveryQueryAgainstATableWithACircleID_NamesIt(t *testing.T) {
+	t.Parallel()
+
+	tenanted := tablesWithACircleID(t)
+	require.Greater(t, len(tenanted), 5,
+		"only %d tables carry a circle_id; the schema parse is wrong", len(tenanted))
+
+	checked, waived := 0, 0
+	for _, q := range everyQuery(t) {
+		var touches []string
+		for _, table := range tenanted {
+			if q.touches(table) {
+				touches = append(touches, table)
+			}
+		}
+		if len(touches) == 0 {
+			continue
+		}
+		checked++
+
+		if q.namesCircleWhereItCounts() {
+			continue
+		}
+		waived++
+		require.Contains(t, q.Body, "-- tenancy:",
+			"%s in %s reads %v, which carries a circle_id, and does not name it where it "+
+				"filters. TEN001 does not see this one: %s is on the instance-scoped allowlist, "+
+				"so the whole file is skipped by name. Either name the tenant, or carry a "+
+				"`-- tenancy:` line saying why this query legitimately spans circles",
+			q.Name, q.File, touches, strings.TrimSuffix(q.File, ".sql"))
+	}
+
+	require.Greater(t, checked, 30,
+		"only %d queries touch a circle-scoped table; the parse has drifted", checked)
+	t.Logf("%d queries read a table carrying circle_id; %d name it, %d carry a counted waiver",
+		checked, checked-waived, waived)
+}
+
+// namesCircleWhereItCounts reports whether the query names the tenant in the place that FILTERS.
+//
+// For an INSERT that is the column list: the row being written names its circle. For everything
+// else it is the WHERE, with the ORDER BY tail removed — sorting by the tenant key is not
+// filtering on it, and naming it in a projection is not either.
+func (q sqlQuery) namesCircleWhereItCounts() bool {
+	upper := strings.ToUpper(q.SQL)
+	if strings.HasPrefix(strings.TrimSpace(upper), "INSERT") {
+		head := q.SQL
+		if at := strings.Index(upper, " VALUES"); at > 0 {
+			head = q.SQL[:at]
+		} else if at := strings.Index(upper, " SELECT"); at > 0 {
+			head = q.SQL[:at]
+		}
+		return strings.Contains(head, "circle_id")
+	}
+	return strings.Contains(q.filter(), "circle_id")
+}
+
+// tablesWithACircleID reads db/schema.hcl — the single schema truth — for every table carrying a
+// circle_id column, nullable or not.
+func tablesWithACircleID(t *testing.T) []string {
+	t.Helper()
+	root, err := canondoc.RepoRoot()
+	require.NoError(t, err)
+	raw, err := os.ReadFile(filepath.Join(root, "db", "schema.hcl"))
+	require.NoError(t, err)
+
+	var out []string
+	for _, block := range regexp.MustCompile(`(?ms)^table "([a-z_]+)" \{.*?^\}`).
+		FindAllStringSubmatch(string(raw), -1) {
+		if strings.Contains(block[0], `column "circle_id"`) {
+			out = append(out, block[1])
+		}
+	}
+	sort.Strings(out)
+	return out
 }

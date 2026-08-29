@@ -129,6 +129,8 @@ func tableBlock(t *testing.T, schema, name string) string {
 type sqlQuery struct {
 	File string
 	Name string
+	// Body is the whole block including its comment lines, so a `-- tenancy:` waiver is visible.
+	Body string
 	// SQL is the statement with its comment lines removed, so a comment SAYING code_prefix is not
 	// read as a query that filters on it.
 	SQL string
@@ -172,6 +174,9 @@ func everyQuery(t *testing.T) []sqlQuery {
 				}
 				current = &sqlQuery{File: filepath.Base(path), Name: strings.Fields(rest)[0]}
 				continue
+			}
+			if current != nil {
+				current.Body += line + "\n"
 			}
 			if current == nil || strings.HasPrefix(strings.TrimSpace(line), "--") {
 				continue
