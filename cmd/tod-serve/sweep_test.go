@@ -3,9 +3,10 @@ package main
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
-	"github.com/stretchr/testify/require"
 )
 
 // longExpired is a fixed instant in 2020. It is a constant rather than an offset from the clock
