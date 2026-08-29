@@ -16,19 +16,26 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 )
 
-// timerWrite is one of the four paths in this repository that moves a respawn window.
+// timerWrite is one of the five paths in this repository that moves a DERIVATION, and therefore
+// every board hanging off it, with nothing appended to the report log to say so.
 //
-// Three are routes and the fourth is `tod-serve seed timers`, which has no route and is therefore
-// invisible to the API's registry gates — so this table is where the four are held to the same
-// rule. A fifth write that forgot to take a [catalogue.TimerInvalidator] would not compile; a
-// fifth that took one and did nothing with it is what `moved` below catches.
+// Four of them move a respawn window, which is what named the type: three routes plus `tod-serve
+// seed timers`, which has no route and is therefore invisible to the API's registry gates. The
+// fifth is `updateRaidTarget` flipping `is_quake_target` — not a window at all, but a column the
+// resolve ladder copies onto every [consensus.Timer] it returns, so a flip decides whether a kill
+// before the latest quake still counts (issue #21). All five are held to one rule here because the
+// rule is one rule: the recomputation commits with the write or neither does.
+//
+// A sixth write that forgot to take a [catalogue.TimerInvalidator] would not compile; a sixth that
+// took one and did nothing with it is what `moved` below catches.
 type timerWrite struct {
 	name string
 	// write performs the write. It is handed the invalidator so a test can substitute one that
 	// fails, or one that reads the database from inside the transaction.
 	write func(f *fixture, s writeSubject, inv catalogue.TimerInvalidator) error
-	// moved reports whether the window this write moves has moved, as seen through q. For the
-	// delete that is the row being GONE, which is why this is a predicate and not a row.
+	// moved reports whether the thing this write moves has moved, as seen through q. For the
+	// delete that is the row being GONE, and for the quake flag it is a column rather than a row,
+	// which is why this is a predicate and not a row.
 	moved func(t *testing.T, ctx context.Context, q *sqlitegen.Queries, s writeSubject) bool
 	// arrange runs before the write, for the paths that need something already there.
 	arrange func(f *fixture, s writeSubject)
@@ -114,6 +121,25 @@ func timerWrites() []timerWrite {
 				return err
 			},
 			moved: timerExists,
+		},
+		{
+			// The one entry that moves no window. It belongs in this table anyway: it takes the
+			// same port, inside the same kind of transaction, for the same reason — and the three
+			// properties below are exactly the ones a flip has to have.
+			name: "UpdateQuakeFlag",
+			write: func(f *fixture, s writeSubject, inv catalogue.TimerInvalidator) error {
+				_, err := f.svc.Update(f.t.Context(), s.target.ID,
+					catalogue.UpdateRequest{IsQuakeTarget: ptr(true)}, inv)
+				return err
+			},
+			moved: func(
+				t *testing.T, ctx context.Context, q *sqlitegen.Queries, s writeSubject,
+			) bool {
+				t.Helper()
+				row, err := q.GetRaidTarget(ctx, s.target.ID.String())
+				require.NoError(t, err)
+				return row.IsQuakeTarget == 1
+			},
 		},
 		{
 			name: "ApplySeed",
@@ -455,6 +481,91 @@ func TestApplySeed_EveryPreWriteFailure_IsMarkedRejected(t *testing.T) {
 					TargetID: target.ID.String(), Server: string(core.ServerBlue),
 				})
 			require.True(t, store.IsNotFound(getErr), "the failed seed left a window behind")
+		})
+	}
+}
+
+// TestUpdate_OnlyAnActualFlagFlip_PushesTheInvalidation is the other direction of the fifth entry
+// above, and it is the half a "did it push" gate cannot ask.
+//
+// `updateRaidTarget` is the one write on this path that can move a derivation WITHOUT moving one,
+// because most of what it changes is identity: a rename, a re-zoning, a new alias set and a
+// retirement all leave every `consensus.Timer` on the instance exactly as it was. Pushing on those
+// would fan a recomputation out over every circle on the instance under the write lock, and would
+// stamp `timer_change` onto boards whose answer did not change — a lie in the one field that
+// exists to explain why an answer moved.
+//
+// So the flip is compared against the row inside the transaction, and these are the cases that
+// distinguish "the request mentioned the flag" from "the flag moved".
+func TestUpdate_OnlyAnActualFlagFlip_PushesTheInvalidation(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		// from is what the target's flag is set to before the update under test.
+		from bool
+		req  catalogue.UpdateRequest
+		want int
+	}{
+		{
+			name: "a rename moves no derivation",
+			req:  catalogue.UpdateRequest{Name: ptr("Venril Sathir the Betrayer")},
+		},
+		{
+			name: "replacing the aliases moves no derivation",
+			req:  catalogue.UpdateRequest{Aliases: ptr([]string{"vs", "venril"})},
+		},
+		{
+			// `state` decides whether a target is LISTED, not what its reports mean. A retired
+			// target keeps every cached row it had, derived exactly as before.
+			name: "retiring moves no derivation",
+			req:  catalogue.UpdateRequest{State: ptr(schemaenum.RaidTargetStateRetired)},
+		},
+		{
+			name: "the flag sent unchanged is not a flip",
+			req:  catalogue.UpdateRequest{IsQuakeTarget: ptr(false)},
+		},
+		{
+			name: "off to on",
+			req:  catalogue.UpdateRequest{IsQuakeTarget: ptr(true)},
+			want: 1,
+		},
+		{
+			// Both directions, because the derivation changes both ways: turning it OFF makes
+			// every kill before the last quake count again, which un-does an `up`.
+			name: "on to off",
+			from: true,
+			req:  catalogue.UpdateRequest{IsQuakeTarget: ptr(false)},
+			want: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			target := f.target("Venril Sathir", "Karnor's Castle", "vs")
+			if tc.from {
+				_, err := f.svc.Update(t.Context(), target.ID,
+					catalogue.UpdateRequest{IsQuakeTarget: ptr(true)}, f.inv)
+				require.NoError(t, err)
+			}
+			f.inv.reset()
+
+			updated, err := f.svc.Update(t.Context(), target.ID, tc.req, f.inv)
+			require.NoError(t, err)
+
+			pushed := f.inv.recorded()
+			require.Len(t, pushed, tc.want,
+				"%s: %d pushes. A missing one leaves every board on the instance derived under "+
+					"the old flag; a spurious one recomputes them all under the write lock and "+
+					"writes timer_change onto answers that did not move", tc.name, len(pushed))
+			for _, call := range pushed {
+				require.Equal(t, "quake_target", call.Scope,
+					"a flag flip is not per-circle and not per-server: raid_target is "+
+						"instance-wide and carries no server")
+				require.Equal(t, target.ID, call.Target)
+			}
+			// The write still happened either way, so a green "no push" cannot be a refused write.
+			require.Equal(t, tc.from != (tc.want == 1), updated.IsQuakeTarget)
 		})
 	}
 }
