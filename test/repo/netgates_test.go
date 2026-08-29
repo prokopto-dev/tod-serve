@@ -135,6 +135,14 @@ func headers() http.Header { return http.Header{} }
 
 func do(ctx context.Context) error { _ = ctx; return nil }
 `)
+	// An ordinary package, outside every allowance, so BOTH halves have something to check. The
+	// empty-search-space guard caught its absence: NET001b excludes internal/identity entirely,
+	// so without this file that half was scanning nothing and would now report rather than pass.
+	writeGoFile(t, dir, "internal/circle/circle.go", `package circle
+
+// The overwhelming majority of this repository: a package that reaches no network at all.
+func name() string { return "circle" }
+`)
 
 	out, err := runGates(t, "TOD_GO_DIRS="+dir)
 
@@ -182,4 +190,40 @@ func writeGoFile(t *testing.T, dir, path, body string) {
 	full := filepath.Join(dir, filepath.FromSlash(path))
 	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
 	require.NoError(t, os.WriteFile(full, []byte(body), 0o600))
+}
+
+// The gate must not go green over nothing, and this is the case that makes that reachable.
+//
+// Once the allowances actually exclude — which is what the separator anchoring fixed — a search
+// space consisting ONLY of allowed directories leaves no files to grep. `echo "" | xargs grep -ln`
+// with no file arguments does not error: grep falls back to reading stdin, finds nothing, and the
+// gate reports a pass over zero files.
+//
+// That is this script's own opening rule violated by the gate itself — "a gate reporting success
+// over an empty search space is how a rule quietly stops being enforced" — and it is the same
+// shape as a tenancy gate silently dropping queries and still printing a tick. The direction
+// matters: reporting permitted files is noisy and fail-CLOSED, while passing over nothing is
+// fail-OPEN, and only the second one lets a real violation through unseen.
+func TestNET001_AnEmptySearchSpace_IsReportedRatherThanPassed(t *testing.T) {
+	t.Parallel()
+
+	// Every file is in a directory the gate allows, so both halves exclude everything they see.
+	dir := goTree(t, "internal/identity/outbound/client.go", `package outbound
+
+import "net/http"
+
+var c = &http.Client{Transport: &http.Transport{}}
+`)
+	writeGoFile(t, dir, "internal/probe/probe.go", `package probe
+
+import "net/http"
+
+var c = &http.Client{}
+`)
+
+	out, err := runGates(t, "TOD_GO_DIRS="+dir)
+
+	require.Error(t, err, "NET001 passed over an empty search space:\n%s", out)
+	require.Contains(t, out, "NET001")
+	require.Contains(t, out, "checked NOTHING")
 }
