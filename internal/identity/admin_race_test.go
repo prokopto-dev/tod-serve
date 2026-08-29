@@ -65,7 +65,8 @@ func TestAddProvider_LosingAUniquenessRace_IsAConflictAndNotAnInternalError(t *t
 	}
 	discordReq := identity.AddProviderRequest{
 		Key: "discord", Kind: identity.KindDiscord, DisplayName: "Discord",
-		ClientID: "1234567890", RedirectURI: callbackBaseURL + "/discord",
+		ClientID: "1234567890", ClientSecret: core.Secret("discord-client-secret"),
+		RedirectURI: callbackBaseURL + "/discord",
 	}
 
 	tests := []struct {

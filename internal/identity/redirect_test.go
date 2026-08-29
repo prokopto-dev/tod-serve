@@ -249,3 +249,50 @@ func TestCreateAuthorizationURL_ARedirectURIDifferingOnlyInCase_IsAccepted(t *te
 	require.NoError(t, err, "scheme and host are case-insensitive and :443 is https's default")
 	require.NotEmpty(t, got.URL)
 }
+
+// A `discord` row with no client secret is the other configuration that saves cleanly and cannot
+// possibly work: the instance is a confidential OAuth client, so the token exchange is ours to
+// perform, and `discord.New` refuses to build a client without one. Every sign-in would fail with
+// a 500 at the moment somebody clicked the button rather than at the moment somebody configured
+// it — and "I have some credentials" usually means a client id, because the secret is the one
+// Discord shows once.
+func TestAddProvider_DiscordWithNoClientSecret_IsRefusedAtConfigurationTime(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.store.providersByKey = map[string]identity.Provider{}
+	h.store.providersByID = map[string]identity.Provider{}
+
+	_, err := h.service.AddProvider(t.Context(), identity.AddProviderRequest{
+		Key: "discord", Kind: identity.KindDiscord, DisplayName: "Discord",
+		Enabled: true, ClientID: "111111111111111111",
+		RedirectURI: callbackBaseURL + "/discord",
+	})
+
+	require.ErrorIs(t, err, identity.ErrProviderInconsistent)
+	code, ok := identity.CodeOf(err)
+	require.True(t, ok)
+	require.Equal(t, identity.CodeValidationFailed, code)
+	// The message says where to get one, because "needs a client secret" is true and useless to
+	// somebody who does not know the portal shows it once.
+	require.Contains(t, err.Error(), "shown once")
+}
+
+// And an `oidc` provider without one is still accepted, because that is a working configuration:
+// the secret is used only on the browser path's token exchange, and a non-browser `id_token`
+// client needs none. Refusing it would be a false positive on something that works, which is how
+// a check gets switched off.
+func TestAddProvider_OIDCWithNoClientSecret_IsStillAccepted(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+
+	created, err := h.service.AddProvider(t.Context(), identity.AddProviderRequest{
+		Key: "authentik", Kind: identity.KindOIDC, DisplayName: "Corp SSO",
+		Issuer: "https://sso.example.com", JWKSURI: "https://sso.example.com/jwks",
+		ClientID: "tod-serve", RedirectURI: callbackBaseURL + "/authentik",
+	})
+
+	require.NoError(t, err)
+	require.True(t, created.ClientSecret.IsZero())
+}

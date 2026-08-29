@@ -111,6 +111,13 @@ func (f *fixture) provider(key, kind string) string {
 		clientID := key + "-client-id"
 		params.ClientID = &clientID
 	}
+	if kind == schemaenum.IdentityProviderKindDiscord {
+		// The instance is a confidential OAuth client of the operator's own application, so a
+		// discord row without a secret is one Provider.Validate refuses: it cannot perform the
+		// token exchange, and every sign-in through it would fail.
+		secret := key + "-client-secret"
+		params.ClientSecret = &secret
+	}
 	if kind == schemaenum.IdentityProviderKindOIDC {
 		issuer := "https://" + key + ".example.com"
 		jwks := issuer + "/jwks"
