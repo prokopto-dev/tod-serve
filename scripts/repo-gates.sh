@@ -325,14 +325,33 @@ if compgen -G "$QUERIES_DIR/*.sql" >/dev/null; then
         missing) report TEN001 "$f: query $name names no circle_id and carries no \`-- tenancy:\` waiver"; found=1 ;;
       esac
     done < <(awk '
-      function check(   filter) {
+      function check(   upper, head, filter, at) {
         if (q == "") return
-        # The statement without its comments and without its ORDER BY tail. Sorting by circle_id
-        # is not filtering by it, and a comment SAYING circle_id is not naming it either - both
-        # would otherwise pass a query that reads every tenant.
-        filter = sql
-        sub(/ORDER BY.*/, "", filter)
-        if (filter ~ /circle_id/)  { print "ok|" q;     return }
+        # The rule is "names circle_id in its WHERE", so the WHERE is what is read - not the
+        # statement. Reading the whole statement passed
+        #   SELECT id, circle_id FROM tod_report WHERE id = ?
+        # which reads every tenant and merely RETURNS the tenant key. Comments and the ORDER BY
+        # tail are out for the same reason: naming the column is not filtering on it.
+        # toupper() is length-preserving, so an index into it is an index into the original.
+        upper = toupper(sql)
+        if (upper ~ /^[[:space:]]*INSERT/) {
+          # An INSERT has no WHERE. Naming the tenant in the row being WRITTEN is the whole of
+          # the rule here, so the column list - everything before VALUES or a SELECT - is read.
+          head = sql
+          at = index(upper, " VALUES")
+          if (at == 0) at = index(upper, " SELECT")
+          if (at > 0) head = substr(sql, 1, at)
+          if (head ~ /circle_id/) { print "ok|" q; return }
+        } else {
+          at = index(upper, "WHERE")
+          if (at > 0) {
+            filter = substr(sql, at)
+            upper = toupper(filter)
+            at = index(upper, "ORDER BY")
+            if (at > 0) filter = substr(filter, 1, at - 1)
+            if (filter ~ /circle_id/) { print "ok|" q; return }
+          }
+        }
         if (body ~ /-- tenancy:/)  { print "waived|" q; return }
         print "missing|" q
       }

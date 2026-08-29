@@ -7,6 +7,9 @@
 -- to set it would be a second opinion about that.
 
 -- name: CreateCircle :one
+-- tenancy: the tenant root's own INSERT. This is the one statement that CREATES a circle, so
+-- there is no circle to be scoped to yet -- the id in the VALUES is the tenant key being minted,
+-- not a filter. internal/store spells the same exception out as `tenantRoot`.
 INSERT INTO circle (
   id, name, name_norm, description, server, timezone,
   min_reporters_to_supersede, revoke_invalidates_invites, state, created_at, updated_at

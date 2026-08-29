@@ -75,7 +75,81 @@ SELECT * FROM tod_report ORDER BY circle_id, id;
 
 	out, err := runGates(t, "TOD_QUERIES_DIR="+dir)
 	require.Error(t, err, "circle_id in an ORDER BY was accepted as a filter:\n%s", out)
+	require.Contains(t, out, "ListEveryReport",
+		"the finding names no query; \"TEN001\" alone also appears in the gate's PASS line")
+}
+
+// Naming the tenant key is not filtering on it. This is the mutation the gate used to pass: a
+// query that reads EVERY circle's reports and merely returns `circle_id` in its projection read as
+// "names circle_id" to a gate that grepped the whole statement.
+//
+// It is the same class as the ORDER BY case above and it is the more likely one to be written,
+// because an explicit column list is what a join or an aggregate needs.
+func TestTEN001_CircleIDOnlyInTheSelectList_IsReported(t *testing.T) {
+	t.Parallel()
+	dir := queriesDir(t, "tod_report.sql", `
+-- name: ListEveryReportWithItsCircle :many
+SELECT id, circle_id, target_id FROM tod_report WHERE id = ?;
+`)
+
+	out, err := runGates(t, "TOD_QUERIES_DIR="+dir)
+	require.Error(t, err, "circle_id in a SELECT list was accepted as a filter:\n%s", out)
 	require.Contains(t, out, "TEN001")
+	require.Contains(t, out, "ListEveryReportWithItsCircle")
+}
+
+// The tenant key in an UPDATE's SET clause is not a filter either: it names the circle a row is
+// being moved TO, which is the write version of the same mistake.
+//
+// The table is `membership` rather than `tod_report` deliberately. An UPDATE against an
+// append-only table is reported by LOG001, so writing this against `tod_report` produced a test
+// that passed on the OLD gate too — for a finding TEN001 never made. The query NAME is asserted
+// for the same reason: "TEN001" appears in the gate's PASS line as well as its failure, so
+// matching on the identifier alone is an assertion that cannot fail.
+func TestTEN001_CircleIDOnlyInAnUpdatesSetClause_IsReported(t *testing.T) {
+	t.Parallel()
+	dir := queriesDir(t, "membership.sql", `
+-- name: MoveMemberToAnotherCircle :exec
+UPDATE membership SET circle_id = ? WHERE id = ?;
+`)
+
+	out, err := runGates(t, "TOD_QUERIES_DIR="+dir)
+	require.Error(t, err, "circle_id in a SET clause was accepted as a filter:\n%s", out)
+	require.Contains(t, out, "MoveMemberToAnotherCircle")
+}
+
+// An INSERT has no WHERE, so the rule for one is that the row being WRITTEN names its circle.
+// Without this branch the stricter WHERE reading would report every INSERT in the repository and
+// somebody would widen the gate back out to silence it.
+func TestTEN001_AnInsertNamingTheCircle_IsAccepted(t *testing.T) {
+	t.Parallel()
+	dir := queriesDir(t, "tod_report.sql", `
+-- name: CreateReport :one
+INSERT INTO tod_report (id, circle_id, target_id)
+VALUES (?, ?, ?)
+RETURNING *;
+`)
+
+	out, err := runGates(t, "TOD_QUERIES_DIR="+dir)
+	require.NoError(t, err, out)
+	require.Contains(t, out, "1 queries")
+}
+
+// And an INSERT that does NOT name it is reported, so the branch above is a rule rather than a
+// hole shaped like one.
+func TestTEN001_AnInsertWithoutTheCircle_IsReported(t *testing.T) {
+	t.Parallel()
+	dir := queriesDir(t, "tod_report.sql", `
+-- name: CreateUntenantedReport :one
+INSERT INTO tod_report (id, target_id)
+VALUES (?, ?)
+RETURNING *;
+`)
+
+	out, err := runGates(t, "TOD_QUERIES_DIR="+dir)
+	require.Error(t, err, "an INSERT that writes no circle_id was accepted:\n%s", out)
+	require.Contains(t, out, "TEN001")
+	require.Contains(t, out, "CreateUntenantedReport")
 }
 
 // A query file named after a table on the instance-scoped allowlist is not checked, which is the
