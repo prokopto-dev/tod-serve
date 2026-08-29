@@ -18,8 +18,9 @@ than writing it down as though it were enforced.
 | `internal/api/` | Every HTTP route. Huma v2 registration, problem+json, ETag, idempotency |
 | `internal/authz/` | **The** catalogue — permissions, scopes, roles, capability floor. Generates the DDL seed, the OpenAPI extensions, the scope enum and the docs page |
 | `internal/auth/` | PAT mint and verify, sessions, step-up |
-| `internal/identity/{,discord,oidc,local,outbound}/` | Provider registry, credential dispatch, identity and link resolution, the OAuth flow. **The only packages permitted to make outbound HTTP requests**, and `outbound` is the only one that may construct a client |
+| `internal/identity/{,discord,oidc,local,outbound,identitysql}/` | Provider registry, credential dispatch, identity and link resolution, the OAuth flow. **The only packages permitted to make outbound HTTP requests**, and `outbound` is the only one that may construct a client. `identitysql` is the persistence half and reaches no network |
 | `internal/circle/`, `membership/`, `tod/` | Domain services |
+| `internal/setup/` | First-run setup: what a fresh instance needs before anybody can sign in, and the window during which `TOD_SETUP_TOKEN` may write it. **The window is derived** from "no identity holds an administrator permission", never from a stored flag — [ADR-0016](docs/adr/0016-first-run-setup-is-an-env-token-and-a-derived-window.md) |
 | `internal/catalogue/` | Raid-target identity, the per-server timers, the per-circle overrides. **The one resolve ladder** and the one `name_norm` matcher; target identity ships embedded here, timer data ships from nowhere |
 | `internal/invite/` | Invite codes: minting, the generous parser a hand-typed code needs, **the one hash** `identitysql` is handed, and the single-use owner grant that gives a circle its first owner |
 | `internal/instancegrant/` | The instance-permission ledger: append-only, hash-chained decisions keyed on an **identity**. Its own audit record, because `audit_log.circle_id` is `NOT NULL` |
@@ -39,7 +40,7 @@ than writing it down as though it were enforced.
 | `internal/canondoc/` | Reads fenced blocks out of the normative documents, so a gate compares code against the document rather than against a copy of it |
 | `db/` | `schema.hcl` is the single schema truth; `enums.hcl` is generated; `queries/*.sql`; `migrations-sqlite/`, forward-only |
 | `deploy/` | The image, the two compose files, `env.example`, the Caddy front for the local TLS profile, and `smoke.sh` — which **is** the first-deploy walkthrough rather than a copy of it |
-| `.github/workflows/` | `ci.yml`, `release.yml` (GHCR, multi-arch, cross-compiled) and `deploy.yml` (approved, snapshots, then migrates). Every `run:` block is gated by `ACT001` and `ACT002` |
+| `.github/workflows/` | `ci.yml`, `release.yml` (GHCR, multi-arch, cross-compiled) and `deploy.yml` (approved, snapshots, then migrates). Every `run:` block is gated by `ACT001`, `ACT002` and `ACT003` |
 | `test/repo/` | Tests about the repository itself, not the product: they assert the gates below actually fire |
 
 ## The laws
@@ -50,7 +51,12 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    registry: `api.Register` takes an `OperationID`, not a method and a path. `ROUTE001` is an AST
    analyser confining the framework's registration calls to `internal/api/register.go`, so a route
    that carries no permission, no scopes and no tenancy flag cannot be attached at all.
-2. **`*sql.DB` is held only by `internal/store`.** Import-graph test; `SQL001`/`SQL002`.
+2. **`*sql.DB` is held only by `internal/store`.** `SQL001` — a grep in `scripts/repo-gates.sh`
+   for `database/sql` outside that package. **One mechanism, not two:** there is no import-graph
+   test and no `SQL002`, and this line claimed both until somebody went looking. Unlike law 7,
+   whose two halves are deliberate, a second mechanism here would be worth having — an
+   `eslint-disable` has no analogue in Go, but a build tag or a vendored re-export would walk past
+   a grep for an import path.
 3. **`internal/consensus` is pure** — no store, no `time.Now`, no `math/rand`, **no floats**.
    `PURE001`, `PURE002`, `CLOCK001`, `NOFLOAT001`. The float ban is a reproducibility rule, not a
    money rule: the nightly verify job diffs exact values and a cross-platform float discrepancy would
@@ -108,9 +114,12 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
     produce. `ENV001` compares the `TOD_*` constants in `cmd/tod-serve/root.go` against
     `deploy/env.example` and the compose files in both directions — two independent hand-written
     lists, which is what stops it being a tautology — and `IMG001` applies `PIN001`'s reasoning to
-    images. `ACT001` and `ACT002` cover the workflow shell that nothing else compiles or runs.
-    `deploy/smoke.sh` boots the built image and drives a whole first deploy, and the runbook names
-    it as the executed version of its own walkthrough.
+    images. `LBL001` holds every Traefik reference to something a label actually defines, because a
+    router naming a service nobody declared fails at request time on a droplet rather than in CI.
+    `ACT001`, `ACT002` and `ACT003` cover the workflow shell that nothing else compiles or runs —
+    `ACT003` is the one that shipped a bug first: a `docker compose run` inside a `run:` block eats
+    the rest of the script from stdin. `deploy/smoke.sh` boots the built image and drives a whole
+    first deploy, and the runbook names it as the executed version of its own walkthrough.
 
     **A container restart must never migrate.** `serve` refuses to start against a database behind
     the migrations it embeds rather than upgrading it, and `/readyz` says which half failed. The
@@ -118,11 +127,21 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
     add a one-shot migrate service with `service_completed_successfully` — that runs on every `up`,
     restarts included, which is the exact failure the rule exists for.
 
+12. **No secret is compared by value.** `SECRET001` is an AST walk over `internal` and `cmd` banning
+    a `Reveal()` on either side of `==` or `!=`; every bearer credential checked at the edge goes
+    through `core.Secret.Equal`, which is `subtle.ConstantTimeCompare`. It is a gate rather than a
+    habit because the failure is invisible every other way — `x.Reveal() == y` passes the unit
+    tests, answers the same status codes, and reads like a comparison. The two credentials that
+    need it most have no rate limit in front of them: the metrics listener has no bucket, and
+    first-run setup has no principal to key one on.
+
 ## Non-negotiable invariants
 
 - **The report log is append-only.** Never `UPDATE` or `DELETE` `tod_report`, `quake_event`,
-  `invite_redemption`, `identity_link`, `audit_log` or `event_outbox` — in Go, in SQL, or in a
-  migration. Corrections are new rows.
+  `invite_redemption`, `identity_link`, `instance_grant`, `audit_log` or `event_outbox` — in Go,
+  in SQL, or in a migration. Corrections are new rows. The list is not written twice: `LOG001`
+  reads it out of [01-domain-model](docs/design/01-domain-model.md), so that table is the authority
+  and this sentence is a copy that a reviewer, not a gate, keeps honest.
 - **Derived state is never authority.** `target_state_cache` is droppable. If you find yourself
   reading it to make a decision the derivation should make, that is the bug.
 - **Time is `Micros`.** `died_at` is game truth and may be backdated; `reported_at` is system truth
@@ -132,6 +151,17 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
   access, never history.
 - **`identity_provider.verifiable_subject` is a CHECK against `kind`,** not a toggle. Everything about
   revocation strength hangs off it.
+- **An instance-realm permission comes from the ledger and from no circle role.** `instance_grant`
+  is a hash-chained record of decisions keyed on an **identity**, not a membership, because what it
+  answers outlives any one circle —
+  [ADR-0012](docs/adr/0012-instance-grants-are-a-capability-ledger.md).
+  `instance.owner` expands to the whole instance realm rather than being enumerated beside it
+  ([ADR-0015](docs/adr/0015-instance-owner-implies-the-instance-realm.md)), so a permission added to
+  the realm is one the owner already holds and nobody has to remember to widen a list.
+- **First-run setup is open exactly while nobody administers this instance, and that is derived.**
+  There is no `setup_complete` row and there never will be: a stored flag is the thing that gets out
+  of step with what is true. An unset `TOD_SETUP_TOKEN` and a wrong one are the same refusal
+  ([ADR-0016](docs/adr/0016-first-run-setup-is-an-env-token-and-a-derived-window.md)).
 - **The schema is `db/schema.hcl` and nothing else.** Atlas authors the migration from it and
   `make gen` re-runs the diff to prove the file it wrote says the same thing. The one hand-written
   migration is the trigger one, because Atlas Community cannot see triggers — which is also why a
@@ -186,7 +216,11 @@ an error.
 
 The same applies to timer data. Respawn and variance numbers are community-derived and disputed; they
 are not bundled, they load from a separate seed repository, and an instance without them says
-`no_timer` rather than guessing.
+`no_timer` rather than guessing. **This one has a gate:** `SEED001` is the grep firewall around
+bundled timer data, and `TestEmbedded_NoTargetCarriesATimer` closes the other route in by asserting
+`catalogue.EmbeddedTarget` has no window field to fill. The log-format rule above has **no
+mechanism** — it is review only, and it is written here rather than in
+[`docs/concepts/invariants.md`](docs/concepts/invariants.md) for that reason.
 
 ## Working on it
 
