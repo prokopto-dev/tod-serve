@@ -1,12 +1,13 @@
 # Roadmap
 
-**Status: pre-1.0. Phases 0 to 4 are done and the software runs.** There is a container image, a
-Traefik-fronted deployment for a droplet, a path for running it at home, and an approved deploy that
-snapshots before it migrates. What has not happened is a season of real use. For what is
-*implemented*, run `make status` — it derives the list from `notyet` call sites in the Makefile, so
-it cannot drift from reality. This file is what is *planned*.
+**Status: pre-1.0. Phases 0 to 4 are done, the instance layer that came after them is done, and
+the software runs.** There is a container image, a Traefik-fronted deployment for a droplet, a path
+for running it at home, and an approved deploy that snapshots before it migrates. What has not
+happened is a season of real use. `make status` is empty — every declared target does real
+work — which says nothing is *stubbed*, not that nothing is *missing*; the list below says what
+is missing. This file is what is *planned*.
 
-## Release blockers: none
+## Release blockers: none. Known gaps at first deploy: four
 
 Both of the blockers this project carried — Discord's developer terms, and cross-instance
 access-token replay — were consequences of a single assumption: **one project-wide Discord
@@ -20,6 +21,28 @@ does not close it. Operational health is per-instance for the same reason.
 What it cost is recorded in the ADR and in
 [04-identity §7](docs/design/04-identity-and-revocation.md): operator setup friction, a
 `client_secret` at rest, and a Discord role removal that does not revoke an already-issued PAT.
+
+**Nothing on the list below blocks a first deploy, and every one of them is a thing an operator
+would rather hear now than find.** They are written here because "release blockers: none" on its own
+invites the reader to supply "and therefore nothing is missing", which is not the same sentence.
+
+1. **Nothing sweeps expired rows.** `auth_flow`, `credential_ticket` and `idempotency_record` all
+   carry an `expires_at`, `db/schema.hcl` carries indexes built for the sweep, and sqlc generates
+   `DeleteExpiredAuthFlows`, `DeleteExpiredCredentialTickets` and `DeleteExpiredIdempotencyRecords`
+   — **which nothing calls.** The rate limiter caps how fast these rows arrive, not how many
+   accumulate. Every one is unreadable after expiry, so this is disk, not disclosure, and
+   `tod-serve backup` is `VACUUM INTO`. It wants a sweep on the same schedule as `verify-states`.
+2. **Traefik is never exercised.** ACME needs public DNS and there is no droplet in CI, so
+   `deploy/compose.yaml` is parsed and never run — `deploy/smoke.sh` drives `compose.local.yaml`.
+   The TLS front is the one layer whose first real run is on the droplet.
+3. **Revoking every administrator re-arms first-run setup.** The window is derived from "nobody
+   administers this instance", so emptying the ledger makes a live `TOD_SETUP_TOKEN` a takeover
+   credential again. That is the recovery path working as designed and a way to hand an instance
+   away by accident. [ADR-0016](docs/adr/0016-first-run-setup-is-an-env-token-and-a-derived-window.md)
+   states it as a cost. **Unset `TOD_SETUP_TOKEN` once setup is done.**
+4. **No realtime.** The board polls. `subscribeCircleEvents` and `replayCircleEvents` are in the
+   route registry and are served by nothing — they are absent from `openapi/openapi.json`, so no
+   generated client can call them, and they are the 2 of 27 the tenancy gate reports uncovered.
 
 ## Phase 0 — Scaffold *(this commit)*
 
@@ -37,15 +60,17 @@ The design, the roadmap, and the contract implementation follows. No working sof
 The tenancy and trust machinery, and every gate that guards it. Nothing about ToDs yet, deliberately:
 the isolation test has to exist before there is data worth isolating.
 
-- `db/schema.hcl`, Atlas → goose, the append-only triggers
-- `internal/authz/catalogue.go` — the single source for permissions, scopes and roles
-- `internal/auth` — opaque PATs, `HMAC-SHA256(pepper, secret)`, sessions, step-up
-- `internal/identity` — the provider registry and **all three** implementations: `local`, `oidc`,
-  `discord`. The operator-registered OAuth flow (`createAuthorizationURL`, `completeAuthorization`,
-  `auth_flow`, `credential_ticket`), the per-circle guild gate, and `identity.blocked_at`
-- `internal/circle`, `internal/membership` — invites, redemption, revocation, reinstatement
-- **The tenancy gates**: schema allowlist, `TEN001`, `TestTenancy_CrossCircle_EveryOperationDenies`
-- `tod-serve circle create` and first-run owner invite
+- [x] `db/schema.hcl`, Atlas → goose, the append-only triggers
+- [x] `internal/authz/catalogue.go` — the single source for permissions, scopes and roles
+- [x] `internal/auth` — opaque PATs, `HMAC-SHA256(pepper, secret)`, sessions, step-up
+- [x] `internal/identity` — the provider registry and **all three** implementations: `local`,
+  `oidc`, `discord`. The operator-registered OAuth flow (`createAuthorizationURL`,
+  `completeAuthorization`, `auth_flow`, `credential_ticket`), the per-circle guild gate, and
+  `identity.blocked_at`
+- [x] `internal/circle`, `internal/membership` — invites, redemption, revocation, reinstatement
+- [x] **The tenancy gates**: schema allowlist, `TEN001`,
+      `TestTenancy_CrossCircle_EveryOperationDenies`
+- [x] `tod-serve circle create` and first-run owner invite
 
 **All three providers land together.** Splitting them was only ever a hedge against blocker 1, and
 with that closed, shipping `discord` late would mean shipping the browser flow twice — `oidc` uses
@@ -53,20 +78,20 @@ the same `provider_ticket` path.
 
 ## Phase 2 — Reports, consensus, windows
 
-- `internal/tod` — report and quake ingest, retraction, the append-only writes
-- `internal/consensus` — the pure derivation, and `test/golden/consensus/*.json`
-- `internal/projection` — `target_state_cache`, invalidation, rebuild, the nightly verify job
-- `POST /tod-reports`, `GET /tods`, `GET /tods/{id}`, `POST /quakes`
+- [x] `internal/tod` — report and quake ingest, retraction, the append-only writes
+- [x] `internal/consensus` — the pure derivation, and `test/golden/consensus/*.json`
+- [x] `internal/projection` — `target_state_cache`, invalidation, rebuild, the nightly verify job
+- [x] `POST /tod-reports`, `GET /tods`, `GET /tods/{id}`, `POST /quakes`
 
 **The golden corpus is authored before the projection layer**, because it is the first executable
 check that the design in [03-consensus.md](docs/design/03-consensus.md) is coherent.
 
 ## Phase 3 — Catalogue
 
-- `raid_target`, aliases, per-server timers, the resolve ladder
-- Embedded target identity — names, zones, expansions — as our own literals
-- `tod-serve seed timers --file`, reading the separate `tod-serve-p99-seed` repository
-- An unseeded instance must report `no_timer` everywhere and still record ToDs correctly
+- [x] `raid_target`, aliases, per-server timers, the resolve ladder
+- [x] Embedded target identity — names, zones, expansions — as our own literals
+- [x] `tod-serve seed timers --file`, reading the separate `tod-serve-p99-seed` repository
+- [x] An unseeded instance must report `no_timer` everywhere and still record ToDs correctly
 
 ## Phase 4 — The web console
 
@@ -99,6 +124,32 @@ check that the design in [03-consensus.md](docs/design/03-consensus.md) is coher
 a `304` — the point of revalidating is to NOT re-render. At a hundred-odd rows that is cheap enough
 that a console with no realtime layer is a complete product rather than a degraded one, so
 everything in `internal/events` moves to Phase 6 — see below.
+
+## Phase 4b — The instance layer *(landed after this file was first written)*
+
+Not a planned phase. It is here because it shipped, and a roadmap that stops describing the software
+two milestones before the deploy is worse than no roadmap. Five ADRs, all already carrying their
+mechanisms in [invariants](docs/concepts/invariants.md).
+
+- [x] **The instance-permission ledger** — `instance_grant`, append-only and hash-chained, keyed
+      on an **identity** rather than a membership because what it answers outlives any one circle.
+      `tod-serve instance grant|revoke|grants|identities` administers it from the console, which is
+      where the first one has to come from: on a fresh database nobody holds a credential.
+      [ADR-0012](docs/adr/0012-instance-grants-are-a-capability-ledger.md)
+- [x] **`instance.owner` implies the instance realm** rather than being enumerated beside it, so a
+      permission added to the realm is one the owner already holds and no list has to be widened.
+      [ADR-0015](docs/adr/0015-instance-owner-implies-the-instance-realm.md)
+- [x] **First-run setup in the browser**, behind `TOD_SETUP_TOKEN`. The window is **derived** —
+      open while no identity administers the instance, never a stored flag — and every step is
+      create-if-absent so a half-finished run resumes rather than restarting. An unset token and a
+      wrong one are the same refusal.
+      [ADR-0016](docs/adr/0016-first-run-setup-is-an-env-token-and-a-derived-window.md)
+- [x] **The timer invalidation joins the writing transaction**, so a moved window and the boards
+      recomputed from it commit together and a failed push rolls the write back.
+      [ADR-0013](docs/adr/0013-the-timer-invalidation-joins-the-writing-transaction.md)
+- [x] **A deferred read pool for multi-read renders**, so a board never pairs a window with a
+      `died_at` from a different timer.
+      [ADR-0014](docs/adr/0014-a-deferred-read-pool-for-multi-read-renders.md)
 
 ## Phase 5 — The nParse+ plugin
 
