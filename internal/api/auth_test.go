@@ -273,3 +273,59 @@ func (h *harness) seedProviderWithSecret(secret string) {
 	})
 	require.NoError(h.t, err)
 }
+
+// The redirect URI an operator pastes into Discord's developer portal has to be the URL this
+// binary actually serves the callback at, character for character. Deriving it from the route
+// registry is what makes that true; this asserts the derivation rather than re-spelling its
+// result, so moving the route moves the string an operator is told to register.
+func TestCallbackBaseURL_IsDerivedFromTheRouteRegistry(t *testing.T) {
+	t.Parallel()
+
+	route, ok := api.Lookup(api.OpCompleteAuthorization)
+	require.True(t, ok)
+	require.True(t, strings.HasSuffix(route.FullPath(), api.CallbackPathParam),
+		"CallbackBaseURL derives its path by removing %q; the route no longer ends in it",
+		api.CallbackPathParam)
+
+	got, err := api.CallbackBaseURL("https://tod.example.com")
+	require.NoError(t, err)
+
+	// The whole round trip: base + key must reproduce the path the router serves, with the
+	// parameter filled in. Comparing against a literal here would be a second copy of the fact.
+	require.Equal(t,
+		"https://tod.example.com"+strings.Replace(route.FullPath(), api.CallbackPathParam, "/discord", 1),
+		got+"/discord")
+}
+
+// Every spelling of a public URL an operator might put in `.env`, and the one answer each must
+// produce. A trailing slash is the common one, and `…/callback//discord` is a different URI to
+// every party that compares one.
+func TestCallbackBaseURL_NormalisesThePublicURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		public string
+		want   string
+	}{
+		{"the plain case", "https://tod.example.com", "https://tod.example.com/api/v1/auth/callback"},
+		{"a trailing slash", "https://tod.example.com/", "https://tod.example.com/api/v1/auth/callback"},
+		{"surrounding space, as a .env file produces", "  https://tod.example.com  ", "https://tod.example.com/api/v1/auth/callback"},
+		{"a non-default port", "https://tod.example.com:8443", "https://tod.example.com:8443/api/v1/auth/callback"},
+		{"a path prefix, behind a shared front", "https://example.com/tod", "https://example.com/tod/api/v1/auth/callback"},
+		{"plaintext, which local development is", "http://localhost:8080", "http://localhost:8080/api/v1/auth/callback"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := api.CallbackBaseURL(tt.public)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+
+	for _, bad := range []string{"", "tod.example.com", "/api/v1", "https://"} {
+		_, err := api.CallbackBaseURL(bad)
+		require.Error(t, err, "a public URL of %q is not something to guess an origin from", bad)
+	}
+}
