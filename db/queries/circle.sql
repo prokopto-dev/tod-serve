@@ -65,10 +65,18 @@ SELECT COUNT(*) FROM circle WHERE deleted_at IS NULL;
 -- caller and no tenant: a maintenance sweep that could only see one circle would leave every other
 -- circle's cache unverified, which is the whole thing the job exists to stop.
 --
--- THIS QUERY MUST NEVER BACK A CALLER-FACING ROUTE. The moment it does it is an instance-wide
--- circle enumeration -- the existence oracle canonical section 7 exists to close, because a
--- circle's existence is part of what it is hiding. That is not left to this comment:
--- TestCircleEnumeration_IsReachableOnlyFromTheProjection is the gate.
+-- Since issue #21 it also backs the recompute a flipped `raid_target.is_quake_target` fans out,
+-- and that one IS reached from a route. It is admitted on the argument ListLiveCirclesOnServer
+-- below already carries, with one argument fewer: the flag is instance-wide and carries no server,
+-- so the fan-out is chosen entirely by an instance-realm write and no caller names a circle to
+-- reach it.
+--
+-- THESE ROWS MUST NEVER REACH A CALLER. The moment they do it is an instance-wide circle
+-- enumeration -- the existence oracle canonical section 7 exists to close, because a circle's
+-- existence is part of what it is hiding. That is not left to this comment:
+-- TestCircleEnumeration_IsReachableOnlyFromTheProjection is the gate, and it is a gate on which
+-- PACKAGE may call this rather than on which route, because a service reached by a handler would
+-- leak exactly as well as a handler.
 --
 -- `deleted_at IS NULL` like every other read here: a tombstoned circle must not come back onto the
 -- recompute path.
