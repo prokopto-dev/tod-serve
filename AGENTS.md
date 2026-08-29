@@ -53,10 +53,11 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    that carries no permission, no scopes and no tenancy flag cannot be attached at all.
 2. **`*sql.DB` is held only by `internal/store`.** `SQL001` — a grep in `scripts/repo-gates.sh`
    for `database/sql` outside that package. **One mechanism, not two:** there is no import-graph
-   test and no `SQL002`, and this line claimed both until somebody went looking. Unlike law 7,
-   whose two halves are deliberate, a second mechanism here would be worth having — an
-   `eslint-disable` has no analogue in Go, but a build tag or a vendored re-export would walk past
-   a grep for an import path.
+   test and no `SQL002`, and this line claimed both until somebody went looking. Keep the
+   distinction the rest of this file runs on: a can-fail test in `test/repo` proves a gate
+   **fires**, and is not a second **mechanism**. A real second mechanism here would have to catch
+   what a grep cannot — a build tag, or a vendored re-export of `database/sql` under another
+   import path. Law 7 is the only place two really are independent, and it says why.
 3. **`internal/consensus` is pure** — no store, no `time.Now`, no `math/rand`, **no floats**.
    `PURE001`, `PURE002`, `CLOCK001`, `NOFLOAT001`. The float ban is a reproducibility rule, not a
    money rule: the nightly verify job diffs exact values and a cross-platform float discrepancy would
