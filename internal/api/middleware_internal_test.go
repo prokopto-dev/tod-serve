@@ -500,8 +500,12 @@ func TestInviteOracle_PreviewAndAuthorizationURL_ShareOneBucket(t *testing.T) {
 }
 
 // The limit is enforced BEFORE the handler runs. `createAuthorizationURL` writes an `auth_flow`
-// row, so a limited caller reaching it at all would let an unauthenticated flood grow the table —
-// which is what TestAuthFlow_RateLimitedCaller_CreatesNoRows asserts at the other end.
+// row, so a limited caller reaching it at all would let an unauthenticated flood grow the table.
+//
+// This is the MECHANISM, against a stub handler that counts its calls.
+// TestAuthFlow_RateLimitedCaller_CreatesNoRows in auth_test.go asserts the CONSEQUENCE against the
+// real table, because the step from one to the other has a premise — that nothing else on the
+// request path writes a row — which is exactly what a future middleware breaks quietly.
 func TestInviteOracle_ARateLimitedCaller_ReachesNoHandler(t *testing.T) {
 	t.Parallel()
 	rig := newStubRig(t, OpCreateAuthorizationURL)

@@ -86,8 +86,12 @@ func TestListIdentityProviders_TheClientSecret_NeverReachesTheWire(t *testing.T)
 
 // `createAuthorizationURL` is the second oracle for invite-code validity, and it is held to
 // `previewInvite`'s disclosure as a CEILING rather than reasoned about separately. An unissued
-// code gets the same answer from both.
-func TestCreateAuthorizationURL_AnUnissuedCode_RevealsNoMoreThanPreviewInvite(t *testing.T) {
+// code gets the same answer from both — status and code — so a guesser learns nothing from the
+// newer route that the metered one did not already tell them.
+//
+// This is the name docs/design/04-identity-and-revocation.md §5,
+// docs/design/02-api-design.md and docs/concepts/invariants.md all cite it by.
+func TestCreateAuthorizationURL_RevealsNoMoreThanPreviewInvite(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.seedOIDCProvider(true)
@@ -328,4 +332,44 @@ func TestCallbackBaseURL_NormalisesThePublicURL(t *testing.T) {
 		_, err := api.CallbackBaseURL(bad)
 		require.Error(t, err, "a public URL of %q is not something to guess an origin from", bad)
 	}
+}
+
+// The second half of the invite-oracle defence, at the end the documents actually claim.
+//
+// `TestInviteOracle_ARateLimitedCaller_ReachesNoHandler` proves the limiter runs before the
+// handler, against a stub. That is the mechanism; this is the CONSEQUENCE, and the consequence is
+// what the design writes down: "it writes an `auth_flow` row only for a request that passes the
+// limit, so a rejected probe stores nothing."
+//
+// Asserting it against the real table rather than inferring it from the stub matters because the
+// inference has a hidden premise — that nothing else on the request path writes one. That premise
+// is true today and is exactly the kind of thing a future middleware breaks silently: an
+// unauthenticated flood that grows a table is a denial of service with no principal to rate-limit
+// afterwards.
+func TestAuthFlow_RateLimitedCaller_CreatesNoRows(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedOIDCProvider(true)
+
+	body := `{"provider":"oidc-test"}`
+	accepted := 0
+	for range api.DefaultInviteBurst {
+		if h.do(request{Method: http.MethodPost, Path: authURLPath, Body: body}).Status == http.StatusOK {
+			accepted++
+		}
+	}
+	require.Positive(t, accepted, "the bucket refused everything, so nothing below is a limit test")
+
+	// Well past the burst, so the bucket cannot refill into a pass on the injected clock.
+	refused := 0
+	for range api.DefaultInviteBurst {
+		got := h.do(request{Method: http.MethodPost, Path: authURLPath, Body: body})
+		require.Equal(t, http.StatusTooManyRequests, got.Status, got.Body)
+		refused++
+	}
+	require.Positive(t, refused)
+
+	require.Equal(t, accepted, h.sweepAuthFlows(),
+		"one row per ACCEPTED request and none per refused one; %d requests were rate-limited and "+
+			"an unauthenticated flood must not be able to grow the table", refused)
 }
