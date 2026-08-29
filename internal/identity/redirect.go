@@ -3,6 +3,7 @@ package identity
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -19,11 +20,48 @@ var ErrRedirectURIMismatch = errors.New("this provider's redirect_uri is not thi
 // ExpectedRedirectURI is the one string that works, for one provider key.
 //
 // It is the string the operator must have registered with the provider AND the string that must be
-// in `identity_provider.redirect_uri`, character for character, because Discord compares a redirect
-// URI literally. Exported so the administrative API, `tod-serve doctor` and the console can all
-// show the operator the value to paste rather than describing how to build it.
+// in `identity_provider.redirect_uri`. Exported so the administrative API, `tod-serve doctor` and
+// the console can all show the operator the value to paste rather than describing how to build it.
+//
+// It is returned in canonical form — see [CanonicalRedirectURI] — because it is a value somebody
+// copies, and the copy that gets pasted into a developer portal should be the one that reads
+// unambiguously.
 func (s *Service) ExpectedRedirectURI(providerKey string) string {
-	return s.callbackBase + "/" + providerKey
+	return CanonicalRedirectURI(s.callbackBase + "/" + providerKey)
+}
+
+// CanonicalRedirectURI reduces a redirect URI to the form two of them can be compared in.
+//
+// The line it draws is RFC 3986's, and drawing it anywhere else costs something real in one
+// direction or the other:
+//
+//   - Scheme and host are CASE-INSENSITIVE, and `:443` on https is the default port. So
+//     `https://TOD.example.com:443/api/v1/auth/callback/discord` and
+//     `https://tod.example.com/api/v1/auth/callback/discord` are the same URI, and a check that
+//     called them a mismatch would fire on a correct configuration — which is how a check gets
+//     switched off.
+//   - The PATH is case-SENSITIVE, and a trailing slash is part of it. `…/callback/discord` and
+//     `…/callback/discord/` are different URIs to Discord, which compares them literally, so a
+//     check that folded them would pass a configuration the provider then rejects. That is the
+//     confident mistake: telling an operator their redirect URI is fine when the provider
+//     disagrees sends them to look at everything else first.
+//
+// Query and fragment are kept as-is rather than dropped: this instance's callback carries neither,
+// so a redirect URI that has one is not this instance's callback.
+func CanonicalRedirectURI(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		// Unparseable is returned unchanged rather than repaired. It will not equal the expected
+		// value, which is the right answer, and it reaches the operator as the string they
+		// actually typed.
+		return strings.TrimSpace(raw)
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	if port := u.Port(); (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+		u.Host = u.Hostname()
+	}
+	return u.String()
 }
 
 // checkRedirectURI refuses a provider whose redirect URI points somewhere other than here.
@@ -39,16 +77,16 @@ func (s *Service) ExpectedRedirectURI(providerKey string) string {
 //     on this instance ever sees the callback, so nothing on this instance ever logs a failure.
 //     That is the silent one, and moving a deployment to a new domain produces it every time.
 //
-// Comparison is exact, and deliberately so. Any normalisation here — a tolerated trailing slash, a
-// case-folded path — is a difference between what this accepts and what the provider accepts, and
-// the whole problem is that the provider does not normalise.
+// Comparison is [CanonicalRedirectURI]'s: the parts of a URI that are case-insensitive by
+// specification are folded, and nothing else is. Folding more would accept configurations the
+// provider then rejects; folding less would report a correct one as broken.
 func (s *Service) checkRedirectURI(p Provider) error {
 	if !p.SupportsBrowserFlow() {
 		// `local` redirects nowhere because it goes nowhere.
 		return nil
 	}
 	want := s.ExpectedRedirectURI(p.Key)
-	if p.RedirectURI == want {
+	if CanonicalRedirectURI(p.RedirectURI) == want {
 		return nil
 	}
 	if strings.TrimSpace(p.RedirectURI) == "" {

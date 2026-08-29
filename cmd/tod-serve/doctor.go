@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prokopto-dev/tod-serve/internal/api"
 	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
@@ -60,6 +61,7 @@ func newDoctorCommand() *cobra.Command {
 			checkDatabase(cmd.Context(), db, ok, bad)
 			instance, haveInstance := checkInstance(cmd.Context(), db, ok, warn, bad)
 			enabled := checkProviders(cmd.Context(), db, ok, warn, bad)
+			checkRedirectURIs(cmd.Context(), db, enabled, ok, bad)
 			checkAdministrable(cmd.Context(), db, ok, bad)
 			checkHostAgreement(hostClaims(instance, haveInstance, enabled), ok, bad)
 
@@ -161,6 +163,83 @@ func checkProviders(ctx context.Context, db *store.DB, ok, warn, bad func(string
 		bad("no identity provider is enabled: nobody can join any circle")
 	}
 	return live
+}
+
+// checkRedirectURIs compares every provider's `redirect_uri` against the URL this binary actually
+// serves the OAuth callback at.
+//
+// [checkHostAgreement] below already catches a redirect URI on the wrong ORIGIN. This catches the
+// other half, which is the one that survives a careful operator: the right origin and the wrong
+// path. `https://tod.example.com/callback` and
+// `https://tod.example.com/api/v1/auth/callback/discord` agree about the host and are not the same
+// URI, and Discord compares a redirect URI literally — so the first is an `invalid_request` on
+// Discord's own error page, rendered by somebody else, about our configuration.
+//
+// It is a PROBLEM rather than a warning because there is exactly one string that works. This is
+// also the check to run after moving an instance to a new domain, which is the operation that
+// produces a stale redirect URI every time.
+func checkRedirectURIs(
+	ctx context.Context, db *store.DB, providers []sqlitegen.IdentityProvider, ok, bad func(string),
+) {
+	browserFlow := 0
+	for _, p := range providers {
+		if p.Kind == string(identity.KindLocal) {
+			continue // `local` redirects nowhere because it goes nowhere.
+		}
+		browserFlow++
+	}
+	if browserFlow == 0 {
+		return // checkProviders has already said whether that is a problem.
+	}
+
+	public, err := publicURL(ctx, db)
+	if err != nil {
+		bad("no public URL, so no redirect URI can be checked: " + err.Error())
+		return
+	}
+	base, err := api.CallbackBaseURL(public)
+	if err != nil {
+		bad("the callback URL cannot be derived from " + public + ": " + err.Error())
+		return
+	}
+
+	agreed := 0
+	for _, p := range providers {
+		if p.Kind == string(identity.KindLocal) {
+			continue
+		}
+		want := identity.CanonicalRedirectURI(base + "/" + p.Key)
+		got := ""
+		if p.RedirectUri != nil {
+			got = strings.TrimSpace(*p.RedirectUri)
+		}
+		// The same comparison the server makes, from the same function, so doctor cannot say a
+		// redirect URI is fine that `createAuthorizationURL` then refuses.
+		if identity.CanonicalRedirectURI(got) == want {
+			agreed++
+			continue
+		}
+		// Both strings, on their own lines, because an operator holding only one of them cannot
+		// tell which end is wrong: the stored row, or what they registered with the provider.
+		bad(fmt.Sprintf("provider %q redirect_uri does not match this instance's callback; "+
+			"sign-in will not complete:\n           configured  %s"+
+			"\n           must be     %s"+
+			"\n           register that same string with the provider — it is compared literally",
+			p.Key, quoteOrNone(got), want))
+	}
+	if agreed > 0 {
+		ok(fmt.Sprintf("%d redirect %s the callback this instance serves (%s/…)",
+			agreed, plural(agreed, "URI matches", "URIs match"), base))
+	}
+}
+
+// quoteOrNone renders an empty redirect URI as a word rather than as `""`, which reads as a bug in
+// the report rather than as the absence it is.
+func quoteOrNone(raw string) string {
+	if raw == "" {
+		return "(none set)"
+	}
+	return raw
 }
 
 // checkAdministrable answers the question doctor did not ask: can ANYBODY administer this

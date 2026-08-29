@@ -183,3 +183,69 @@ func TestExpectedRedirectURI_ATrailingSlashOnTheBase_IsNotADoubleSlash(t *testin
 	require.Equal(t, callbackBaseURL+"/discord", withSlash.ExpectedRedirectURI("discord"))
 	require.Equal(t, callbackBaseURL+"/discord", h.service.ExpectedRedirectURI("discord"))
 }
+
+// The line CanonicalRedirectURI draws, from both sides. Getting it wrong in either direction has a
+// cost, and they are different costs: fold too much and a configuration the provider rejects
+// passes; fold too little and a correct one is reported broken, which is how a check gets
+// switched off.
+func TestCanonicalRedirectURI_FoldsWhatTheSpecificationFolds_AndNothingElse(t *testing.T) {
+	t.Parallel()
+
+	const canonical = "https://tod.example.com/api/v1/auth/callback/discord"
+
+	same := []struct {
+		name string
+		raw  string
+	}{
+		{"an upper-case host, which DNS does not distinguish", "https://TOD.EXAMPLE.COM/api/v1/auth/callback/discord"},
+		{"an upper-case scheme", "HTTPS://tod.example.com/api/v1/auth/callback/discord"},
+		{"https's default port, written out", "https://tod.example.com:443/api/v1/auth/callback/discord"},
+		{"surrounding space, as a copy-paste produces", "  https://tod.example.com/api/v1/auth/callback/discord  "},
+	}
+	for _, tt := range same {
+		t.Run("same: "+tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, canonical, identity.CanonicalRedirectURI(tt.raw))
+		})
+	}
+
+	different := []struct {
+		name string
+		raw  string
+	}{
+		{"an upper-case path, which Discord compares literally", "https://tod.example.com/API/v1/auth/callback/discord"},
+		{"a trailing slash", "https://tod.example.com/api/v1/auth/callback/discord/"},
+		{"a non-default port", "https://tod.example.com:8443/api/v1/auth/callback/discord"},
+		{"plaintext", "http://tod.example.com/api/v1/auth/callback/discord"},
+		{"a query string this callback does not carry", "https://tod.example.com/api/v1/auth/callback/discord?x=1"},
+		{"another host entirely", "https://tod.example.com.evil.test/api/v1/auth/callback/discord"},
+	}
+	for _, tt := range different {
+		t.Run("different: "+tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.NotEqual(t, canonical, identity.CanonicalRedirectURI(tt.raw))
+		})
+	}
+
+	// An unparseable value comes back as the operator typed it, so the error they read names the
+	// string they actually configured rather than a repaired version of it.
+	require.Equal(t, "://nonsense", identity.CanonicalRedirectURI("  ://nonsense  "))
+}
+
+// And the check itself accepts what the canonicaliser calls equal. Without this, the folding above
+// could be correct and unused.
+func TestCreateAuthorizationURL_ARedirectURIDifferingOnlyInCase_IsAccepted(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	shouty := discordProvider()
+	shouty.RedirectURI = "https://TOD.EXAMPLE.COM:443/api/v1/auth/callback/discord"
+	h.store.addProvider(shouty)
+	h.withLiveInvite(identity.GuildGate{})
+
+	got, err := h.service.CreateAuthorizationURL(t.Context(),
+		identity.AuthorizationRequest{ProviderKey: "discord", InviteCode: inviteCode})
+
+	require.NoError(t, err, "scheme and host are case-insensitive and :443 is https's default")
+	require.NotEmpty(t, got.URL)
+}
