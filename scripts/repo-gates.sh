@@ -269,13 +269,19 @@ fi
 # Test files are outside both halves by construction (go_files excludes them): a provider's tests
 # inject a stub transport, and the guard itself is tested directly by the deny-list unit test that
 # docs/concepts/invariants.md names.
+#
+# The two allowances are matched on a PATH SEPARATOR rather than on a leading `./`. That is what
+# lets test/repo point the gate at a fixture tree and require it to fire: `find` reports the paths
+# it was given, so an anchored `^./` allowance silently stops allowing anything the moment the
+# roots are spelled differently — and a gate whose allowlist has quietly emptied reports every
+# permitted file as a finding, which is the direction nobody investigates twice.
 if has_go; then
-  scanned=$(go_files | grep -v '^./internal/identity/outbound/' | grep -v '^./internal/probe/')
+  scanned=$(go_files | grep -v '/internal/identity/outbound/' | grep -v '/internal/probe/')
   bad=$(echo "$scanned" | xargs grep -ln 'http\.Get(\|http\.Post(\|http\.Head(\|http\.Client{\|http\.Transport{\|http\.DefaultClient\|http\.DefaultTransport\|net\.Dial' 2>/dev/null || true)
   if [ -n "$bad" ]; then report NET001 "an HTTP client, transport or dialer outside internal/identity/outbound:"; echo "$bad"; \
   else pass NET001 "the only HTTP client, transport and dialer are internal/identity/outbound's, plus internal/probe's loopback health check ($(count "$scanned") files)"; fi
 
-  scanned=$(go_files | grep -v '^./internal/identity/' | grep -v '^./internal/probe/')
+  scanned=$(go_files | grep -v '/internal/identity/' | grep -v '/internal/probe/')
   bad=$(echo "$scanned" | xargs grep -ln 'http\.NewRequest' 2>/dev/null || true)
   if [ -n "$bad" ]; then report NET001 "an outbound request outside internal/identity:"; echo "$bad"; \
   else pass NET001 "outbound requests are issued only from internal/identity and internal/probe ($(count "$scanned") files)"; fi
