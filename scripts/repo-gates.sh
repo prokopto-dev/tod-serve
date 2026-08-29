@@ -22,8 +22,13 @@ report() { printf '\033[31m%s\033[0m  %s\n' "$1" "$2"; fail=1; }
 pass()   { printf '\033[32m%-10s\033[0m %s\n' "$1" "$2"; }
 vacant() { printf '\033[33m%-10s\033[0m %s\n' "$1" "$2 (no code to check yet)"; }
 
-go_files() { find ./cmd ./internal ./test ./db -name '*.go' -not -name '*_test.go' 2>/dev/null; }
-test_files() { find ./cmd ./internal ./test ./db -name '*_test.go' 2>/dev/null; }
+# The roots every Go gate walks. Overridable for the same reason QUERIES_DIR is: SQL001 and its
+# siblings scan the tree rather than a directory, so without this there is no way to point one at a
+# deliberately broken fixture — and the SQL001 can-fail test would have had to write a violation
+# into the real tree, where it would fail every OTHER gate test running beside it.
+read -ra GO_DIRS <<< "${TOD_GO_DIRS:-./cmd ./internal ./test ./db}"
+go_files() { find "${GO_DIRS[@]}" -name '*.go' -not -name '*_test.go' 2>/dev/null; }
+test_files() { find "${GO_DIRS[@]}" -name '*_test.go' 2>/dev/null; }
 has_go()   { [ -n "$(go_files)" ]; }
 
 # Every gate below reports how much it looked at. A gate that says `pass` over three files reads
@@ -214,11 +219,26 @@ else
 fi
 
 # --- SQL001 — *sql.DB held only by internal/store ---------------------------------------------
+# The companion is SQL002 in internal/repogate, and the split is the rule read from both ends.
+# This answers "who imports database/sql". It cannot answer "can a handle be obtained WITHOUT
+# importing it": a caller writing `db := store.Raw()` names the package nowhere. SQL002 is the AST
+# analyser that closes that, and TestSQL002_TheStore_HandsOutNoHandle is what runs it.
 if has_go; then
-  scanned=$(go_files | grep -v '^./internal/store/')
-  bad=$(echo "$scanned" | xargs grep -ln 'database/sql' 2>/dev/null || true)
-  if [ -n "$bad" ]; then report SQL001 "database/sql outside internal/store:"; echo "$bad"; \
-  else pass SQL001 "database/sql is imported only by internal/store ($(count "$scanned") files)"; fi
+  # internal/repogate is excluded for the reason internal/identity/outbound is excluded from
+  # NET001: the analyser has to NAME the import it bans. It does not import it — this is a grep
+  # for a string, and SQL002's own source is a string that says `database/sql`.
+  # TestSQL001_TheAnalysersOwnPackage_DoesNotActuallyImportIt keeps that exemption narrow.
+  scanned=$(go_files | grep -v '^./internal/store/' | grep -v '^./internal/repogate/')
+  if [ -z "$scanned" ]; then
+    # A gate reporting success over an empty search space is how a rule quietly stops being
+    # enforced. Every other gate here counts what it looked at; this one now refuses to pass on
+    # nothing, which is what makes TOD_GO_DIRS safe to point somewhere small.
+    report SQL001 "no files were scanned; the search roots are wrong"
+  else
+    bad=$(echo "$scanned" | xargs grep -ln 'database/sql' 2>/dev/null || true)
+    if [ -n "$bad" ]; then report SQL001 "database/sql outside internal/store:"; echo "$bad"; \
+    else pass SQL001 "database/sql is imported only by internal/store ($(count "$scanned") files)"; fi
+  fi
 else
   vacant SQL001 "*sql.DB held only by internal/store"
 fi

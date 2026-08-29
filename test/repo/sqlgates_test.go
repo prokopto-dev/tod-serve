@@ -1,6 +1,8 @@
 package repo
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/tod-serve/internal/canondoc"
+	"github.com/prokopto-dev/tod-serve/internal/repogate"
 )
 
 // The instance-scoped allowlist exists in canonical §9 as prose and in scripts/repo-gates.sh as a
@@ -172,6 +175,163 @@ SELECT * FROM membership WHERE circle_id = ?;
 	out, err := runGates(t, "TOD_QUERIES_DIR="+dir)
 	require.NoError(t, err, out)
 	require.Contains(t, out, "1 queries", "the allowlisted file's query was checked after all")
+}
+
+// SQL001 had no can-fail test at all. Every sibling gate in this file has one — TEN001 has five,
+// MIG001 two, LOG001 one, SQLC001 one — and the rule that keeps `*sql.DB` out of every package but
+// internal/store rested on a grep nothing had ever seen fire.
+//
+// It matters more than most: ADR-0002 reintroduces the cross-tenant leak class knowingly and buys
+// it back with `circle_id` in every query's WHERE. A handle outside the store goes around all of
+// it, so law 2 is what makes law 4 worth anything.
+func TestSQL001_DatabaseSQLOutsideTheStore_IsReported(t *testing.T) {
+	t.Parallel()
+	dir := goDir(t, "circle/leak.go", `package circle
+
+import "database/sql"
+
+func Leak(db *sql.DB) error { return db.Ping() }
+`)
+
+	out, err := runGates(t, "TOD_GO_DIRS="+dir)
+	require.Error(t, err, "database/sql outside internal/store was accepted:\n%s", out)
+	require.Contains(t, out, "SQL001")
+	require.Contains(t, out, "leak.go",
+		"the finding names no file; \"SQL001\" alone also appears in the gate's PASS line")
+}
+
+// The other direction: a tree with no `database/sql` in it passes, so the test above is reporting
+// the import rather than the fixture.
+func TestSQL001_ATreeWithoutTheImport_Passes(t *testing.T) {
+	t.Parallel()
+	dir := goDir(t, "circle/circle.go", `package circle
+
+type Circle struct{ ID string }
+`)
+
+	out, err := runGates(t, "TOD_GO_DIRS="+dir)
+	require.NoError(t, err, out)
+	require.Contains(t, out, "database/sql is imported only by internal/store")
+}
+
+// A gate reporting success over an empty search space is how a rule quietly stops being enforced.
+//
+// A tree with NO Go files is reported honestly already — `has_go` is false and the gate prints
+// `vacant`, which the script's own header calls the right answer for a rule with nothing to check
+// yet. The hole is the other shape: Go files exist, so the gate runs, and every one of them falls
+// inside an exclusion. SQL001 then greps an empty list and prints a green tick over nothing.
+func TestSQL001_AScanWhereEverythingIsExcluded_IsReportedRatherThanPassed(t *testing.T) {
+	t.Parallel()
+	// The real internal/store, which is the one directory SQL001 excludes entirely. Every file
+	// the gate finds is dropped, so it has nothing left to grep — and before the guard it printed
+	// a green tick saying database/sql is imported only by internal/store.
+	//
+	// A temporary fixture cannot express this: the exclusions are prefixes of `./internal/...`, so
+	// a fixture reached by an absolute path is never excluded and the gate scans it.
+	out, err := runGates(t, "TOD_GO_DIRS=./internal/store")
+	require.Error(t, err,
+		"SQL001 passed over a scan in which every file was excluded:\n%s", out)
+	require.Contains(t, out, "no files were scanned")
+}
+
+// The exclusion SQL001 grants internal/repogate is for a STRING, not an import. SQL002's source
+// has to name the package it bans, exactly as internal/identity/outbound is excluded from NET001
+// for holding the one client it exists to hold.
+//
+// Without this the exemption would be a hole shaped like a comment: a package excluded from the
+// gate that keeps handles out of packages.
+func TestSQL001_TheAnalysersOwnPackage_DoesNotActuallyImportIt(t *testing.T) {
+	t.Parallel()
+	root, err := canondoc.RepoRoot()
+	require.NoError(t, err)
+
+	files, err := filepath.Glob(filepath.Join(root, "internal", "repogate", "*.go"))
+	require.NoError(t, err)
+	require.NotEmpty(t, files, "internal/repogate has no Go files; the exemption guards nothing")
+
+	for _, path := range files {
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		require.NoError(t, err)
+		for _, spec := range parsed.Imports {
+			require.NotEqual(t, `"database/sql"`, spec.Path.Value,
+				"%s IMPORTS database/sql, and internal/repogate is excluded from SQL001 only "+
+					"because it NAMES it in a string. Either stop importing it or stop "+
+					"excluding the package", filepath.Base(path))
+		}
+	}
+}
+
+// SQL002, over the real repository: internal/store hands no handle out.
+//
+// This is the test internal/store/store.go's own comments used to name and nobody had written.
+// SQL001 answers "who imports database/sql" and cannot answer "can a handle be obtained without
+// importing it" — `db := store.Raw()` names the package nowhere. sqlitegen is scanned too: it sits
+// under internal/store, so SQL001 excludes it, and it is generated code nobody reviews line by
+// line.
+func TestSQL002_TheStore_HandsOutNoHandle(t *testing.T) {
+	t.Parallel()
+	root, err := canondoc.RepoRoot()
+	require.NoError(t, err)
+
+	got, err := repogate.CheckHandles(root, []string{"internal/store"})
+	require.NoError(t, err)
+	for _, f := range got.Findings {
+		t.Errorf("%s: a database/sql handle leaves internal/store through an exported "+
+			"declaration, so a caller can hold one without ever naming the package SQL001 "+
+			"greps for", f)
+	}
+	require.Greater(t, got.Files, 5,
+		"SQL002 parsed %d files under internal/store; a gate that looked at nothing reports "+
+			"success the same way one that looked at everything does", got.Files)
+}
+
+// SQL002's one exemption, checked rather than asserted.
+//
+// internal/store/sqlitegen is generated by sqlc and exports `DBTX` and `WithTx`, both of which
+// name a handle and neither of which can be changed here. What makes that safe is that no value of
+// either ever leaves the store — so this drives the rule that says so. Without it the exemption
+// would be a directory nobody looks at, inside the package that holds the database.
+func TestSQL002_TheGeneratedExemption_IsNotAWayOut(t *testing.T) {
+	t.Parallel()
+	root, err := canondoc.RepoRoot()
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"internal/store/sqlitegen"}, repogate.HandleAllowDirs(),
+		"SQL002 grew a second exemption; each one needs the rule beside it that earns it")
+
+	got, err := repogate.Check(root, scanned(), []repogate.Rule{repogate.SqlitegenRule()})
+	require.NoError(t, err)
+	for _, f := range got.Findings {
+		t.Errorf("%s: %s", f, repogate.SqlitegenRule().Reason)
+	}
+	require.Greater(t, got.Files, 100, "SQL002's companion parsed only %d files", got.Files)
+}
+
+// And the rest of the repository, which SQL001 covers from the other end. A package outside the
+// store cannot expose a handle without importing database/sql, so this is belt and braces — but it
+// is the belt that survives somebody widening SQL001's exclusion list.
+func TestSQL002_NoPackageAnywhere_ExposesAHandle(t *testing.T) {
+	t.Parallel()
+	root, err := canondoc.RepoRoot()
+	require.NoError(t, err)
+
+	got, err := repogate.CheckHandles(root, scanned())
+	require.NoError(t, err)
+	for _, f := range got.Findings {
+		t.Errorf("%s: an exported declaration hands out a database/sql handle", f)
+	}
+	require.Greater(t, got.Files, 100, "SQL002 parsed only %d files", got.Files)
+}
+
+// goDir writes one Go file into a temporary tree and returns the tree's root, for the gates that
+// walk source rather than a directory of SQL.
+func goDir(t *testing.T, name, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, filepath.FromSlash(name))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	return dir
 }
 
 // Migrations are forward-only. A Down block that looked runnable would be reached for at exactly

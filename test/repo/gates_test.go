@@ -3,6 +3,12 @@
 package repo
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -272,4 +278,159 @@ func wire() int { return 1 }`,
 		require.NoError(t, err)
 		require.Empty(t, got, "RAND001 fired on wiring that is correct:\n%s", src)
 	}
+}
+
+// staleTestReferences names every comment in the repository that cites a test which does not
+// exist, and the package whose owner should fix it.
+//
+// It is a map rather than a comment because the gate below compares it against the repository in
+// BOTH directions: a name that starts existing and stays listed here is as red as one that stops
+// existing and is not. That is what stops a waiver list becoming the place findings go to die.
+//
+// Every entry is a near-miss rename — `MatchesTheCatalogue` for `MatchTheCatalogue`,
+// `EveryDeniedRange` for `EveryDeniedAddress` — which is exactly why nobody noticed. A comment
+// that names a mechanism is this repository's main way of explaining WHY a line is the way it is,
+// and a reader who greps for the named test and finds nothing has been told, confidently, a thing
+// that is not true.
+func staleTestReferences() map[string]string {
+	return map[string]string{
+		"TestAuthFlow_RateLimitedCaller_CreatesNoRows":                     "internal/api",
+		"TestCodeForStatus_EveryStatusHumaProduces_IsMapped":               "internal/apierr",
+		"TestDenyReason_EveryDeniedRange_IsRefused":                        "internal/identity/outbound",
+		"TestEnumColumns_AppliedSchema_MatchesTheCatalogue":                "internal/dbschema",
+		"TestHandler_NotBuilt_IsAnErrorRatherThanAnEmptyHandler":           "internal/ui",
+		"TestPermissions_EveryInstanceRealmKey_ReachesARouteOrIsNamedHere": "test/repo",
+		"TestPermissions_InstanceRealm_IsNotGrantedByAnyRole":              "internal/authz",
+		"TestPermissions_InstanceRealm_IsNotGrantedByAnyRoleMatrix":        "internal/authz",
+		"TestRaidTargetWrites_AreUnreachableUntilInstanceGrantsExist":      "internal/api",
+		"TestRouteRegistry_StepUp_MatchesTheAPIDesign":                     "internal/api",
+		"TestScopes_NoScopeGrants_ACapabilityFloorPermission":              "internal/authz",
+		"TestTimerWrite_TheInvalidationRunsInsideTheWritingTransaction":    "internal/api",
+	}
+}
+
+// TestComments_EveryTestTheyName_Exists is the gate behind the way this repository explains itself.
+//
+// Almost every non-obvious line here carries a comment naming the test, trigger or gate that
+// enforces it — that is the house style, and AGENTS.md's governing rule is that a rule without a
+// gate is a wish. A comment naming a test that was never written is worse than no comment: it
+// reads as a mechanism, it survives review because nobody greps for it, and it makes the rule look
+// enforced while nothing enforces it.
+//
+// It was found the hard way. `internal/store/store.go` named
+// `TestSQL001_DatabaseSQL_IsImportedOnlyByTheStore` twice, as "the mechanism" behind law 2 — the
+// rule that keeps `*sql.DB` out of every package but the store — and no such function had ever
+// existed. Twelve more are listed above.
+//
+// Only `Test…_…` names are checked, which is the convention AGENTS.md fixes
+// (`TestThing_Condition_Expectation`). A bare `TestFilesOnly` is a struct field, not a citation.
+func TestComments_EveryTestTheyName_Exists(t *testing.T) {
+	t.Parallel()
+	root, err := canondoc.RepoRoot()
+	require.NoError(t, err)
+
+	defined, cited, err := testNamesInRepo(root)
+	require.NoError(t, err)
+	require.Greater(t, len(defined), 100, "only %d tests found; the parse is wrong", len(defined))
+	require.Greater(t, len(cited), 50, "only %d citations found; the parse is wrong", len(cited))
+
+	known := staleTestReferences()
+	examples := citedAsExamples()
+	var stale []string
+	for name, where := range cited {
+		if defined[name] || known[name] != "" || examples[name] != "" {
+			continue
+		}
+		stale = append(stale, name+" (cited in "+where+")")
+	}
+	sort.Strings(stale)
+	require.Empty(t, stale,
+		"these comments name a test that does not exist:\n  %s\n"+
+			"A comment naming a mechanism is how this repository explains itself; one naming a "+
+			"test nobody wrote makes a rule look enforced while nothing enforces it. Write the "+
+			"test, or name the one that actually does the work",
+		strings.Join(stale, "\n  "))
+
+	// The other direction, so the list cannot rot: a name that starts existing must leave it.
+	for name := range known {
+		require.False(t, defined[name],
+			"%s now exists; remove it from staleTestReferences so the count stays honest", name)
+		require.NotEmpty(t, cited[name],
+			"%s is listed as a stale citation and no comment cites it; the entry is dead", name)
+	}
+	for name, why := range examples {
+		require.False(t, defined[name],
+			"%s exists now, so it is a citation rather than an illustration; remove it from "+
+				"citedAsExamples (%s)", name, why)
+		require.NotEmpty(t, cited[name],
+			"%s is listed as an illustration and no comment writes it; the entry is dead", name)
+	}
+	t.Logf("%d test names cited in comments, %d still stale and tracked, %d written as examples",
+		len(cited), len(known), len(examples))
+}
+
+// citedAsExamples are the two names written in a comment as an ILLUSTRATION rather than as a
+// citation of a mechanism.
+//
+// The distinction is the whole point of the gate above, so it is drawn explicitly rather than by
+// widening the pattern until both slip through. One is the naming convention itself; the other is
+// the name this gate exists because of, quoted in the story of how it was found. Neither claims
+// that a test exists.
+func citedAsExamples() map[string]string {
+	return map[string]string{
+		"TestThing_Condition_Expectation": "the naming convention AGENTS.md fixes, not a test",
+		"TestSQL001_DatabaseSQL_IsImportedOnlyByTheStore": "the test internal/store/store.go " +
+			"claimed twice and nobody wrote; quoted above as the reason this gate exists",
+	}
+}
+
+// testNamesInRepo returns every test function defined, and every `Test…_…` name cited in a comment
+// with the file that cites it.
+func testNamesInRepo(root string) (map[string]bool, map[string]string, error) {
+	defined := map[string]bool{}
+	cited := map[string]string{}
+	// The house convention, which is what makes a citation distinguishable from an identifier
+	// that merely starts with `Test`: at least one underscore-separated clause after the subject.
+	citation := regexp.MustCompile(`\bTest[A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b`)
+	declaration := regexp.MustCompile(`(?m)^func (Test[A-Za-z0-9_]+)\s*\(`)
+
+	for _, dir := range scanned() {
+		err := filepath.WalkDir(filepath.Join(root, dir), func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "testdata" || d.Name() == "vendor" || d.Name() == "node_modules" {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(d.Name(), ".go") {
+				return nil
+			}
+			src, readErr := os.ReadFile(p)
+			if readErr != nil {
+				return readErr
+			}
+			rel, _ := filepath.Rel(root, p)
+			for _, m := range declaration.FindAllStringSubmatch(string(src), -1) {
+				defined[m[1]] = true
+			}
+			for _, line := range strings.Split(string(src), "\n") {
+				if !strings.HasPrefix(strings.TrimSpace(line), "//") {
+					continue
+				}
+				for _, name := range citation.FindAllString(line, -1) {
+					if _, seen := cited[name]; !seen {
+						cited[name] = filepath.ToSlash(rel)
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return defined, cited, nil
 }
