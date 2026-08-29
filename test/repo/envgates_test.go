@@ -13,7 +13,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/canondoc"
 )
 
-// The `.env` gates.
+// ENV002 — the `.env` gates.
 //
 // `deploy/env.example` opens with "Never commit the real thing", and until these existed that was a
 // wish: nothing in `.gitignore` matched `.env`, so the one file every reader of
@@ -114,7 +114,7 @@ func git(t *testing.T, root string, args ...string) string {
 // hiding `deploy/env.example`, which is the file `TestServe_PlaceholderSecret_Refused` reads and
 // the file every runbook points at; losing it from the tree would be a silent regression that this
 // gate's positive half would happily report as success.
-func TestGitignore_EveryDotenvSpelling_IsIgnored(t *testing.T) {
+func TestENV002_EveryDotenvSpelling_IsIgnored(t *testing.T) {
 	t.Parallel()
 	root, err := canondoc.RepoRoot()
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestGitignore_EveryDotenvSpelling_IsIgnored(t *testing.T) {
 // No dotenv file is tracked. Adding the ignore rule does nothing for a file git already holds:
 // `.gitignore` is consulted for untracked paths only, so a `.env` committed before the rule existed
 // stays committed, stays exported in every tarball, and stays in the history for good.
-func TestTrackedFiles_NoDotenvFile_IsCommitted(t *testing.T) {
+func TestENV002_NoDotenvFile_IsCommitted(t *testing.T) {
 	t.Parallel()
 	root, err := canondoc.RepoRoot()
 	require.NoError(t, err)
@@ -169,7 +169,7 @@ func TestTrackedFiles_NoDotenvFile_IsCommitted(t *testing.T) {
 // This is the one that catches the likely accident: a runbook, a comment or a fixture with a real
 // `openssl rand -base64 48` pasted into it. The file need not be named `.env` for the secret in it
 // to be just as published.
-func TestTrackedFiles_NoSecretVariable_IsAssignedARealValue(t *testing.T) {
+func TestENV002_NoSecretVariable_IsAssignedARealValue(t *testing.T) {
 	t.Parallel()
 	root, err := canondoc.RepoRoot()
 	require.NoError(t, err)
@@ -226,7 +226,7 @@ func itoa(n int) string {
 // happily with a heuristic that never matches anything. The excluded rows are not hypothetical —
 // each is a real line in deploy/env.example, deploy/smoke.sh or deploygates_test.go, and each was
 // the reason one exclusion exists.
-func TestSecretScan_ARealSecret_IsFoundAndAFixtureIsNot(t *testing.T) {
+func TestENV002_Scanner_FindsARealSecretAndSparesAFixture(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -261,7 +261,7 @@ func TestSecretScan_ARealSecret_IsFoundAndAFixtureIsNot(t *testing.T) {
 }
 
 // isDotenv tells the real thing from the example, in both directions.
-func TestIsDotenv_TheExample_IsNotTheThing(t *testing.T) {
+func TestENV002_TheExample_IsNotTheThing(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
