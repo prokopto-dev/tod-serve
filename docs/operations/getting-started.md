@@ -33,7 +33,8 @@ before it:
    provider, the first circle and the raid-target catalogue, and hands back a one-time owner code.
 5. **Redeem that code.** It makes you the circle's owner and — because nobody administers this
    instance yet — this instance's first administrator, in the same transaction.
-6. **Delete `TOD_SETUP_TOKEN`** and restart.
+6. **Delete `TOD_SETUP_TOKEN` and restart**, then check `/setup` answers `404`. It is a takeover
+   credential and you are done with it — this step is part of the install, not an optional tidy-up.
 
 There is no `tod-serve init` and no `tod-serve seed targets` in that list. They still exist and are
 still the way back when nobody can sign in ([the recovery path](#if-nobody-can-sign-in)), but since
@@ -140,7 +141,7 @@ TOD_SETUP_TOKEN=<PASTE_THE_THIRD_OPENSSL_OUTPUT>
 |---|---|---|
 | `TOD_TOKEN_PEPPER` | Keys every credential hash in the database. A stolen database file is useless without it | **Every personal access token stops working and everybody is signed out.** Effectively permanent — back it up somewhere you will still have in a year |
 | `TOD_SESSION_KEY` | Signs browser session cookies | Everybody is signed out of the console. No token is affected |
-| `TOD_SETUP_TOKEN` | Authorises the first-run wizard at `/setup`, and nothing else | Nothing. **You delete this one at step [A10](#a10-delete-tod_setup_token)** |
+| `TOD_SETUP_TOKEN` | Authorises the first-run wizard at `/setup`, and nothing else | Nothing. **You delete this one at step [A10](#a10-delete-tod_setup_token--do-not-skip-this)** |
 
 **Check you got all three.** `serve` refuses any secret still beginning with `CHANGE_ME_`, and it
 refuses at start-up, one variable at a time:
@@ -354,35 +355,64 @@ correct and expected; it is not a failure.
 `2 copies of the public URL, all on …` is the check worth reading twice. If those disagree, the
 sign-in flow completes and lands nowhere — see the [troubleshooting table](#troubleshooting).
 
-### A10. Delete `TOD_SETUP_TOKEN`
+### A10. Delete `TOD_SETUP_TOKEN` — do not skip this
+
+**`TOD_SETUP_TOKEN` is a takeover credential.** Whoever holds it while this instance has no
+administrator can make themselves one. You are finished with it; remove it.
 
 ```bash
+# Capture it BEFORE you delete it — the check below needs the exact value.
+SETUP_TOKEN="$(grep '^TOD_SETUP_TOKEN=' deploy/.env | cut -d= -f2-)"
+
 sed -i.bak '/^TOD_SETUP_TOKEN=/d' deploy/.env && rm -f deploy/.env.bak
 docker compose -f deploy/compose.local.yaml --profile tls up -d
 ```
 
-Verify the door is shut:
+**Now confirm the door is shut rather than assuming it**, presenting the token you just removed:
 
 ```bash
-curl -k -s -o /dev/null -w '%{http_code}\n' https://localhost:8443/api/v1/setup
+grep -c '^TOD_SETUP_TOKEN=' deploy/.env
+curl -k -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $SETUP_TOKEN" https://localhost:8443/api/v1/setup
 ```
 
 ```
+0
 404
 ```
 
-**You do not have to do this for safety, and it is worth knowing why before you decide.** The setup
-routes already refuse everybody once any identity administers the instance — that condition is
-*derived from the grant ledger* on every request, never stored as a flag anybody can reset. With the
-token still in `.env` the same request answers `409`, not `200`:
+> **Check it WITH the token, never without.** An unauthenticated request to `/api/v1/setup` answers
+> `404` on every instance in every state — including one that is wide open with a live token and no
+> administrator. That is deliberate: a missing token and a wrong one are one refusal, so a stranger
+> cannot tell which instances are worth guessing at. It also means **a bare `curl` proves nothing
+> here**, and would tell you the door is shut at the exact moment it is widest open. Measured on
+> 2026-08-29 against a fresh instance: unauthenticated `404`, same request with the real token
+> `200`.
 
-```
-409  this instance already has an administrator, so first-run setup is over.
-     Sign in, or use `tod-serve instance grant` at the console
-```
+**The safe end state is all three of these at once:**
 
-Deleting the line is defence in depth, not the defence. Do it anyway: a takeover credential with no
-remaining job is one to remove.
+1. **No `TOD_SETUP_TOKEN` line in `deploy/.env`** — the `grep -c` above prints `0`.
+2. **The stack has been restarted since you deleted it.** Editing `.env` changes nothing until the
+   container is recreated; the running process still holds the value it started with.
+3. **`/api/v1/setup` answers `404` to the removed token.**
+
+| With the token presented | What it means |
+|---|---|
+| **`404`** | Finished. The binary no longer holds that token |
+| **`409`** | The file is edited but **the container was not recreated** — the token is still live in the running process. Re-run the `up -d` above |
+| **`200`** | **Stop.** The token is live *and* nobody administers this instance. Anyone who reaches it can take it over |
+
+> **Why this is not optional, even though something else also guards it.** The setup routes refuse
+> everybody once any identity administers the instance, and that condition is *derived from the
+> grant ledger* on every request rather than stored as a flag anybody can reset. That is a real
+> second defence and it is why a `409` is not an emergency.
+>
+> It is not a reason to leave the line. **The window this protects is the one before an
+> administrator exists** — and it re-opens: revoking every administrator re-arms both doors, so a
+> `TOD_SETUP_TOKEN` still sitting in `.env` months from now becomes a live takeover credential again
+> the moment the ledger empties. That is the recovery path working as designed
+> ([ADR-0016](../adr/0016-first-run-setup-is-an-env-token-and-a-derived-window.md)), and it is also
+> how an instance gets handed away by accident. Delete the line.
 
 ### A11. Optional: load timer data
 
@@ -690,18 +720,37 @@ docker compose run --rm tod-serve instance grant --identity <THE_SECOND_PERSONS_
   --permission instance.owner
 ```
 
-### B9. Delete `TOD_SETUP_TOKEN`
+### B9. Delete `TOD_SETUP_TOKEN` — do not skip this
+
+**This is the step most likely to be lost to "I will do it later".** You have a working instance in
+front of you and a browser full of things to look at; the takeover credential is still in `.env`.
 
 ```bash
 cd /opt/tod-serve
+SETUP_TOKEN="$(grep '^TOD_SETUP_TOKEN=' .env | cut -d= -f2-)"   # capture BEFORE deleting
+
 sed -i '/^TOD_SETUP_TOKEN=/d' .env
-docker compose up -d
-curl -s -o /dev/null -w '%{http_code}\n' https://<YOUR_DOMAIN>/api/v1/setup
+grep -c '^TOD_SETUP_TOKEN=' .env       # must print 0
+docker compose up -d                   # the running process holds the old value until this
+
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $SETUP_TOKEN" https://<YOUR_DOMAIN>/api/v1/setup
 ```
 
 ```
+0
 404
 ```
+
+**The `Authorization` header is not optional in that check.** An unauthenticated request answers
+`404` on every instance in every state, including a wide-open one — so a bare `curl` would report
+success at the exact moment the instance is most exposed.
+
+`404` is the finished state; `409` means the container was not recreated; `200` means stop and read
+[A10](#a10-delete-tod_setup_token--do-not-skip-this).
+
+The full reasoning, including why this stays mandatory when a second defence exists and how
+revoking every administrator re-arms it, is at [A10](#a10-delete-tod_setup_token--do-not-skip-this).
 
 ### B10. Set up daily backups before you walk away
 
@@ -907,10 +956,26 @@ docker compose -f deploy/compose.local.yaml run --rm tod-serve doctor
 ```
 
 ```bash
-# 5. The setup door is shut even to the right token.
-curl -k -s -o /dev/null -w '%{http_code}\n' <YOUR_BASE_URL>/api/v1/setup
-#    -> 404 if you deleted TOD_SETUP_TOKEN, 409 if you kept it. NEVER 200.
+# 5. THE SETUP DOOR IS SHUT. Both halves, and the second needs the token.
+grep -c '^TOD_SETUP_TOKEN=' <YOUR_ENV_FILE>
+#    -> 0            the line is gone from .env
+
+curl -k -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer <THE_TOKEN_YOU_REMOVED>" <YOUR_BASE_URL>/api/v1/setup
+#    -> 404          finished; the binary no longer holds that token
+#    -> 409          THE STACK WAS NOT RESTARTED. The token is still live in the running
+#                    process. Re-run `up -d`, then check again.
+#    -> 200          STOP. Live token, no administrator: anyone reaching this can take it over.
 ```
+
+**Send the `Authorization` header.** Without it this route answers `404` on every instance in every
+state — including a wide-open one — so a bare `curl` reports the door shut at the moment it is
+widest open. That refusal is deliberate (a missing token and a wrong one must be indistinguishable
+to a stranger); it just makes an unauthenticated check worthless as *verification*.
+
+**`404` is the finished state, and it is the one line in this checklist worth re-reading.**
+`TOD_SETUP_TOKEN` is a takeover credential; the window it protects re-opens if every administrator
+is ever revoked, so a token left in `.env` months from now is a live one again.
 
 ```bash
 # 6. A backup exists, and it opens.
@@ -950,8 +1015,11 @@ echo | openssl s_client -connect <YOUR_DOMAIN>:443 -servername <YOUR_DOMAIN> 2>/
 | `doctor` says *the public URL is written down 2 times and they do not agree* | `TOD_PUBLIC_URL` and the instance row name different origins — usually because the origin changed after the wizard ran | Set `TOD_PUBLIC_URL` back, or change the instance's public URL in the console so all copies agree |
 | Sign-in with Discord fails at the *authorization* step with `invalid_request` | The redirect URI registered with Discord does not match what the server sends, character for character | [discord-app.md](discord-app.md). Scheme, host, path, no trailing slash |
 | `/readyz` says *the database is behind the migrations this binary embeds* | `migrate` did not run, or an image was upgraded without it | Run `migrate` as its own step. `/healthz` stays green on purpose so a recoverable problem does not restart-loop the container |
+| `/api/v1/setup` answers **404** and you sent no token | **This proves nothing.** Unauthenticated, this route answers `404` in every state, wide open included. Re-run the check with `-H "Authorization: Bearer <TOKEN>"` | [A10](#a10-delete-tod_setup_token--do-not-skip-this) |
 | `/api/v1/setup` answers **404** with a token you believe is right | Either the token is wrong or it is unset. **These answer identically on purpose** — a refusal that told them apart would tell a stranger which instances are worth guessing at | Check the value in `.env` and that the container was restarted after you set it |
-| `/api/v1/setup` answers **409** | The token is right and setup is over: somebody already administers this instance | Sign in. If nobody can, [the recovery path](#if-nobody-can-sign-in) |
+| `/api/v1/setup` answers **409** after you deleted `TOD_SETUP_TOKEN` | **The stack was not restarted.** The running process still holds the token from before the edit | `docker compose … up -d`, then re-check. [A10](#a10-delete-tod_setup_token--do-not-skip-this) |
+| `/api/v1/setup` answers **409** with the token still set | The token is right and setup is over: somebody already administers this instance | Expected. Delete the token anyway. If nobody can sign in, [the recovery path](#if-nobody-can-sign-in) |
+| Anything about the Traefik layer specifically | **Nothing in CI exercises Traefik, ACME or public DNS** — `deploy/smoke.sh` runs `compose.local.yaml` and only ever *parses* `compose.yaml`. The router, the certificate resolver and the HSTS middleware are verified by the deploy workflow's checks against a real host and by nothing else | Treat the prose in [Path B](#path-b--behind-traefik) as unverified guidance, and check each step's real output. [What is deliberately not here](deployment.md#what-is-deliberately-not-here) |
 | The board shows targets but every status is `no_timer` | **Correct.** Timer data is not bundled | [A11](#a11-optional-load-timer-data) |
 | A backup "succeeds" and the file is nowhere on your disk | Docker Desktop: a bind source outside its shared-paths list is not an error — it mounts an empty directory inside its VM | Use a path under your home directory |
 
