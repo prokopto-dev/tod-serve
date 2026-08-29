@@ -144,6 +144,18 @@ The one thing worth checking is that you did not put the **bot's** token somewhe
 be the client secret. They are different values from different sections; a bot token in
 `client_secret` fails the token exchange with `credential_invalid`.
 
+**What your application will actually ask your members for, in full:** `identify` on every sign-in,
+and `guilds.members.read` only when the circle being joined gates on a guild. That is the entire
+list. It never asks for the broader `guilds` scope, so it never receives — and could not read — the
+list of other Discord servers your members are in. Both are ordinary user scopes granted by the
+person signing in, which is why no bot and no privileged intent is involved at any point.
+
+You do not have to take that on trust: the scope set is decided in one function and pinned in both
+directions by tests, which require `identify` alone for an ungated circle, `identify` plus
+`guilds.members.read` for a gated one, and the broader `guilds` scope in neither.
+[§6](#6-scopes-and-why-there-are-only-two) explains why one call to the member endpoint answers
+both halves of the gate.
+
 ### 2.5 Then
 
 Go to [§4](#4-configure-the-provider-on-the-instance). If the provider already exists on the
