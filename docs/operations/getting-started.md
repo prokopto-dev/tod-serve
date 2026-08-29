@@ -419,6 +419,13 @@ docker compose -f deploy/compose.local.yaml run --rm --volume "$PWD/backups:/bac
   tod-serve doctor --db "/backups/$(date -u +%Y%m%d).db"
 ```
 
+```
+  ok       schema version 8
+  ok       migrations are up to date
+  ok       integrity check passed
+  ok       foreign key check passed
+```
+
 > On Docker Desktop, a bind source outside the shared-paths list is **not an error** — the daemon
 > creates an empty directory inside its VM and mounts that, so the backup "succeeds" and the file is
 > nowhere on your disk. `$PWD` under your home directory is shared; `/tmp` on macOS is not. This was
@@ -432,11 +439,14 @@ Full detail, including restoring: [the backup runbook](backup.md).
 
 Everything in this section is run **on the server, by you, over SSH**. No automation reaches it.
 
-> **`unverified on a droplet`.** These blocks were not executed against a live host. The compose
-> file's resolution, the `backups` mount refusal and every step Path B shares with Path A were run
-> locally on 2026-08-29; DNS, ACME and Traefik's routers were not, and nothing in CI exercises them
-> either. Read the expected output as *what the equivalent local run produced*, and check each
-> step's real output before moving to the next.
+> **`unverified on a droplet`.** These blocks were not executed against a live host. What *was*
+> run locally on 2026-08-29: `deploy/compose.yaml` resolving, the `backups` mount refusing a
+> missing directory with the error quoted below, and every step Path B shares with Path A. DNS,
+> ACME and Traefik's routers were not, and nothing in CI exercises them either.
+>
+> So read the output blocks below in two kinds. Where one is quoted from the local run it says so;
+> the rest are **illustrative** — the shape to look for, not a transcript. Check each step's real
+> output before moving to the next, and do not treat a mismatch in spacing as a failure.
 
 ### B0. What must already be true
 
@@ -468,9 +478,11 @@ install -d -o 65532 -g deploy -m 770 /opt/tod-serve/backups
 ls -ld /opt/tod-serve /opt/tod-serve/backups
 ```
 
+Illustrative — what matters is the **owner column**: `deploy` on the first, `65532` on the second.
+
 ```
-drwxr-x--- 2 deploy deploy 4096 Aug 29 19:00 /opt/tod-serve
-drwxrwx--- 2  65532 deploy 4096 Aug 29 19:00 /opt/tod-serve/backups
+drwxr-x--- 2 deploy deploy 4096 … /opt/tod-serve
+drwxrwx--- 2  65532 deploy 4096 … /opt/tod-serve/backups
 ```
 
 **That `65532` is load-bearing and has its own failure mode.** `compose.yaml` bind-mounts
@@ -595,13 +607,16 @@ docker compose run --rm tod-serve migrate
 
 ```bash
 docker compose up -d
-docker compose ps
+docker compose ps --format 'table {{.Service}}\t{{.Status}}'
 ```
 
 ```
-NAME                   SERVICE     STATUS
-tod-serve-tod-serve-1  tod-serve   Up 4 seconds (health: starting)
+SERVICE     STATUS
+tod-serve   Up 4 seconds (health: starting)
 ```
+
+`health: starting` becomes `healthy` within about thirty seconds — the image probes its own
+listener over loopback, because it is `FROM scratch` and has no shell and no `curl` to do it with.
 
 `migrate` is a separate command here for the same reason it is at home, and it matters more: this
 host holds the only copy of a circle's report log. Once the GitHub Actions pipeline is running it
@@ -618,8 +633,10 @@ echo | openssl s_client -connect <YOUR_DOMAIN>:443 -servername <YOUR_DOMAIN> 2>/
 ```
 
 ```
-issuer=C=US, O=Let's Encrypt, CN=R11
+issuer=C=US, O=Let's Encrypt, CN=…
 ```
+
+The intermediate's name changes over time; **`O=Let's Encrypt` is the part to read.**
 
 | What it says | What it means |
 |---|---|
