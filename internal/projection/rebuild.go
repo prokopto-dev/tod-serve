@@ -581,7 +581,7 @@ func (s *Service) fanOut(
 	return recomputed, skipped, nil
 }
 
-// recomputeForTimerChange is the one circle's worth of work both entry points do. It reports
+// recomputeForTimerChange is the one circle's worth of work all three entry points do. It reports
 // whether it recomputed, which is false only when `skipOverridden` held it back.
 func (s *Service) recomputeForTimerChange(
 	ctx context.Context, q *sqlitegen.Queries, circle sqlitegen.Circle,
