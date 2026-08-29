@@ -5,6 +5,11 @@ tod-serve is one more service on the network Traefik watches; it publishes no po
 
 Public URL: **`https://tod.prokopto.dev`** — the same droplet as `nparseplugins.prokopto.dev`.
 
+**This is a runbook for one specific droplet, and it assumes a deploy user, a GitHub environment
+and an SSH keyscan.** If you are standing an instance up for the first time — here or anywhere —
+read [getting-started.md](getting-started.md) first: it is the same ground with every command in
+order and the expected output beside it, and it covers a laptop as well as a server.
+
 For a machine that is **not** that droplet — a laptop, a home server, a NAS — skip to
 [Running it at home](#running-it-at-home). Everything in this project is one binary and one SQLite
 file, and none of what follows is a prerequisite for that.
@@ -583,25 +588,42 @@ work, and nothing is written that a retry cannot write again.
 `deploy/compose.local.yaml` is the same image with no Traefik, no DNS and no ACME: it publishes a
 port and that is the whole difference. The hardening is identical.
 
+**[getting-started.md](getting-started.md) is the step-by-step version of this**, with expected
+output for every command, a verification checklist and a troubleshooting table. What follows is the
+summary and the two things about running at home that have their own failure modes.
+
 ```bash
-cp deploy/env.example .env        # then generate the secrets; `serve` refuses the placeholders
+# `deploy/.env`, NOT `.env`. Compose resolves `.env` from the directory of the first `-f` file,
+# so a root-level copy is read by nothing and `config` complains about the variable rather than
+# the location.
+install -m 600 /dev/null deploy/.env && cp deploy/env.example deploy/.env
+
+# Then edit it: three `openssl rand -base64 48` values, and TOD_DEPLOY_HOST=localhost.
+# `serve` refuses the shipped placeholders.
 docker compose -f deploy/compose.local.yaml run --rm tod-serve migrate
-docker compose -f deploy/compose.local.yaml up -d
+docker compose -f deploy/compose.local.yaml --profile tls up -d
 ```
 
-Then open `http://localhost:8080/setup`, paste your `TOD_SETUP_TOKEN`, and fill in the one form.
+Then open `https://localhost:8443/setup`, paste your `TOD_SETUP_TOKEN`, and fill in the one form.
 It creates the instance, the identity provider, the first circle and the raid-target catalogue, and
 sends you to the join page with a one-time owner code — redeeming it makes you the administrator.
 There is no `init` and no `seed targets` to run.
 
-> **Read the TLS section below before you sign in over plain HTTP.** The console's session cookie is
-> `__Host-` prefixed and two of three browser engines refuse to store one over `http://`. The wizard
-> itself works either way — it authenticates with a header, not a cookie — but the join it hands you
-> off to will leave you looking at a page that says the session was refused.
+> **`TOD_DEPLOY_HOST` is the name on the local TLS front's certificate**, and `env.example` ships it
+> as `tod.prokopto.dev`. Leave it there and Caddy answers for a name you are not typing, so
+> `https://localhost:8443` refuses the connection with nothing in the log that points at the cause.
+> Set it to `localhost`, and set `TOD_PUBLIC_URL=https://localhost:8443` to match.
 
-`deploy/smoke.sh` runs exactly this on every CI build, against the image that would ship, wizard
-included. If you want to know whether these instructions work, that script is the answer — it is
-this walkthrough, executed.
+> **The `tls` profile is above rather than in a footnote because of the section below.** The
+> console's session cookie is `__Host-` prefixed and two of three browser engines refuse to store one
+> over `http://`. The wizard itself works either way — it authenticates with a header, not a cookie —
+> but the join it hands you off to will leave you looking at a page that says the session was
+> refused. Plain `docker compose -f deploy/compose.local.yaml up -d` on port 8080 is the right choice
+> when you only want the API, which a token reaches perfectly well.
+
+`deploy/smoke.sh` runs this on every CI build, against the image that would ship, wizard included.
+If you want to know whether these instructions work, that script is the answer — it is this
+walkthrough, executed.
 
 ### The console needs TLS, and this was measured
 

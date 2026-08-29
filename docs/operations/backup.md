@@ -82,7 +82,10 @@ docker compose -f deploy/compose.local.yaml run --rm --volume "$PWD/backups:/bac
   tod-serve backup --to "/backups/$(date -u +%Y%m%d).db"
 ```
 
-`run` rather than `exec`, so it works whether or not the stack is up.
+`run` rather than `exec`, so it works whether or not the stack is up. Then **open the copy** —
+[Checking one](#checking-one) below, and step A12 of
+[getting-started.md](getting-started.md#a12-back-it-up), which is where a first-time reader meets
+this file.
 
 > **A backup on the same volume as the database is an undo, not a backup.** It survives a bad
 > migration and nothing else: not a failed droplet, not a deleted volume, not the droplet being
