@@ -83,10 +83,14 @@ func authorizedFor(t *testing.T, appID string, scopes ...string) map[string]any 
 	return map[string]any{"application": map[string]any{"id": appID}, "scopes": scopes}
 }
 
-// The invariant named in ADR-0011 and docs/concepts/invariants.md. A Discord access token is a
-// bearer token that `GET /users/@me` honours whichever application minted it, so per-instance
-// registration closes cross-instance replay ONLY if something checks the audience.
-func TestDiscord_ForeignApplicationToken_Refused(t *testing.T) {
+// The invariant named in ADR-0011 and docs/concepts/invariants.md, at the unit level: this client
+// refuses a token minted for somebody else's application, and reads nothing about its subject.
+//
+// The ADR's named mechanism, `TestDiscord_ForeignApplicationToken_Refused`, lives in
+// internal/identity because it is about both COMPLETION PATHS — the browser callback and
+// `bearer_token` — and only the service reaches both. This is the half that can assert the call
+// order, because it can see the calls.
+func TestVerify_ForeignApplicationToken_Refused(t *testing.T) {
 	t.Parallel()
 
 	doer := &stubDoer{answers: map[string]*outbound.Response{
