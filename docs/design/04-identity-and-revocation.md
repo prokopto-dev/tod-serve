@@ -22,6 +22,16 @@ step-up).
 | `issuer`, `authorization_endpoint`, `jwks_uri`, `subject_claim` | OIDC only; `NULL` otherwise |
 | `client_id`, `client_secret`, `redirect_uri`, `token_endpoint` | The operator's **own** OAuth application — see [ADR-0011](../adr/0011-operator-registered-discord-application.md). `CHECK ((kind = 'local') = (client_id IS NULL))` |
 
+**A `discord` row also needs its `client_secret`**, and that is checked rather than left to fail
+later. The instance is a confidential client, so it performs the token exchange itself and
+`discord.New` refuses to build a client without one — meaning a secretless `discord` row saved
+cleanly, reported as enabled, and produced a `500` on every sign-in. It is `discord` only: an
+`oidc` provider serving non-browser `id_token` clients legitimately has none, because the secret is
+used only on the browser path's exchange. **Enforced by:**
+`TestAddProvider_DiscordWithNoClientSecret_IsRefusedAtConfigurationTime` and
+`TestAddProvider_OIDCWithNoClientSecret_IsStillAccepted`, which is the half that stops the check
+growing into a false positive.
+
 **`redirect_uri` is not free text: it must be this instance's own callback URL.** There is exactly
 one string that works — `<public url>` + the path the route registry serves `completeAuthorization`
 at + the provider `key` — and the server derives it rather than accepting one. Writing a row that

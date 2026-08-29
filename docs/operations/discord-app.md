@@ -118,6 +118,12 @@ Open <https://discord.com/developers/applications> and select the application.
 | **Client Secret** with a **Reset Secret** button and no visible value | You do not have the secret. Discord will not show it again. **Reset Secret**, copy the new one, and use it in [§4](#4-configure-the-provider-on-the-instance) — resetting invalidates any older one, so anything already using it stops working |
 | You have a secret written down from earlier | Use it. If sign-in later fails with `credential_invalid` at the *token exchange* step, the secret is wrong: reset it and reconfigure |
 
+**A `discord` provider with no client secret is refused**, `422`, at configuration time. It is not
+a configuration that half-works: the instance performs the token exchange itself, so without a
+secret every sign-in fails — and it fails at the moment somebody clicks the button rather than at
+the moment somebody saved the form. If you cannot produce a secret yet, leave the provider
+unconfigured rather than saving it half-filled.
+
 ### 2.3 Scopes — nothing to configure, and this is the part people over-configure
 
 **There is no scope setting to save on the application.** Scopes are requested per authorization,
