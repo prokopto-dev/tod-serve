@@ -305,11 +305,18 @@ func routes() []Route {
 		{
 			ID: OpRunSetup, Method: http.MethodPost, Path: "/setup", Versioned: true,
 			Auth: AuthSetupToken, CreatesState: true, Idempotency: IdempotencyHandler,
-			// `IdempotencyHandler` because the handler owns the replay, and what it keys on is
-			// stronger than the header: every step is create-if-absent and a second circle is
-			// refused outright, so a retry converges on the same instance whether or not the two
-			// requests carried the same key. There is no `idempotency_record` to key on either —
-			// that table's `principal_membership_id` is NOT NULL and setup has no principal at all.
+			// `Idempotency-Key` is required and validated at the edge, like every other operation
+			// that creates state: `routeMiddleware` reaches its handler through one tail, so the
+			// branch that resolves no principal cannot skip it.
+			//
+			// `IdempotencyHandler` says what happens after that, and it is NOT a replay. There is
+			// no `idempotency_record` to key on — that table's `principal_membership_id` is NOT
+			// NULL and setup has no principal at all — and the response could not be reproduced
+			// from the database anyway, because the owner code is held only as a hash. What the
+			// handler owns instead is convergence: every step is create-if-absent and a second
+			// circle is refused outright, so a retry of a lost response mints nothing and is told
+			// which field resumes the run.
+			// `TestRunSetup_ARepeatedRequest_MintsNoSecondOwnerCode` is that promise.
 			Summary: "Create the instance, its first provider and its first circle, and return a one-time owner code",
 		},
 		{

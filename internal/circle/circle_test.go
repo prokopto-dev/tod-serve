@@ -1,6 +1,9 @@
 package circle_test
 
 import (
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -254,4 +257,63 @@ func TestDelete_ReleasesTheName_SoItCanBeCreatedAgain(t *testing.T) {
 	})
 	require.NoError(t, err, "the deleted circle is still holding its name")
 	require.NotEqual(t, first.ID, second.ID)
+}
+
+// TestCreateFirst_ConcurrentCallers_CreateExactlyOneCircle is the gate on first-run setup's
+// promise that an instance does not get a second circle it never asked for.
+//
+// The wizard reads the instance's circles to decide whether to create one, and every write after
+// that read is made from a snapshot. Two runs describing the same empty instance would each see no
+// circle and each create one — so the condition is re-counted inside the transaction that inserts,
+// which the writing pool's `_txlock=immediate` turns into a queue rather than a race: the second
+// caller cannot BEGIN until the first has committed.
+//
+// Every caller asks for a DIFFERENT name, so the unique index on `(name_norm, server)` refuses
+// nothing here. If it did, this would pass while proving something else entirely.
+func TestCreateFirst_ConcurrentCallers_CreateExactlyOneCircle(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := t.Context()
+
+	const callers = 8
+	var released sync.WaitGroup
+	released.Add(1)
+	var done sync.WaitGroup
+	results := make(chan error, callers)
+	for i := range callers {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			// Held until every goroutine is running, so they collide rather than queue politely
+			// behind whichever the scheduler started first.
+			released.Wait()
+			_, err := f.service.CreateFirst(ctx, circle.CreateRequest{
+				Name: fmt.Sprintf("Racer %d", i), Server: core.Server(schemaenum.ServerBlue),
+			})
+			results <- err
+		}()
+	}
+	released.Done()
+	done.Wait()
+	close(results)
+
+	created, refused := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			created++
+		case errors.Is(err, circle.ErrNotFirst):
+			refused++
+		default:
+			require.NoError(t, err, "a caller failed for a reason that is not losing the race")
+		}
+	}
+	require.Equal(t, 1, created, "more than one caller was told it created the first circle")
+	require.Equal(t, callers-1, refused)
+
+	live, err := f.store.Queries().ListLiveCircles(ctx)
+	require.NoError(t, err)
+	require.Len(t, live, 1,
+		"the database holds %d circles; the count and the insert are not one transaction",
+		len(live))
 }

@@ -63,11 +63,29 @@ const MaxBodyBytes int64 = 1 << 20
 //     each has a different fix.
 //  5. Idempotency, last, because replaying a response for a request that was never authorized
 //     would be worse than not replaying at all.
+//
+// Step 1 is at the TOP of this function rather than inside [Builder.authorize], and steps 2 to 5
+// are reached through one tail. Both are structural: the two auth kinds that resolve no principal
+// — metrics and setup — do not call `authorize` at all, so a rule living inside it was a rule they
+// silently skipped. `TestRouteRegistry_EveryRoute_RefusesATokenInTheURL` drives the registry
+// rather than a list, so the next auth kind is covered the day it is added.
 func (b *Builder) routeMiddleware(r Route) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
 		// Recorded on the way out, whatever happened: a metric that only counts successes is a
 		// metric that goes quiet exactly when something is wrong.
 		defer func() { b.metrics.observe(r.ID, ctx.Status()) }()
+
+		// First, for every route on both listeners, and before the rate limiter: a credential in
+		// a query string is already in the access log of every proxy between here and the caller,
+		// and refusing it after spending one of the caller's invite attempts would punish them for
+		// our leak. `TOD_SETUP_TOKEN` is the worst one to lose this way — it takes the instance
+		// over — and it reaches a route that resolves no principal at all.
+		requestURL := ctx.URL()
+		if err := auth.RejectTokenInURL(requestURL.Query()); err != nil {
+			b.writeProblem(ctx, apierr.Wrap(apierr.CodeUnauthenticated, err,
+				"a token in a URL is never accepted; use Authorization: Bearer"))
+			return
+		}
 
 		// Before authentication and before the handler: a rejected probe must cost the instance
 		// nothing to store, and `createAuthorizationURL` writes an `auth_flow` row.
@@ -86,7 +104,7 @@ func (b *Builder) routeMiddleware(r Route) func(huma.Context, func(huma.Context)
 				b.writeProblem(ctx, err)
 				return
 			}
-			next(ctx)
+			b.dispatch(ctx, r, auth.Principal{}, next)
 			return
 		}
 
@@ -103,7 +121,7 @@ func (b *Builder) routeMiddleware(r Route) func(huma.Context, func(huma.Context)
 				b.writeProblem(ctx, err)
 				return
 			}
-			next(ctx)
+			b.dispatch(ctx, r, auth.Principal{}, next)
 			return
 		}
 
@@ -116,22 +134,38 @@ func (b *Builder) routeMiddleware(r Route) func(huma.Context, func(huma.Context)
 		if !p.IsZero() {
 			ctx = huma.WithValue(ctx, principalKey{}, p)
 		}
-		if !r.RequiresIdempotencyKey() {
-			next(ctx)
-			return
-		}
-		b.runIdempotent(ctx, r, p, next)
+		b.dispatch(ctx, r, p, next)
 	}
 }
 
+// dispatch is the one way out of [Builder.routeMiddleware], for every auth kind there is.
+//
+// It exists because the alternative was three `next(ctx)` calls, and two of them — the ones on the
+// branches that resolve no principal — skipped idempotency entirely. `POST /setup` declares
+// `CreatesState: true`, and it was served with no `Idempotency-Key` at all: the registry said one
+// thing and the edge did another, which is the shape of bug a registry is supposed to make
+// impossible. A route reaches its handler through here or not at all.
+//
+// The principal may be zero. `runIdempotent` requires and validates the header either way, and
+// hands a keyless-record operation to the handler that owns its own replay — which is what
+// `IdempotencyHandler` means, and the only thing available when there is no membership to key
+// `(principal, key)` on.
+func (b *Builder) dispatch(ctx huma.Context, r Route, p auth.Principal, next func(huma.Context)) {
+	if !r.RequiresIdempotencyKey() {
+		next(ctx)
+		return
+	}
+	b.runIdempotent(ctx, r, p, next)
+}
+
 // authorize resolves the caller and decides whether the route is theirs to call.
+//
+// It does NOT re-check for a token in the query string: [Builder.routeMiddleware] does that for
+// every route before this is reached. The check was here, and being here is exactly what let the
+// two auth kinds that never call this function skip it.
 func (b *Builder) authorize(ctx huma.Context, r Route) (auth.Principal, error) {
 	requestURL := ctx.URL()
 	query := requestURL.Query()
-	if err := auth.RejectTokenInURL(query); err != nil {
-		return auth.Principal{}, apierr.Wrap(apierr.CodeUnauthenticated, err,
-			"a token in a URL is never accepted; use Authorization: Bearer")
-	}
 	if !r.Authenticated() {
 		return auth.Principal{}, nil
 	}

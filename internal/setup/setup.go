@@ -40,6 +40,10 @@ type Service struct {
 	catalogue  *catalogue.Service
 	clock      clock.Clock
 	log        *slog.Logger
+	// runs admits one [Service.Run] at a time. See the comment on Run for what it buys and what
+	// it does not: it is a channel rather than a [sync.Mutex] so that a caller whose request was
+	// cancelled while waiting stops waiting, instead of queueing to do work nobody will read.
+	runs chan struct{}
 }
 
 // New returns a service.
@@ -64,6 +68,7 @@ func New(cfg Config) (*Service, error) {
 		db: cfg.Store, circles: cfg.Circles, invites: cfg.Invites,
 		identities: cfg.Identities, catalogue: cfg.Catalogue,
 		clock: cfg.Clock, log: cfg.Log,
+		runs: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -281,7 +286,32 @@ const localKind = "local"
 //
 // The caller has already checked [Service.Available]; this checks it again, because the gap
 // between an authorization decision and the write it authorises is where a second caller fits.
+//
+// **Two runs at once are stopped twice, because one mechanism cannot cover both halves.**
+//
+// The state below is a SNAPSHOT, and every write that follows it is a decision made from that
+// snapshot. Without serialisation, run B can describe the instance in the window after A wrote
+// the instance row and before A created its circle: both see no circle, both create one, and the
+// operator ends up with a circle nobody asked for beside the one the owner code admits them to.
+//
+//   - `runs` admits one run at a time in this process, so B waits and then describes what A
+//     actually left. B is refused by [validate] before it writes ANYTHING — which is the half
+//     that matters to an operator, because a run refused after `instanceStep` has already
+//     overwritten the instance name with the losing run's.
+//   - [circle.Service.CreateFirst] counts and inserts in ONE transaction, so the circle cannot be
+//     duplicated even by a second process sharing the database file, where this channel reaches
+//     nothing at all.
+//
+// Neither is redundant: the first is about what a losing run leaves behind, the second about what
+// it creates.
 func (s *Service) Run(ctx context.Context, req RunRequest) (Result, error) {
+	select {
+	case s.runs <- struct{}{}:
+		defer func() { <-s.runs }()
+	case <-ctx.Done():
+		return Result{}, fmt.Errorf("wait for the setup run already in progress: %w", ctx.Err())
+	}
+
 	state, err := s.Describe(ctx)
 	if err != nil {
 		return Result{}, err
@@ -344,6 +374,26 @@ func (s *Service) Run(ctx context.Context, req RunRequest) (Result, error) {
 	return out, nil
 }
 
+// errCircleExists is the refusal to create a second circle, worded in one place because it is
+// reached from two: [validate], which read the circles before the run started, and [circleStep],
+// which is told by the database that another run created one while this one was working.
+//
+// `count` is how many circles the refusing run could see. Zero means it saw none and lost the
+// race anyway, and the sentence says so rather than claiming a number it does not have — an
+// operator reading "already has 0 circle(s)" would reasonably conclude the wizard was broken.
+func errCircleExists(count int) error {
+	problem := apierr.New(apierr.CodeConflict,
+		"another setup run created this instance's first circle while this one was working; "+
+			"setup will not create a second. GET /setup, then name the circle the owner code "+
+			"should admit somebody to in circle.id")
+	if count > 0 {
+		problem = apierr.Newf(apierr.CodeConflict,
+			"this instance already has %d circle(s); setup will not create another. Name the one "+
+				"the owner code should admit somebody to in circle.id", count)
+	}
+	return problem.WithField("body.circle.id", "required once the instance has a circle")
+}
+
 // ErrAdministratorExists is returned when setup is asked to write on an instance somebody already
 // administers. It is the third of the three refusals, and the only one that is not a 404: a caller
 // who got this far presented the setup token, so telling them setup is over reveals nothing.
@@ -375,10 +425,7 @@ func validate(req RunRequest, state State) error {
 		// Refused rather than reused or duplicated. Reusing whichever circle happened to be
 		// first would issue an owner code for a circle the operator did not name; creating a
 		// second would leave the first orphaned with nobody able to delete it.
-		return apierr.Newf(apierr.CodeConflict,
-			"this instance already has %d circle(s); setup will not create another. Name the one "+
-				"the owner code should admit somebody to in circle.id", len(state.Circles)).
-			WithField("body.circle.id", "required once the instance has a circle")
+		return errCircleExists(len(state.Circles))
 	case strings.TrimSpace(req.Circle.Name) == "":
 		return apierr.New(apierr.CodeValidationFailed, "the first circle needs a name").
 			WithField("body.circle.name", "required")
@@ -506,12 +553,18 @@ func (s *Service) circleStep(
 		return s.acceptProvider(ctx, view, providerKey, req.Provider.AcknowledgeWeakRevocation, out)
 	}
 
-	view, err := s.circles.Create(ctx, circle.CreateRequest{
+	// CreateFirst, not Create: the condition this step was authorised by — that the instance has
+	// no circle — was read in [Service.Describe], and it is re-checked inside the transaction that
+	// does the insert. A run that lost the race writes nothing and says so.
+	view, err := s.circles.CreateFirst(ctx, circle.CreateRequest{
 		Name:        req.Circle.Name,
 		Description: req.Circle.Description,
 		Server:      core.Server(req.Circle.Server),
 		Timezone:    firstNonEmpty(req.Circle.Timezone, req.Timezone),
 	})
+	if errors.Is(err, circle.ErrNotFirst) {
+		return circle.Circle{}, errCircleExists(0)
+	}
 	if err != nil {
 		return circle.Circle{}, err
 	}

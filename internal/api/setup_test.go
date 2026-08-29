@@ -2,7 +2,9 @@ package api_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -413,4 +415,171 @@ func requireNothingWritten(t *testing.T, h *harness) {
 	t.Helper()
 	_, err := h.store.Queries().GetInstance(h.t.Context())
 	require.Error(t, err, "a refused setup run created the instance row")
+}
+
+// TestSetupRoutes_NoIdempotencyKey_AreRefusedBeforeTheyWrite is the gate on the registry telling
+// the truth about the edge.
+//
+// `POST /setup` declares `CreatesState: true` and `Idempotency: IdempotencyHandler`, and the setup
+// branch of the middleware called the handler directly — so the one operation on this instance that
+// mints an instance-owner credential was the one operation served with no retry key at all. The
+// declaration was right and the edge did not read it, which is precisely the failure a route
+// registry exists to make impossible.
+//
+// It is derived from [api.SetupRoutes] and from the route's own declaration rather than from a
+// list of paths, so a second state-creating setup route is covered the day it is added.
+func TestSetupRoutes_NoIdempotencyKey_AreRefusedBeforeTheyWrite(t *testing.T) {
+	t.Parallel()
+	driven := 0
+	for _, route := range api.SetupRoutes() {
+		if !route.RequiresIdempotencyKey() {
+			continue
+		}
+		driven++
+		t.Run(string(route.ID), func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			// The body is the one every other test here submits, so the refusal below is about
+			// the missing header and cannot be about anything else.
+			got := h.do(request{
+				Method: route.Method, Path: api.BasePath + route.Path,
+				Token: testSetupTok, Body: setupBody,
+			})
+			h.requireProblem(got, apierr.CodeIdempotencyKeyRequired)
+			requireNothingWritten(t, h)
+
+			// And the key is VALIDATED, not merely present: the same rules every other
+			// state-creating operation is held to, reached through the same code path.
+			bad := h.do(request{
+				Method: route.Method, Path: api.BasePath + route.Path,
+				Token: testSetupTok, Body: setupBody,
+				Headers: map[string]string{api.IdempotencyKeyHeader: "setup\x00run"},
+			})
+			h.requireProblem(bad, apierr.CodeValidationFailed)
+			requireNothingWritten(t, h)
+		})
+	}
+	require.Positive(t, driven,
+		"no setup route declares that it creates state; this gate is vacant")
+}
+
+// TestRunSetup_ARepeatedRequest_MintsNoSecondOwnerCode answers what `IdempotencyHandler` means
+// here, which is not what it means on `/join`.
+//
+// There is no `idempotency_record` to replay from — that table's `principal_membership_id` is NOT
+// NULL and setup has no principal — and the response cannot be reproduced from the database in any
+// case, because the owner code is stored only as a hash. What the handler owns instead is
+// CONVERGENCE: every step is create-if-absent, and the one step that mints a credential is refused
+// outright once the instance has a circle nobody named.
+//
+// So a retry of a lost response does not quietly mint a second owner code. It is refused, and the
+// refusal names the field that resumes the run. The owner code is minted as the LAST thing a run
+// does and returned in the response that reports it, so a run that answered a refusal minted
+// nothing — which is what makes the assertions below a statement about the ledger and not only
+// about the body.
+func TestRunSetup_ARepeatedRequest_MintsNoSecondOwnerCode(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	// One key, sent twice, exactly as a client retrying a request whose response it never saw.
+	const key = "setup-retry-after-a-lost-response"
+	send := func() response {
+		return h.do(request{
+			Method: http.MethodPost, Path: api.BasePath + "/setup", Token: testSetupTok,
+			Body:    setupBody,
+			Headers: map[string]string{api.IdempotencyKeyHeader: key},
+		})
+	}
+
+	first := send()
+	require.Equal(t, http.StatusOK, first.Status, "body was: %s", first.Body)
+	var one api.SetupResult
+	require.NoError(t, json.Unmarshal([]byte(first.Body), &one))
+	require.NotEmpty(t, one.OwnerCode)
+
+	second := send()
+	h.requireProblem(second, apierr.CodeConflict)
+	require.NotContains(t, second.Body, "owner_code",
+		"the retry handed back a second credential nobody asked for")
+	require.NotContains(t, second.Body, one.OwnerCode)
+
+	// And it left the instance exactly as the first run did.
+	state := h.do(setupRequest(routeGET(t), testSetupTok))
+	var described api.SetupState
+	require.NoError(t, json.Unmarshal([]byte(state.Body), &described))
+	require.Len(t, described.Circles, 1, "the retry created a second circle")
+	require.Equal(t, one.CircleID, described.Circles[0].ID)
+	require.Len(t, described.Providers, 1)
+}
+
+// TestRunSetup_ConcurrentRuns_LeaveOneCircleAndTheWinnersInstance is the gate on the race the
+// snapshot in [setup.Service.Run] used to lose.
+//
+// `Describe` reads, and every write after it is a decision made from that read. Two operators — or
+// one browser that retried a slow request — could both describe an instance with no circle, and
+// the second would go on to overwrite the instance row with its own name and create a second
+// circle from a state that had stopped being true.
+//
+// Each run submits a DIFFERENT instance name and circle name, which is what makes the last
+// assertion possible: the instance row must say what the run that succeeded submitted. A run that
+// was refused must not have written on its way to being refused.
+func TestRunSetup_ConcurrentRuns_LeaveOneCircleAndTheWinnersInstance(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	const runs = 4
+	body := func(i int) string {
+		return fmt.Sprintf(`{
+		  "name": "Instance %[1]d",
+		  "public_url": "https://tod-%[1]d.example.com",
+		  "provider": {
+		    "key": "local", "kind": "local", "display_name": "This server",
+		    "acknowledge_weak_revocation": true
+		  },
+		  "circle": {"name": "Circle %[1]d", "server": "blue"}
+		}`, i)
+	}
+
+	got := make([]response, runs)
+	var released sync.WaitGroup
+	released.Add(1)
+	var done sync.WaitGroup
+	for i := range runs {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			released.Wait()
+			got[i] = h.do(request{
+				Method: http.MethodPost, Path: api.BasePath + "/setup", Token: testSetupTok,
+				Body: body(i),
+				Headers: map[string]string{
+					api.IdempotencyKeyHeader: fmt.Sprintf("setup-race-%d", i),
+				},
+			})
+		}()
+	}
+	released.Done()
+	done.Wait()
+
+	winners := 0
+	winner := -1
+	for i, res := range got {
+		if res.Status == http.StatusOK {
+			winners++
+			winner = i
+			continue
+		}
+		require.Equal(t, http.StatusConflict, res.Status,
+			"run %d failed for a reason that is not losing the race: %s", i, res.Body)
+	}
+	require.Equal(t, 1, winners, "more than one concurrent run completed first-run setup")
+
+	state := h.do(setupRequest(routeGET(t), testSetupTok))
+	var described api.SetupState
+	require.NoError(t, json.Unmarshal([]byte(state.Body), &described))
+	require.Len(t, described.Circles, 1, "a losing run created a circle nobody asked for")
+	require.Equal(t, fmt.Sprintf("Circle %d", winner), described.Circles[0].Name)
+	require.Equal(t, fmt.Sprintf("Instance %d", winner), described.InstanceName,
+		"a losing run overwrote the instance row on its way to being refused")
+	require.Equal(t, fmt.Sprintf("https://tod-%d.example.com", winner), described.PublicURL)
 }
