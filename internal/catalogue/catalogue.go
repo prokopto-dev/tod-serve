@@ -406,9 +406,29 @@ type UpdateRequest struct {
 }
 
 // Update changes a target's mutable fields.
+//
+// It takes a [TimerInvalidator] because ONE of those fields is a derivation input.
+// `is_quake_target` is copied onto the resolved [consensus.Timer] by every rung of the ladder, and
+// `consensus.Derive` truncates every kill before the latest quake when it is set -- so flipping it
+// moves the answer for every circle that has reported this target, on every server, with no row
+// appended anywhere to say so. That is the same case as a moved window, and it commits inside this
+// transaction for the same reason: ADR-0013, and a board that survives a rolled-back write is
+// worse than no board, because it is believed.
+//
+// **The push happens only when the flag actually moves.** A rename, a re-zoning and an alias
+// replacement move no derivation, and recomputing on one would write `timer_change` onto every
+// board on the instance -- a lie in the one field that exists to explain why an answer changed,
+// and an instance-wide fan-out under the write lock to tell it.
+//
+// A nil invalidator is refused on EVERY update, not only on the ones that flip the flag. "Nobody
+// wired the port" is a property of the wiring rather than of the request, and a check that only
+// fired on a flip would let a rename prove the route was wired when it was not.
 func (s *Service) Update(
-	ctx context.Context, id core.RaidTargetID, req UpdateRequest,
+	ctx context.Context, id core.RaidTargetID, req UpdateRequest, inv TimerInvalidator,
 ) (Target, error) {
+	if inv == nil {
+		return Target{}, errNoInvalidator("update raid target")
+	}
 	current, err := s.Get(ctx, id)
 	if err != nil {
 		return Target{}, err
@@ -456,26 +476,43 @@ func (s *Service) Update(
 
 	now := s.clock.Now()
 	err = s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
-		if txErr := checkNamespace(ctx, q, id, fields.nameNorm, aliases); txErr != nil {
+		// The row is re-read HERE rather than compared against the `current` above, because
+		// "did the flag actually move" is the question the push hangs off and the read above
+		// happened on a pooled connection before this transaction opened. `_txlock=immediate`
+		// takes the write lock at BEGIN, so what this reads is what this is about to overwrite.
+		before, txErr := s.get(ctx, q, id)
+		if txErr != nil {
 			return txErr
 		}
-		_, txErr := q.UpdateRaidTarget(ctx, sqlitegen.UpdateRaidTargetParams{
+		if txErr = checkNamespace(ctx, q, id, fields.nameNorm, aliases); txErr != nil {
+			return txErr
+		}
+		if _, txErr = q.UpdateRaidTarget(ctx, sqlitegen.UpdateRaidTargetParams{
 			Name: fields.name, NameNorm: fields.nameNorm,
 			Zone: fields.zone, ZoneNorm: fields.zoneNorm,
 			Expansion: fields.expansion, Category: fields.category,
 			IsQuakeTarget: boolToInt(quake), State: state,
 			UpdatedAt: int64(now), ID: id.String(),
-		})
-		if txErr != nil {
+		}); txErr != nil {
 			return txErr
 		}
-		if req.Aliases == nil {
+		if req.Aliases != nil {
+			if _, txErr = q.DeleteRaidTargetAliases(ctx, id.String()); txErr != nil {
+				return txErr
+			}
+			if txErr = s.writeAliases(ctx, q, id, aliases, now); txErr != nil {
+				return txErr
+			}
+		}
+		if before.IsQuakeTarget == quake {
+			// Nothing a board is derived from moved. Aliases, names and zones are identity, and
+			// `state` decides whether a target is LISTED rather than what its reports mean.
 			return nil
 		}
-		if _, txErr = q.DeleteRaidTargetAliases(ctx, id.String()); txErr != nil {
-			return txErr
-		}
-		return s.writeAliases(ctx, q, id, aliases, now)
+		// After the write and inside it, so the recomputation resolves the NEW flag: a resolve on
+		// a pooled connection would read the snapshot from before this transaction opened and
+		// cache every board on the instance under the flag that was just replaced.
+		return inv.OnQuakeTargetChange(ctx, q, id)
 	})
 	if err != nil {
 		return Target{}, s.writeError(err, fields.name)

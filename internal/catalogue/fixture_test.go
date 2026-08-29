@@ -94,6 +94,12 @@ func (s *spyInvalidator) OnCatalogueTimerChange(
 	return s.record(ctx, q, invalidation{Server: server, Target: targetID, Scope: "instance"})
 }
 
+func (s *spyInvalidator) OnQuakeTargetChange(
+	ctx context.Context, q *sqlitegen.Queries, targetID core.RaidTargetID,
+) error {
+	return s.record(ctx, q, invalidation{Target: targetID, Scope: "quake_target"})
+}
+
 func (s *spyInvalidator) record(
 	ctx context.Context, q *sqlitegen.Queries, call invalidation,
 ) error {

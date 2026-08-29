@@ -666,8 +666,9 @@ func (h *harness) seedMemberIn(circleID core.CircleID, role authz.Role) core.Mem
 	return h.seedMember(circleID, role)
 }
 
-// timerChange is one push at the projection: which circle, which target, and whether it was the
-// instance-wide catalogue timer that moved rather than one circle's override.
+// timerChange is one push at the projection: which circle, which target, and which of the three
+// fan-outs it was — one circle's override, one server's catalogue timer, or the whole instance
+// because a target's `is_quake_target` moved.
 type timerChange struct {
 	Circle core.CircleID
 	Target core.RaidTargetID
@@ -692,7 +693,7 @@ type recordingInvalidator struct {
 	// "did this route push the invalidation", and the delegate is what makes the next board read
 	// in the same test show the new window rather than the cached old one.
 	delegate catalogue.TimerInvalidator
-	// err, when set, is returned by both methods INSTEAD of delegating. A write whose invalidation
+	// err, when set, is returned by every method INSTEAD of delegating. A write whose invalidation
 	// failed must not report success — and, since ADR-0013, must leave no row behind either. That
 	// is only assertable if the fake can fail.
 	err error
@@ -737,6 +738,23 @@ func (r *recordingInvalidator) OnCatalogueTimerChange(
 	return r.delegate.OnCatalogueTimerChange(ctx, q, server, targetID)
 }
 
+func (r *recordingInvalidator) OnQuakeTargetChange(
+	ctx context.Context, q *sqlitegen.Queries, targetID core.RaidTargetID,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.changes = append(r.changes, timerChange{Target: targetID, Scope: "quake_target"})
+	if r.inside != nil {
+		if err := r.inside(ctx, q); err != nil {
+			return err
+		}
+	}
+	if r.err != nil {
+		return r.err
+	}
+	return r.delegate.OnQuakeTargetChange(ctx, q, targetID)
+}
+
 // observeInside installs a hook that runs with the writing transaction's query set. It is how
 // TestTimerWrite_TheInvalidationRunsInsideTheWritingTransaction asks what that transaction can
 // already see and what the pool cannot.
@@ -762,7 +780,7 @@ func (r *recordingInvalidator) reset() {
 	r.changes = nil
 }
 
-// failWith makes both methods fail, for the assertion that a write whose invalidation failed
+// failWith makes every method fail, for the assertion that a write whose invalidation failed
 // answers with the failure rather than reporting success.
 func (r *recordingInvalidator) failWith(err error) {
 	r.mu.Lock()

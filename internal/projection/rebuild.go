@@ -477,18 +477,12 @@ func (s *Service) OnTimerChange(
 // override first. Recomputing those would write `timer_change` onto a board whose window did not
 // move, which is a small lie in the one field that exists to explain why an answer changed.
 //
-// **The fan-out is a loop here rather than a nil check somewhere.** The port is two methods rather
-// than one nullable circle id precisely so the amount of work is visible at the call site, and
-// hiding it behind a branch in this function would give that back. The circles it skipped are
-// counted and logged: a filter that drops something counts it somewhere visible.
-//
-// Every circle is attempted even after one fails, and the failures are joined. A partial
-// invalidation is unrepresentable now that this runs inside the writing transaction — one failure
-// rolls the timer write back with it — but the answer still names all of them rather than the
-// first circle that happened to break, because "which boards could not be recomputed" is what an
-// operator debugs from, and stopping early would cost them one retry per broken circle. The price
-// is the rest of the fan-out running under the write lock on a path that is already failing, which
-// is the cheaper half of that trade.
+// **The fan-out is a loop rather than a nil check somewhere.** The port is three methods rather
+// than one signature with nullable arguments precisely so the amount of work is visible at the
+// call site, and hiding it behind a branch would give that back. The circles it skipped are
+// counted and logged: a filter that drops something counts it somewhere visible. [Service.fanOut]
+// is the loop, and it is shared with [Service.OnQuakeTargetChange] — which passes a wider set of
+// circles and skips none of them.
 //
 // The fan-out runs under the write lock, which is why the unit of atomicity for a SEED is one
 // window rather than the whole file: see [catalogue.Service.ApplySeed].
@@ -504,23 +498,10 @@ func (s *Service) OnCatalogueTimerChange(
 		return apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
 
-	recomputed, overridden := 0, 0
-	var failures []error
-	for _, circle := range circles {
-		moved, changeErr := s.recomputeForTimerChange(ctx, q, circle, targetID, true)
-		switch {
-		case changeErr != nil:
-			failures = append(failures, fmt.Errorf("circle %s: %w", circle.ID, changeErr))
-		case moved:
-			recomputed++
-		default:
-			overridden++
-		}
+	recomputed, overridden, err := s.fanOut(ctx, q, circles, targetID, true)
+	if err != nil {
+		return err
 	}
-	if len(failures) > 0 {
-		return apierr.Wrap(apierr.CodeInternalError, errors.Join(failures...), "")
-	}
-
 	s.log.InfoContext(ctx, "catalogue timer change fanned out",
 		slog.String("server", string(server)),
 		slog.String("target_id", targetID.String()),
@@ -528,6 +509,76 @@ func (s *Service) OnCatalogueTimerChange(
 		slog.Int("recomputed", recomputed),
 		slog.Int("skipped_overridden", overridden))
 	return nil
+}
+
+// OnQuakeTargetChange recomputes one target for EVERY live circle on the instance, on every
+// server, because `raid_target.is_quake_target` moved.
+//
+// **The flag is a derivation input, not a window.** `catalogue.timerOf` copies it onto the
+// [consensus.Timer] every rung of the resolve ladder returns, and [consensus.Derive] truncates
+// every kill before the latest quake when it is set -- so a target that was `overdue` with a ToD
+// becomes `up` with none, or the reverse, in every circle at once. Nothing is appended to the
+// report log when it happens, which is why this is pushed rather than noticed. Issue #21.
+//
+// **The fan-out is wider than a catalogue timer's in both of its dimensions, and neither
+// widening is free.** `raid_target` is instance-wide and carries no server, so this walks
+// `ListLiveCircles` rather than one server's; and an override replaces a circle's WINDOW and
+// never this flag, so `skipOverridden` is false -- the circles that disagreed with the catalogue
+// are affected exactly as much as the ones that did not. It therefore holds the write lock for
+// as long as the instance has circles, which is the price of the flip committing with the boards
+// derived from it. It is bounded by an operator editing a raid target by hand: the one write on
+// this path is `updateRaidTarget`, and the embedded seed is additive and never touches the flag
+// on a target that already exists.
+func (s *Service) OnQuakeTargetChange(
+	ctx context.Context, q *sqlitegen.Queries, targetID core.RaidTargetID,
+) error {
+	circles, err := q.ListLiveCircles(ctx)
+	if err != nil {
+		return apierr.Wrap(apierr.CodeInternalError, err, "")
+	}
+	recomputed, skipped, err := s.fanOut(ctx, q, circles, targetID, false)
+	if err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "quake target change fanned out",
+		slog.String("target_id", targetID.String()),
+		slog.Int("circles", len(circles)),
+		slog.Int("recomputed", recomputed),
+		// Always zero, and logged anyway: it is the line that would show somebody having taught
+		// this path to skip a circle whose effective window came from an override.
+		slog.Int("skipped_overridden", skipped))
+	return nil
+}
+
+// fanOut recomputes one target across a set of circles, and is the one place the loop lives.
+//
+// Every circle is attempted even after one fails, and the failures are joined. A partial
+// invalidation is unrepresentable now that this runs inside the writing transaction -- one failure
+// rolls the write back with it -- but the answer still names all of them rather than the first
+// circle that happened to break, because "which boards could not be recomputed" is what an
+// operator debugs from, and stopping early would cost them one retry per broken circle. The price
+// is the rest of the fan-out running under the write lock on a path that is already failing, which
+// is the cheaper half of that trade.
+func (s *Service) fanOut(
+	ctx context.Context, q *sqlitegen.Queries, circles []sqlitegen.Circle,
+	targetID core.RaidTargetID, skipOverridden bool,
+) (recomputed, skipped int, err error) {
+	var failures []error
+	for _, circle := range circles {
+		moved, changeErr := s.recomputeForTimerChange(ctx, q, circle, targetID, skipOverridden)
+		switch {
+		case changeErr != nil:
+			failures = append(failures, fmt.Errorf("circle %s: %w", circle.ID, changeErr))
+		case moved:
+			recomputed++
+		default:
+			skipped++
+		}
+	}
+	if len(failures) > 0 {
+		return 0, 0, apierr.Wrap(apierr.CodeInternalError, errors.Join(failures...), "")
+	}
+	return recomputed, skipped, nil
 }
 
 // recomputeForTimerChange is the one circle's worth of work both entry points do. It reports

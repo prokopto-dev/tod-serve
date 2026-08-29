@@ -45,7 +45,7 @@ func TestQuakeTargetFlip_TheBoardAndTheDetailPage_Agree(t *testing.T) {
 	quakeTarget := true
 	_, err = f.catalogue.Update(t.Context(), target.ID, catalogue.UpdateRequest{
 		IsQuakeTarget: &quakeTarget,
-	})
+	}, f.states)
 	require.NoError(t, err)
 
 	// **The board is read FIRST, deliberately.** `getTargetState` re-derives and refreshes the
