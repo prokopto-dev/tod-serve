@@ -268,52 +268,68 @@ func TestDelete_ReleasesTheName_SoItCanBeCreatedAgain(t *testing.T) {
 // which the writing pool's `_txlock=immediate` turns into a queue rather than a race: the second
 // caller cannot BEGIN until the first has committed.
 //
+// It races real callers, so a single round can miss a real defect: `database/sql` keeps two idle
+// connections by default and opens the rest on demand, which staggers callers that were released
+// together. Hence ROUNDS, each on its own database — the check outside the transaction was caught
+// in roughly half of single rounds and in every run of this shape.
+//
 // Every caller asks for a DIFFERENT name, so the unique index on `(name_norm, server)` refuses
 // nothing here. If it did, this would pass while proving something else entirely.
 func TestCreateFirst_ConcurrentCallers_CreateExactlyOneCircle(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	ctx := t.Context()
 
-	const callers = 8
-	var released sync.WaitGroup
-	released.Add(1)
-	var done sync.WaitGroup
-	results := make(chan error, callers)
-	for i := range callers {
-		done.Add(1)
-		go func() {
-			defer done.Done()
-			// Held until every goroutine is running, so they collide rather than queue politely
-			// behind whichever the scheduler started first.
-			released.Wait()
-			_, err := f.service.CreateFirst(ctx, circle.CreateRequest{
-				Name: fmt.Sprintf("Racer %d", i), Server: core.Server(schemaenum.ServerBlue),
-			})
-			results <- err
-		}()
-	}
-	released.Done()
-	done.Wait()
-	close(results)
+	const (
+		rounds  = 8
+		callers = 16
+	)
+	for round := range rounds {
+		f := newFixture(t)
+		ctx := t.Context()
 
-	created, refused := 0, 0
-	for err := range results {
-		switch {
-		case err == nil:
-			created++
-		case errors.Is(err, circle.ErrNotFirst):
-			refused++
-		default:
-			require.NoError(t, err, "a caller failed for a reason that is not losing the race")
+		// A real barrier, not a bare WaitGroup released before the others have started: every
+		// caller reports that it is running, and only then is any of them let go. Without it the
+		// scheduler can finish one caller before the next has read anything, and the test passes
+		// over a race it never ran.
+		var ready, done sync.WaitGroup
+		ready.Add(callers)
+		done.Add(callers)
+		start := make(chan struct{})
+		results := make(chan error, callers)
+		for i := range callers {
+			go func() {
+				defer done.Done()
+				ready.Done()
+				<-start
+				_, err := f.service.CreateFirst(ctx, circle.CreateRequest{
+					Name: fmt.Sprintf("Racer %d", i), Server: core.Server(schemaenum.ServerBlue),
+				})
+				results <- err
+			}()
 		}
-	}
-	require.Equal(t, 1, created, "more than one caller was told it created the first circle")
-	require.Equal(t, callers-1, refused)
+		ready.Wait()
+		close(start)
+		done.Wait()
+		close(results)
 
-	live, err := f.store.Queries().ListLiveCircles(ctx)
-	require.NoError(t, err)
-	require.Len(t, live, 1,
-		"the database holds %d circles; the count and the insert are not one transaction",
-		len(live))
+		created, refused := 0, 0
+		for err := range results {
+			switch {
+			case err == nil:
+				created++
+			case errors.Is(err, circle.ErrNotFirst):
+				refused++
+			default:
+				require.NoError(t, err, "a caller failed for a reason that is not losing the race")
+			}
+		}
+		require.Equalf(t, 1, created,
+			"round %d: %d callers were told they created the first circle", round, created)
+		require.Equal(t, callers-1, refused)
+
+		live, err := f.store.Queries().CountLiveCircles(ctx)
+		require.NoError(t, err)
+		require.EqualValuesf(t, 1, live,
+			"round %d: the database holds %d circles; the count and the insert are not one "+
+				"transaction", round, live)
+	}
 }

@@ -503,6 +503,16 @@ func TestRunSetup_ARepeatedRequest_MintsNoSecondOwnerCode(t *testing.T) {
 		"the retry handed back a second credential nobody asked for")
 	require.NotContains(t, second.Body, one.OwnerCode)
 
+	// WHICH refusal it is, not merely that it refused. A retry of this body collides on the
+	// circle's name as well, and "a circle with that name already exists on that server" is the
+	// one answer that must not come back: it reads as an instruction to pick another name, which
+	// is how an operator following the message ends up with the second circle this refuses to
+	// make. The refusal has to name the field that resumes the run instead.
+	require.Equal(t, []apierr.Field{{
+		Location: "body.circle.id",
+		Message:  "required once the instance has a circle",
+	}}, second.Problem.Errors, "the retry was refused by something other than the wizard's own rule")
+
 	// And it left the instance exactly as the first run did.
 	state := h.do(setupRequest(routeGET(t), testSetupTok))
 	var described api.SetupState
@@ -513,7 +523,7 @@ func TestRunSetup_ARepeatedRequest_MintsNoSecondOwnerCode(t *testing.T) {
 }
 
 // TestRunSetup_ConcurrentRuns_LeaveOneCircleAndTheWinnersInstance is the gate on the race the
-// snapshot in [setup.Service.Run] used to lose.
+// snapshot in `setup.Service.Run` used to lose.
 //
 // `Describe` reads, and every write after it is a decision made from that read. Two operators — or
 // one browser that retried a slow request — could both describe an instance with no circle, and
@@ -523,63 +533,94 @@ func TestRunSetup_ARepeatedRequest_MintsNoSecondOwnerCode(t *testing.T) {
 // Each run submits a DIFFERENT instance name and circle name, which is what makes the last
 // assertion possible: the instance row must say what the run that succeeded submitted. A run that
 // was refused must not have written on its way to being refused.
+//
+// **What this proves, and what it does not.** It proves the OUTCOME: whatever the interleaving,
+// the instance ends up with one circle, one provider and the winning run's instance row. It is not
+// a gate on the channel in `setup.Service.Run` specifically — removing that channel does not turn
+// this red, because concurrent requests against this store serialise anyway and the losing runs
+// are refused by `validate` before they write. The gate that fails when the claim is weakened is
+// `TestCreateFirst_ConcurrentCallers_CreateExactlyOneCircle`, which races the transaction
+// directly. Rounds, because a race test that runs once has only asked the question once.
 func TestRunSetup_ConcurrentRuns_LeaveOneCircleAndTheWinnersInstance(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
 
-	const runs = 4
+	const (
+		rounds = 5
+		runs   = 4
+	)
 	body := func(i int) string {
 		return fmt.Sprintf(`{
 		  "name": "Instance %[1]d",
 		  "public_url": "https://tod-%[1]d.example.com",
 		  "provider": {
-		    "key": "local", "kind": "local", "display_name": "This server",
+		    "key": "local-%[1]d", "kind": "local", "display_name": "This server",
 		    "acknowledge_weak_revocation": true
 		  },
 		  "circle": {"name": "Circle %[1]d", "server": "blue"}
 		}`, i)
 	}
 
-	got := make([]response, runs)
-	var released sync.WaitGroup
-	released.Add(1)
-	var done sync.WaitGroup
-	for i := range runs {
-		done.Add(1)
-		go func() {
-			defer done.Done()
-			released.Wait()
-			got[i] = h.do(request{
-				Method: http.MethodPost, Path: api.BasePath + "/setup", Token: testSetupTok,
-				Body: body(i),
-				Headers: map[string]string{
-					api.IdempotencyKeyHeader: fmt.Sprintf("setup-race-%d", i),
-				},
-			})
-		}()
-	}
-	released.Done()
-	done.Wait()
+	for round := range rounds {
+		h := newHarness(t)
+		got := make([]response, runs)
 
-	winners := 0
-	winner := -1
-	for i, res := range got {
-		if res.Status == http.StatusOK {
-			winners++
-			winner = i
-			continue
+		// A real barrier: every request reports that it is built and running, and only then is
+		// any of them released. Releasing them from the main goroutine as they are spawned lets
+		// the first finish before the last has started, which is a test that never raced.
+		var ready, done sync.WaitGroup
+		ready.Add(runs)
+		done.Add(runs)
+		start := make(chan struct{})
+		for i := range runs {
+			go func() {
+				defer done.Done()
+				ready.Done()
+				<-start
+				got[i] = h.do(request{
+					Method: http.MethodPost, Path: api.BasePath + "/setup", Token: testSetupTok,
+					Body: body(i),
+					Headers: map[string]string{
+						api.IdempotencyKeyHeader: fmt.Sprintf("setup-race-%d-%d", round, i),
+					},
+				})
+			}()
 		}
-		require.Equal(t, http.StatusConflict, res.Status,
-			"run %d failed for a reason that is not losing the race: %s", i, res.Body)
-	}
-	require.Equal(t, 1, winners, "more than one concurrent run completed first-run setup")
+		ready.Wait()
+		close(start)
+		done.Wait()
 
-	state := h.do(setupRequest(routeGET(t), testSetupTok))
-	var described api.SetupState
-	require.NoError(t, json.Unmarshal([]byte(state.Body), &described))
-	require.Len(t, described.Circles, 1, "a losing run created a circle nobody asked for")
-	require.Equal(t, fmt.Sprintf("Circle %d", winner), described.Circles[0].Name)
-	require.Equal(t, fmt.Sprintf("Instance %d", winner), described.InstanceName,
-		"a losing run overwrote the instance row on its way to being refused")
-	require.Equal(t, fmt.Sprintf("https://tod-%d.example.com", winner), described.PublicURL)
+		winners, winner := 0, -1
+		for i, res := range got {
+			if res.Status == http.StatusOK {
+				winners++
+				winner = i
+				continue
+			}
+			require.Equalf(t, http.StatusConflict, res.Status,
+				"round %d: run %d failed for a reason that is not losing the race: %s",
+				round, i, res.Body)
+		}
+		require.Equalf(t, 1, winners,
+			"round %d: %d concurrent runs completed first-run setup", round, winners)
+
+		state := h.do(setupRequest(routeGET(t), testSetupTok))
+		var described api.SetupState
+		require.NoError(t, json.Unmarshal([]byte(state.Body), &described))
+		require.Lenf(t, described.Circles, 1,
+			"round %d: a losing run created a circle nobody asked for", round)
+		require.Equal(t, fmt.Sprintf("Circle %d", winner), described.Circles[0].Name)
+
+		// The provider is what makes this a statement about every losing run rather than about
+		// whichever one wrote last. A run refused at `validate` never reaches `providerStep`; a
+		// run that got past it registers its own provider, and nothing removes one — so a second
+		// row here is a run that was refused only after it had already written. The instance row
+		// below catches the narrower case where a loser overwrote the winner.
+		require.Lenf(t, described.Providers, 1,
+			"round %d: a losing run registered an identity provider before it was refused", round)
+		require.Equal(t, fmt.Sprintf("local-%d", winner), described.Providers[0].Key)
+		require.Equalf(t, fmt.Sprintf("Instance %d", winner), described.InstanceName,
+			"round %d: a losing run overwrote the instance row on its way to being refused", round)
+		require.Equal(t,
+			fmt.Sprintf("https://tod-%d.example.com", winner), described.PublicURL)
+	}
 }

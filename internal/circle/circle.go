@@ -136,15 +136,17 @@ var ErrNotFirst = errors.New("this instance already has a circle")
 // until the first has committed or rolled back. That holds across processes, which is the half a
 // mutex in this binary cannot reach.
 //
-// `ListLiveCircles` is the same query [setup.Service.Describe] reports from, so the condition
-// checked here and the condition the wizard shows an operator cannot drift apart.
+// It counts rather than lists, and that is not an optimisation: `ListLiveCircles` returns every
+// circle on the instance and `TestCircleEnumeration_IsReachableOnlyFromTheProjection` confines it
+// to the projection and to `cmd` verbs, because a circle's existence is part of what canonical §7
+// hides. The question here is "any at all", which a number answers.
 func (s *Service) CreateFirst(ctx context.Context, req CreateRequest) (Circle, error) {
 	return s.create(ctx, req, func(ctx context.Context, q *sqlitegen.Queries) error {
-		live, err := q.ListLiveCircles(ctx)
+		live, err := q.CountLiveCircles(ctx)
 		if err != nil {
 			return fmt.Errorf("count the instance's circles: %w", err)
 		}
-		if len(live) > 0 {
+		if live > 0 {
 			return ErrNotFirst
 		}
 		return nil

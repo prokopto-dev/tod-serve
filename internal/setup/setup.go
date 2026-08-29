@@ -294,16 +294,21 @@ const localKind = "local"
 // the instance row and before A created its circle: both see no circle, both create one, and the
 // operator ends up with a circle nobody asked for beside the one the owner code admits them to.
 //
-//   - `runs` admits one run at a time in this process, so B waits and then describes what A
-//     actually left. B is refused by [validate] before it writes ANYTHING — which is the half
-//     that matters to an operator, because a run refused after `instanceStep` has already
-//     overwritten the instance name with the losing run's.
 //   - [circle.Service.CreateFirst] counts and inserts in ONE transaction, so the circle cannot be
-//     duplicated even by a second process sharing the database file, where this channel reaches
-//     nothing at all.
+//     duplicated even by a second process sharing the database file. This is the load-bearing one,
+//     and `TestCreateFirst_ConcurrentCallers_CreateExactlyOneCircle` is the gate: moving the count
+//     outside the transaction turns it red.
+//   - `runs` admits one run at a time in this process, so B waits and then describes what A
+//     actually left, and is refused by [validate] before it writes ANYTHING. That is about what a
+//     losing run LEAVES BEHIND rather than what it creates: a run refused at `circleStep` has
+//     already written the instance row and its own provider on the way there.
 //
-// Neither is redundant: the first is about what a losing run leaves behind, the second about what
-// it creates.
+// **The second has no gate of its own, and this comment is not pretending otherwise.** Removing
+// the channel turns no test red: concurrent requests against this store serialise on their way in
+// anyway, so a losing run is already refused before it writes, and a test that cannot enter the
+// window cannot assert anything about it. It is kept because "already" is a property of the
+// driver and the pool rather than a promise this package makes — not because a red test would
+// notice it going.
 func (s *Service) Run(ctx context.Context, req RunRequest) (Result, error) {
 	select {
 	case s.runs <- struct{}{}:

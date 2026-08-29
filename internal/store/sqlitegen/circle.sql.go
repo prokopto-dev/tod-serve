@@ -9,6 +9,23 @@ import (
 	"context"
 )
 
+const countLiveCircles = `-- name: CountLiveCircles :one
+SELECT COUNT(*) FROM circle WHERE deleted_at IS NULL
+`
+
+// tenancy: SAFE, and deliberately not an enumeration: it returns a NUMBER and never a circle, so
+// it takes no caller-supplied id and no circle's existence leaves through it.
+//
+// It backs circle.Service.CreateFirst, which has to answer "does this instance have any circle at
+// all" INSIDE the transaction that inserts one. The same question asked outside is what let two
+// first-run setup requests each find none and each create one.
+func (q *Queries) CountLiveCircles(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countLiveCircles)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createCircle = `-- name: CreateCircle :one
 
 INSERT INTO circle (
