@@ -64,9 +64,13 @@ does** — it is held to that endpoint's disclosure as a ceiling, rather than be
 reasoned about. It creates an `auth_flow` row only for a request that passes the limit, so a
 rejected probe costs the instance nothing to store.
 
-**Enforced by:** `TestInviteOracle_PreviewAndAuthorizationURL_ShareOneBucket`,
-`TestCreateAuthorizationURL_RevealsNoMoreThanPreviewInvite` and
-`TestAuthFlow_RateLimitedCaller_CreatesNoRows`.
+**Enforced by:** `TestInviteOracle_PreviewAndAuthorizationURL_ShareOneBucket` and
+`TestCreateAuthorizationURL_AnUnissuedCode_RevealsNoMoreThanPreviewInvite`. The "no `auth_flow` row
+for a rejected probe" half **holds by composition rather than by its own assertion**: the limiter
+runs ahead of the handler that would write the row, which
+`TestInviteOracle_ARateLimitedCaller_ReachesNoHandler` proves. This paragraph named
+`TestAuthFlow_RateLimitedCaller_CreatesNoRows` for that end-to-end check, and no such test has ever
+existed.
 
 ### No public route resolves a caller-supplied `circle_id`
 
