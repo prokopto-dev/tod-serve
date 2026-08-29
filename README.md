@@ -99,28 +99,37 @@ a forward-only migration to the only copy of your report log with nobody watchin
 
 ```bash
 git clone https://github.com/prokopto-dev/tod-serve && cd tod-serve
-cp deploy/env.example .env        # then generate the two secrets it asks for; the placeholders
-                                  # cannot boot, deliberately
+
+# `deploy/.env`, NOT `.env` — compose resolves it from the directory of the first `-f` file.
+install -m 600 /dev/null deploy/.env && cp deploy/env.example deploy/.env
+
+# Then edit deploy/.env: three `openssl rand -base64 48` values for TOD_TOKEN_PEPPER,
+# TOD_SESSION_KEY and TOD_SETUP_TOKEN, and TOD_DEPLOY_HOST=localhost. The shipped
+# placeholders cannot boot, deliberately.
 
 docker compose -f deploy/compose.local.yaml run --rm tod-serve migrate
-docker compose -f deploy/compose.local.yaml run --rm tod-serve seed targets
-docker compose -f deploy/compose.local.yaml run --rm tod-serve init \
-  --name "Your Instance" --public-url "http://localhost:8080" \
-  --circle "Your Guild" --server blue
-docker compose -f deploy/compose.local.yaml up -d
+docker compose -f deploy/compose.local.yaml --profile tls up -d
 ```
 
-`init` prints a one-time owner code, once. Redeem it at the join link it shows you.
+Then open **`https://localhost:8443/setup`** and paste your `TOD_SETUP_TOKEN`. One form creates the
+instance, the identity provider, the first circle and the raid-target catalogue, and hands back a
+one-time owner code; redeeming it makes you the owner and this instance's first administrator. There
+is no `init` and no `seed targets` to run.
 
-`deploy/smoke.sh` runs exactly this on every CI build, against the image that would ship, and then
-reports a ToD and reads the board back — so these instructions are executed rather than asserted.
+**[docs/operations/getting-started.md](docs/operations/getting-started.md) is the full version** —
+every command in order, expected output for each, a verification checklist and a troubleshooting
+table, for both a laptop and a server behind Traefik. Start there if any of the above surprises you.
 
-**Two things worth knowing before you go further**, both written up in
-[the deployment runbook](docs/operations/deployment.md):
+`deploy/smoke.sh` runs this on every CI build, against the image that would ship, wizard and owner
+code included, and then reports a ToD and reads the board back — so these instructions are executed
+rather than asserted.
+
+**Two things worth knowing before you go further:**
 
 - **The console needs HTTPS**, even locally. The session cookie is `__Host-` prefixed, and two of
-  three browser engines refuse to store that over plain HTTP — the measurement is in the runbook.
-  `--profile tls` adds a TLS front. The API is unaffected: a token is a header.
+  three browser engines refuse to store that over plain HTTP — the measurement is in
+  [the deployment runbook](docs/operations/deployment.md#the-console-needs-tls-and-this-was-measured).
+  That is what `--profile tls` is for above. The API is unaffected: a token is a header.
 - **Timers are not bundled.** An instance without them reports `no_timer` everywhere and records
   every ToD correctly, which is the honest degradation rather than a guessed window.
 
@@ -137,6 +146,7 @@ For a real deployment — a droplet, Traefik, GHCR and an approved deploy —
 | [Decisions](docs/adr/) | Why things are the way they are, including the downsides |
 | [Glossary](docs/concepts/glossary.md) | P99 raiding vocabulary, for contributors who do not play |
 | [Invariants](docs/concepts/invariants.md) | Every rule and the mechanism that enforces it |
+| [Getting started](docs/operations/getting-started.md) | Clone to signed-in, both at home and behind Traefik. Start here |
 | [Deploying](docs/operations/deployment.md) | The droplet, the two workflows, and what is deliberately not covered |
 | [Backups](docs/operations/backup.md) | Taking one, checking it, and restoring — the only undo there is |
 | [Discord app](docs/operations/discord-app.md) | Registering your own, and what a removed role does not do |
