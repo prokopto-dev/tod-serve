@@ -9,6 +9,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/catalogue"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
+	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 	"github.com/prokopto-dev/tod-serve/internal/tod"
 )
 
@@ -178,4 +179,59 @@ func TestOnQuakeTargetChange_ACircleWithNoReports_GetsNoCacheRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, report.Orphans)
 	require.True(t, report.Healthy(), "the flip left the nightly job something to alert about")
+}
+
+// TestVerify_ARowLeftStaleByAFlagFlip_IsRepairedAndAlerts answers the question the fix has to
+// answer honestly: **would the nightly job have caught this on its own?**
+//
+// It would have. `Verify` recomputes every cached row from the report log and the recomputation
+// wins, so a row derived under the old flag is repaired and an ERROR fires. That is the answer,
+// and it is exactly why the backstop must not be the mechanism: the job runs once a day, so the
+// bound on a board that hands an officer a ToD for a mob a quake repopped was up to twenty-four
+// hours — and a confident mistake for a night is this project's named failure mode, not its
+// safety net. The push closes the gap; this pins what is left underneath it.
+//
+// The staleness is manufactured with a bare `UpdateRaidTarget` rather than through
+// [catalogue.Service.Update], because the supported write now recomputes and there would be
+// nothing left to verify. That is the point: this reproduces the pre-fix state on purpose.
+func TestVerify_ARowLeftStaleByAFlagFlip_IsRepairedAndAlerts(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	target := f.seedTarget("Vulak`Aerr", "Temple of Veeshan", false)
+	f.seedCatalogueTimer(target, 5*24*time.Hour, 7*24*time.Hour)
+	f.report(target, fixtureNow.Add(-8*24*time.Hour), schemaenum.TodReportSourceLogLine)
+	_, err := f.tods.ReportQuake(t.Context(), todQuake(f, fixtureNow.Add(-4*time.Hour)))
+	require.NoError(t, err)
+	_, err = f.states.Rebuild(t.Context(), f.circle)
+	require.NoError(t, err)
+
+	// The flip, with nothing told. This is the write path as it stood before the fix.
+	_, err = f.db.Queries().UpdateRaidTarget(t.Context(), sqlitegen.UpdateRaidTargetParams{
+		Name: target.Name, NameNorm: core.Normalise(target.Name),
+		Zone: target.Zone, ZoneNorm: core.Normalise(target.Zone),
+		Expansion: target.Expansion, Category: target.Category,
+		IsQuakeTarget: 1, State: target.State,
+		UpdatedAt: int64(fixtureNow), ID: target.ID.String(),
+	})
+	require.NoError(t, err)
+
+	stale, ok := f.cached(target)
+	require.True(t, ok)
+	require.Equal(t, schemaenum.TargetStateStatusOverdue, stale.Status,
+		"nothing recomputed the row, which is the state this is about")
+
+	report, err := f.states.Verify(t.Context())
+	require.NoError(t, err)
+	require.False(t, report.Healthy(),
+		"the nightly job passed over a row derived under a flag that had moved, so the drift "+
+			"would have survived the one thing that recomputes everything")
+	require.Equal(t, 1, report.Repaired)
+	require.Contains(t, report.Discrepancies[0].Field, "status")
+
+	repaired, ok := f.cached(target)
+	require.True(t, ok)
+	require.Equal(t, schemaenum.TargetStateStatusUp, repaired.Status,
+		"the recomputation must win: target_state_cache is droppable and the log is the authority")
+	require.NotEmpty(t, f.log.errorLines(),
+		"a repair that happened quietly is a repair nobody investigates")
 }
