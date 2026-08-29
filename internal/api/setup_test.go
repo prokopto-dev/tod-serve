@@ -332,6 +332,68 @@ func TestRunSetup_NeitherSecret_LeavesThroughAnotherRoute(t *testing.T) {
 	}
 }
 
+// TestRouteRegistry_EveryRoute_RefusesATokenInTheURL is the mechanism canonical §7's "no
+// exception" was missing.
+//
+// The rule was enforced inside `authorize`, and two auth kinds return before reaching it —
+// `AuthMetricsToken` and `AuthSetupToken` — so a request with a valid credential in the header and
+// a token in the query was served, leaving it in the access log of every proxy in between. The
+// setup token is the worst one to leak that way: it takes the instance over.
+//
+// It is derived from the ROUTE REGISTRY rather than a list, so the next auth kind somebody adds is
+// covered on the day it is added rather than the day somebody notices. It drives every registered
+// operation, including the ones on the metrics listener.
+func TestRouteRegistry_EveryRoute_RefusesATokenInTheURL(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	circleID := h.seedCircle("QueryToken")
+
+	// Two shapes, because [auth.RejectTokenInURL] refuses on two grounds: a parameter NAMED like a
+	// credential, and any parameter whose VALUE is one of our tokens whatever it is called.
+	probes := []struct {
+		name  string
+		query string
+	}{
+		{"a credential-shaped parameter name", "access_token=anything"},
+		{"our own token under any name at all", "x=tods_pat_smuggled"},
+	}
+
+	driven := 0
+	for _, route := range api.Routes() {
+		served := false
+		for _, id := range h.server.Registered() {
+			if id == route.ID {
+				served = true
+			}
+		}
+		if !served {
+			continue
+		}
+		for _, probe := range probes {
+			driven++
+			got := h.do(request{
+				Method:  route.Method,
+				Path:    pathFor(route, circleID) + "?" + probe.query,
+				Body:    bodyFor(route),
+				Metrics: route.Auth == api.AuthMetricsToken,
+				Headers: map[string]string{
+					api.IdempotencyKeyHeader: "url-token-" + string(route.ID),
+					api.IfMatchHeader:        "*",
+				},
+			})
+			require.Equalf(t, http.StatusUnauthorized, got.Status,
+				"%s answered %d to %s; a token in a URL is refused with no exception. Body: %s",
+				route.ID, got.Status, probe.name, got.Body)
+			require.Equalf(t, apierr.CodeUnauthenticated, got.Problem.Code,
+				"%s refused %s with %q rather than unauthenticated",
+				route.ID, probe.name, got.Problem.Code)
+		}
+	}
+	// The vacuity guard: this walks a registry a refactor could empty, and a gate that passes over
+	// nothing passes over anything.
+	require.Positive(t, driven, "no route was driven; the registry walk is wrong")
+}
+
 // routeGET returns the read half of the setup surface, failing rather than defaulting: a test that
 // silently probed nothing would be a green test over an empty set.
 func routeGET(t *testing.T) api.Route {
