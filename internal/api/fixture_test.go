@@ -177,7 +177,8 @@ func newServices(
 	require.NoError(t, err)
 	identities, err := identity.New(identity.Config{
 		Store: identityStore, Clients: clients, Clock: clk, IDs: ids,
-		Entropy: rand.Reader, SPAJoinURL: "https://tod.example.com/join", Logger: log,
+		Entropy: rand.Reader, SPAJoinURL: "https://tod.example.com/join",
+		CallbackBaseURL: "https://tod.example.com/api/v1/auth/callback", Logger: log,
 	})
 	require.NoError(t, err)
 

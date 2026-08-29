@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/prokopto-dev/tod-serve/internal/api"
 	"github.com/prokopto-dev/tod-serve/internal/auth"
 	"github.com/prokopto-dev/tod-serve/internal/catalogue"
 	"github.com/prokopto-dev/tod-serve/internal/circle"
@@ -66,16 +67,17 @@ type services struct {
 // something to point at.
 func identityConfig(
 	st identity.Store, clients identity.Clients, clk clock.Clock, ids *core.Generator,
-	spaJoinURL string, log *slog.Logger,
+	spaJoinURL, callbackBaseURL string, log *slog.Logger,
 ) identity.Config {
 	return identity.Config{
-		Store:      st,
-		Clients:    clients,
-		Clock:      clk,
-		IDs:        ids,
-		Entropy:    rand.Reader,
-		SPAJoinURL: spaJoinURL,
-		Logger:     log,
+		Store:           st,
+		Clients:         clients,
+		Clock:           clk,
+		IDs:             ids,
+		Entropy:         rand.Reader,
+		SPAJoinURL:      spaJoinURL,
+		CallbackBaseURL: callbackBaseURL,
+		Logger:          log,
 	}
 }
 
@@ -111,13 +113,17 @@ func dataServices(db *store.DB, clk clock.Clock, ids *core.Generator, log *slog.
 // exactly one spelling of that hash in the process. Two spellings would let the OAuth flow resolve
 // one invite and redemption resolve another, and the failure would look like an expired invite
 // rather than like a bug.
-// spaJoin is where the OAuth callback sends a browser once it holds a ticket. An EMPTY one is
+// public is the origin this instance is reachable at — `$TOD_PUBLIC_URL`. An EMPTY one is
 // resolved from the environment and then from the instance row, which is what `serve` passes; a
 // caller that already knows the answer — a test standing an instance up before any row exists —
 // passes it, so this function reads no environment on its behalf.
+//
+// It is the ORIGIN rather than the join URL because two things hang off it and they are not the
+// same string: where the callback sends a browser, and the callback's own URL, which ADR-0011
+// makes a value the operator has to have registered with Discord exactly.
 func wire(
 	ctx context.Context, db *store.DB, log *slog.Logger, pepper, sessionKey core.Secret,
-	spaJoin string,
+	public string,
 ) (*services, error) {
 	clk := clock.System{}
 	ids := core.NewGenerator(rand.Reader)
@@ -150,13 +156,20 @@ func wire(
 	if err != nil {
 		return nil, err
 	}
-	if spaJoin == "" {
-		if spaJoin, err = spaJoinURL(ctx, db); err != nil {
+	if public == "" {
+		if public, err = publicURL(ctx, db); err != nil {
 			return nil, err
 		}
 	}
+	spaJoin := spaJoinURL(public)
+	// Derived from the route registry rather than spelled here, so the string an operator
+	// registers with Discord and the path this binary actually serves cannot drift apart.
+	callbackBase, err := api.CallbackBaseURL(public)
+	if err != nil {
+		return nil, err
+	}
 	identities, err := identity.New(
-		identityConfig(identityStore, clients, clk, ids, spaJoin, log))
+		identityConfig(identityStore, clients, clk, ids, spaJoin, callbackBase, log))
 	if err != nil {
 		return nil, err
 	}
@@ -227,21 +240,23 @@ func todServices(
 	return tods, states, nil
 }
 
-// spaJoinURL decides where the OAuth callback sends a browser.
+// publicURL is the origin this instance is reachable at, and the one fact both the join redirect
+// and the OAuth callback URL are derived from.
 //
-// Three sources, most specific first, and no invented default: a redirect target guessed by the
-// server is a redirect somebody's browser follows. The error names all three rather than only the
-// one that happened to be checked last.
-func spaJoinURL(ctx context.Context, db *store.DB) (string, error) {
-	if explicit := envOr(envSPAJoinURL, ""); explicit != "" {
-		return explicit, nil
-	}
+// Two sources, most specific first, and no invented default: an origin guessed by the server is an
+// origin somebody's browser is redirected to, and — since ADR-0011 makes the callback URL a string
+// the operator must have registered with Discord character for character — a guess here is a
+// sign-in that lands nowhere.
+//
+// `$TOD_SPA_JOIN_URL` is deliberately NOT a source. It moves the console, which may legitimately
+// sit on another origin; it does not move the API, and the redirect URI belongs to the API.
+func publicURL(ctx context.Context, db *store.DB) (string, error) {
 	if public := envOr(envPublicURL, ""); public != "" {
-		return joinPath(public), nil
+		return strings.TrimRight(strings.TrimSpace(public), "/"), nil
 	}
 	row, err := db.Queries().GetInstance(ctx)
 	if err == nil && strings.TrimSpace(row.PublicUrl) != "" {
-		return joinPath(row.PublicUrl), nil
+		return strings.TrimRight(strings.TrimSpace(row.PublicUrl), "/"), nil
 	}
 	if err != nil && !store.IsNotFound(err) {
 		return "", fmt.Errorf("read the instance row: %w", err)
@@ -252,9 +267,20 @@ func spaJoinURL(ctx context.Context, db *store.DB) (string, error) {
 	// from, so this is part of the `.env` step rather than something setup can supply. `init`
 	// remains listed because it is still the way back when nobody can sign in.
 	return "", fmt.Errorf(
-		"this instance has no public URL: set $%s (or $%s) before starting, "+
+		"this instance has no public URL: set $%s before starting, "+
 			"or run `tod-serve init --public-url …`",
-		envPublicURL, envSPAJoinURL)
+		envPublicURL)
+}
+
+// spaJoinURL decides where the OAuth callback sends a browser once it holds a ticket.
+//
+// `$TOD_SPA_JOIN_URL` overrides it outright, for the deployment that serves the console from
+// somewhere other than the API.
+func spaJoinURL(public string) string {
+	if explicit := envOr(envSPAJoinURL, ""); explicit != "" {
+		return explicit
+	}
+	return joinPath(public)
 }
 
 // joinPath appends the SPA's join route to a public URL, tolerating a trailing slash.

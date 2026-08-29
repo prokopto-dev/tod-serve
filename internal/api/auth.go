@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/core"
@@ -208,4 +211,49 @@ func (s *Server) registerAuth() error {
 				}, nil
 			})),
 	)
+}
+
+// CallbackPathParam is the one path parameter `completeAuthorization` takes. It is named here so
+// that [CallbackBaseURL] can strip it from the registry's path rather than re-spelling that path,
+// and so a rename is a compile error in one place.
+const CallbackPathParam = "/{provider_key}"
+
+// ErrCallbackPathChanged reports that the callback route no longer ends in the provider-key
+// parameter, so its base can no longer be derived by removing one.
+//
+// It is an error rather than a panic because the caller is `serve` starting up, and a startup
+// that refuses with a sentence beats one that dumps a stack — but it is not recoverable either:
+// TestCallbackBaseURL_MatchesTheRegistry fails first, in CI.
+var ErrCallbackPathChanged = errors.New("the completeAuthorization route no longer ends in " + CallbackPathParam)
+
+// CallbackBaseURL renders the absolute URL a provider redirects back to, minus the provider key.
+//
+// It exists because the redirect URI an operator pastes into Discord's developer portal has to be
+// the string this server is actually reachable at, character for character — Discord compares it
+// literally — and the only way to be sure of that is to DERIVE it from the route registry and the
+// instance's own public URL rather than to write it down a second time. A second copy is a way for
+// the registered URI, the stored `identity_provider.redirect_uri` and the path this binary serves
+// to differ silently, and the symptom of that is a sign-in that lands nowhere.
+//
+// internal/identity takes the result as a string rather than calling this itself, because this
+// package imports that one.
+func CallbackBaseURL(publicURL string) (string, error) {
+	route, ok := Lookup(OpCompleteAuthorization)
+	if !ok {
+		return "", fmt.Errorf("no %s route in the registry", OpCompleteAuthorization)
+	}
+	path, found := strings.CutSuffix(route.FullPath(), CallbackPathParam)
+	if !found {
+		return "", fmt.Errorf("%s is %q: %w", OpCompleteAuthorization, route.FullPath(), ErrCallbackPathChanged)
+	}
+
+	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(publicURL), "/"))
+	if err != nil {
+		return "", fmt.Errorf("parse public url %q: %w", publicURL, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("public url %q is not absolute", publicURL)
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + path
+	return u.String(), nil
 }

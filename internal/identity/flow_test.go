@@ -31,6 +31,13 @@ const (
 	inviteCode        = "TODI-4KQ7M-9XPB2"
 	spaJoinURL        = "https://tod.example.com/join"
 
+	// callbackBaseURL is the API's own origin plus the callback path. Appending a provider key
+	// to it is the one string `identity_provider.redirect_uri` may hold, and the one string the
+	// operator must have registered with the provider — which is why the fixtures below spell
+	// their redirect URIs out rather than deriving them: a fixture that built the value the same
+	// way the code does would agree with a broken implementation.
+	callbackBaseURL = "https://tod.example.com/api/v1/auth/callback"
+
 	// theAccessToken is the string the whole no-persistence invariant is about. It is a constant
 	// so one assertion can search every recorded store call for it.
 	theAccessToken = "discord-access-token-that-must-never-be-written-down"
@@ -133,13 +140,14 @@ func newHarness(t *testing.T) *harness {
 	clients := &stubClients{discord: client}
 	testClock := clock.NewTest(at)
 	service, err := identity.New(identity.Config{
-		Store:      store,
-		Clients:    clients,
-		Clock:      testClock,
-		IDs:        core.NewGenerator(&countingEntropy{}),
-		Entropy:    &countingEntropy{},
-		SPAJoinURL: spaJoinURL,
-		Logger:     slog.New(slog.DiscardHandler),
+		Store:           store,
+		Clients:         clients,
+		Clock:           testClock,
+		IDs:             core.NewGenerator(&countingEntropy{}),
+		Entropy:         &countingEntropy{},
+		SPAJoinURL:      spaJoinURL,
+		CallbackBaseURL: callbackBaseURL,
+		Logger:          slog.New(slog.DiscardHandler),
 	})
 	require.NoError(t, err)
 
@@ -697,7 +705,8 @@ func TestCompleteAuthorization_State_IsUnguessableSingleUseAndOpaqueInFailure(t 
 		_, err = identity.New(identity.Config{
 			Store: h.store, Clients: h.clients, Clock: h.clock,
 			IDs: core.NewGenerator(&countingEntropy{}), Entropy: nil,
-			SPAJoinURL: spaJoinURL, Logger: slog.New(slog.DiscardHandler),
+			SPAJoinURL: spaJoinURL, CallbackBaseURL: callbackBaseURL,
+			Logger: slog.New(slog.DiscardHandler),
 		})
 		require.Error(t, err)
 	})

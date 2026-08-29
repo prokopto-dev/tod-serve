@@ -77,6 +77,23 @@ func (s *Service) CreateAuthorizationURL(ctx context.Context, req AuthorizationR
 		return Authorization{}, NewValidationError("body.provider",
 			fmt.Sprintf("provider %q has no browser flow", provider.Key))
 	}
+	// The redirect URI is checked HERE, before a single row is written and before the browser is
+	// sent anywhere, because the alternative is the failure that produces no evidence at all: a
+	// user who signs in at Discord perfectly well and is then redirected to an origin this
+	// instance is not at. Nothing here ever sees that callback, so nothing here ever logs it.
+	//
+	// It is refused rather than repaired. Substituting the right URI would make the authorization
+	// request disagree with what the operator registered at the provider, which is the same
+	// failure one step later and harder to read.
+	if err := s.checkRedirectURI(provider); err != nil {
+		// ERROR, not the request's own status: the caller cannot fix this and the operator can,
+		// and a `500` alone in an access log does not say which of the two strings is wrong.
+		s.log.ErrorContext(ctx, "identity provider redirect_uri does not match this instance",
+			slog.String("provider", provider.Key),
+			slog.String("configured_redirect_uri", provider.RedirectURI),
+			slog.String("expected_redirect_uri", s.ExpectedRedirectURI(provider.Key)))
+		return Authorization{}, fmt.Errorf("start authorization for %q: %w", provider.Key, err)
+	}
 
 	// The circle, if any, comes from the invite and only from the invite.
 	var (

@@ -55,7 +55,8 @@ func TestAdminIdentityProviders_AGrant_IsWhatMakesThemReachable(t *testing.T) {
 		Headers: map[string]string{api.IdempotencyKeyHeader: "add-oidc"},
 		Body: `{"key":"corp","kind":"oidc","display_name":"Corp SSO",
 		        "issuer":"https://sso.example.com","jwks_uri":"https://sso.example.com/jwks",
-		        "client_id":"tod-serve"}`,
+		        "client_id":"tod-serve",
+		        "redirect_uri":"https://tod.example.com/api/v1/auth/callback/corp"}`,
 	})
 	require.Equal(t, http.StatusOK, created.Status, created.Body)
 	var provider api.AdminIdentityProviderResponse
@@ -143,7 +144,7 @@ func TestAdminIdentityProviders_TheClientSecret_NeverComesBackOut(t *testing.T) 
 		Method: http.MethodPost, Path: base, Session: session,
 		Headers: map[string]string{api.IdempotencyKeyHeader: "secret-check"},
 		Body: `{"key":"discord","kind":"discord","client_id":"1234","client_secret":"` +
-			secret + `","redirect_uri":"https://tod.example.com/cb"}`,
+			secret + `","redirect_uri":"https://tod.example.com/api/v1/auth/callback/discord"}`,
 	})
 	require.Equal(t, http.StatusOK, created.Status, created.Body)
 	require.NotContains(t, created.Body, secret)
@@ -247,14 +248,16 @@ func TestCreateIdentityProvider_ASecondProviderOfAKind_IsRefusedWithItsName(t *t
 		Method: http.MethodPost, Path: base, Session: session,
 		Headers: map[string]string{api.IdempotencyKeyHeader: "oidc-a"},
 		Body: `{"key":"corp","kind":"oidc","issuer":"https://a.example.com",
-		        "jwks_uri":"https://a.example.com/jwks","client_id":"tod-a"}`,
+		        "jwks_uri":"https://a.example.com/jwks","client_id":"tod-a",
+		        "redirect_uri":"https://tod.example.com/api/v1/auth/callback/corp"}`,
 	})
 	require.Equal(t, http.StatusOK, first.Status, first.Body)
 	second := h.do(request{
 		Method: http.MethodPost, Path: base, Session: session,
 		Headers: map[string]string{api.IdempotencyKeyHeader: "oidc-b"},
 		Body: `{"key":"partner","kind":"oidc","issuer":"https://b.example.com",
-		        "jwks_uri":"https://b.example.com/jwks","client_id":"tod-b"}`,
+		        "jwks_uri":"https://b.example.com/jwks","client_id":"tod-b",
+		        "redirect_uri":"https://tod.example.com/api/v1/auth/callback/partner"}`,
 	})
 	require.Equal(t, http.StatusOK, second.Status, second.Body)
 }
@@ -294,7 +297,7 @@ func TestCreateIdentityProvider_AReusedKeyWithADifferentBody_IsRefused(t *testin
 	               "issuer":"https://a.example.com","authorization_endpoint":"https://a.example.com/authorize",
 	               "jwks_uri":"https://a.example.com/jwks","subject_claim":"sub",
 	               "client_id":"tod-a","client_secret":"secret-a",
-	               "redirect_uri":"https://tod.example.com/cb",
+	               "redirect_uri":"https://tod.example.com/api/v1/auth/callback/corp",
 	               "token_endpoint":"https://a.example.com/token",
 	               "acknowledge_weak_revocation":false}`
 
@@ -313,7 +316,7 @@ func TestCreateIdentityProvider_AReusedKeyWithADifferentBody_IsRefused(t *testin
 		{"jwks_uri", strings.Replace(base, `a.example.com/jwks`, `b.example.com/jwks`, 1)},
 		{"subject_claim", strings.Replace(base, `"subject_claim":"sub"`, `"subject_claim":"oid"`, 1)},
 		{"client_id", strings.Replace(base, `"tod-a"`, `"tod-b"`, 1)},
-		{"redirect_uri", strings.Replace(base, `/cb"`, `/callback"`, 1)},
+		{"redirect_uri", strings.Replace(base, `/callback/corp"`, `/callback/corp2"`, 1)},
 		{"token_endpoint", strings.Replace(base, `a.example.com/token`, `b.example.com/token`, 1)},
 		{"acknowledge_weak_revocation", strings.Replace(base,
 			`"acknowledge_weak_revocation":false`, `"acknowledge_weak_revocation":true`, 1)},

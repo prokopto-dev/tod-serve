@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/prokopto-dev/tod-serve/internal/clock"
@@ -48,6 +49,19 @@ type Config struct {
 	// https://tod.example.com/join. The ticket rides in that URL's FRAGMENT.
 	SPAJoinURL string
 
+	// CallbackBaseURL is the absolute URL a provider redirects BACK to, minus the provider key:
+	// e.g. https://tod.example.com/api/v1/auth/callback. Appending a key to it produces the
+	// string an operator must have registered with that provider, character for character.
+	//
+	// It is a separate field from SPAJoinURL rather than derived from it because the two may
+	// legitimately sit on different origins — `$TOD_SPA_JOIN_URL` exists so the console can be
+	// hosted apart from the API — and the redirect URI belongs to the API's origin, always.
+	//
+	// It is a string rather than something this package computes because the path belongs to
+	// internal/api's route registry, and internal/api imports this package. `api.CallbackBaseURL`
+	// derives it there; the wiring hands over the answer.
+	CallbackBaseURL string
+
 	Logger *slog.Logger
 }
 
@@ -60,6 +74,10 @@ type Service struct {
 	entropy io.Reader
 	spaJoin *url.URL
 	log     *slog.Logger
+
+	// callbackBase is CallbackBaseURL, parsed and with any trailing slash removed, so that
+	// appending "/" + key yields the one canonical redirect URI for a provider.
+	callbackBase string
 }
 
 // New returns a service.
@@ -81,6 +99,11 @@ func New(cfg Config) (*Service, error) {
 		return nil, errors.New("identity service: no logger")
 	case cfg.SPAJoinURL == "":
 		return nil, errors.New("identity service: no SPA join url to redirect to")
+	case cfg.CallbackBaseURL == "":
+		// No fallback to the join URL's origin. Guessing the origin a provider redirects back to
+		// is guessing the string the operator registered with that provider, and a wrong guess
+		// produces exactly the failure this field exists to make loud.
+		return nil, errors.New("identity service: no callback base url to check redirect uris against")
 	}
 	spaJoin, err := url.Parse(cfg.SPAJoinURL)
 	if err != nil {
@@ -88,6 +111,13 @@ func New(cfg Config) (*Service, error) {
 	}
 	if spaJoin.Scheme == "" || spaJoin.Host == "" {
 		return nil, fmt.Errorf("identity service: SPA join url %q is not absolute", cfg.SPAJoinURL)
+	}
+	callbackBase, err := url.Parse(strings.TrimRight(cfg.CallbackBaseURL, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("identity service: parse callback base url: %w", err)
+	}
+	if callbackBase.Scheme == "" || callbackBase.Host == "" {
+		return nil, fmt.Errorf("identity service: callback base url %q is not absolute", cfg.CallbackBaseURL)
 	}
 
 	return &Service{
@@ -98,6 +128,8 @@ func New(cfg Config) (*Service, error) {
 		entropy: cfg.Entropy,
 		spaJoin: spaJoin,
 		log:     cfg.Logger,
+
+		callbackBase: callbackBase.String(),
 	}, nil
 }
 

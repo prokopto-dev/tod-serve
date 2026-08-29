@@ -262,7 +262,8 @@ func TestNew_IncompleteConfiguration_IsRefused(t *testing.T) {
 		return identity.Config{
 			Store: h.store, Clients: &stubClients{}, Clock: h.clock,
 			IDs: core.NewGenerator(&countingEntropy{}), Entropy: &countingEntropy{},
-			SPAJoinURL: spaJoinURL, Logger: slog.New(slog.DiscardHandler),
+			SPAJoinURL: spaJoinURL, CallbackBaseURL: callbackBaseURL,
+			Logger: slog.New(slog.DiscardHandler),
 		}
 	}
 
