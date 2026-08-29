@@ -5,11 +5,17 @@
 # version of that walkthrough, and the runbook points at it by name — so the instructions an
 # operator follows are instructions CI runs on every build, rather than a page that was true once.
 #
-# It is deliberately the whole path and not a health check: migrate, init, seed, boot, redeem the
-# one-time owner code over HTTP, use the token that comes back, GRANT `instance.owner` to the
-# identity that redeeming created and reach the admin surface with it, report a ToD, read the
-# board, and take a backup and check it. Every one of those is a step a real first deploy takes,
-# and each has a different way of being broken in an image that passes `/healthz`.
+# It is deliberately the whole path and not a health check: migrate, boot, drive the FIRST-RUN
+# WIZARD over HTTP behind `TOD_SETUP_TOKEN` — including both of the refusals that make it safe to
+# have on a public port — redeem the one-time owner code it hands back, reach the admin surface
+# with the session that redemption set, report a ToD, read the board, and take a backup and check
+# it. Every one of those is a step a real first deploy takes, and each has a different way of being
+# broken in an image that passes `/healthz`.
+#
+# `init`, `seed targets` and `instance grant` are NOT driven here, and their absence is the point:
+# since ADR-0016 a first deploy is `.env`, `migrate`, `up`, and one form. They still exist and are
+# still the way back when nobody can sign in — `cmd/tod-serve` has its own tests for them — but a
+# walkthrough that ran them would be describing a path the runbook no longer tells anybody to take.
 #
 # It runs `deploy/compose.local.yaml` rather than plain `docker run`, so the file that says "anyone
 # can run this at home" is the file being exercised. `compose.yaml` is NOT run here: it needs
@@ -34,7 +40,10 @@ COMPOSE=(docker compose -p "$PROJECT" -f deploy/compose.local.yaml)
 # first time somebody copies this file, which is the failure `CHANGE_ME_` exists to prevent.
 TOD_TOKEN_PEPPER="$(openssl rand -base64 48)"
 TOD_SESSION_KEY="$(openssl rand -base64 48)"
-export TOD_TOKEN_PEPPER TOD_SESSION_KEY
+# The third one, and the only one an operator deletes afterwards: it authorises first-run setup and
+# nothing else, and it stops working the moment this instance has an administrator.
+TOD_SETUP_TOKEN="$(openssl rand -base64 48)"
+export TOD_TOKEN_PEPPER TOD_SESSION_KEY TOD_SETUP_TOKEN
 
 # A port the kernel just told us was free, rather than a number this script hopes nothing else
 # wants. A smoke run that fails on a port collision is a smoke run people learn to re-run.
@@ -91,26 +100,10 @@ ok "both compose files resolve"
   || die "migrate did not report a schema version"
 ok "migrate reached a schema version"
 
-# --- init: the instance, the first circle, and the one-time owner code ---------------------------
-# `--local` is the only provider a smoke run can use: discord and oidc need a real authorization
-# server. It is what makes the join below possible, and it is why this circle reports
-# revocation_strength=weak — which is correct and is exactly what the console shows.
-"${COMPOSE[@]}" run --rm tod-serve init \
-  --name "Smoke Instance" --public-url "$TOD_PUBLIC_URL" \
-  --circle "Smoke Circle" --server blue \
-  --local --accept-local --acknowledge-weak-revocation > "$WORK/init.txt"
-CODE="$(grep -oE 'TODI-[A-Z0-9]{5}-[A-Z0-9]{5}' "$WORK/init.txt" | head -n 1)"
-[ -n "$CODE" ] || { cat "$WORK/init.txt"; die "init printed no owner code"; }
-ok "init printed a one-time owner code"
-
-# --- the catalogue -------------------------------------------------------------------------------
-# Target IDENTITY only. Timers are community-derived and are NOT bundled (SEED001): an instance
-# without them reports `no_timer` and still records every ToD correctly, which is what the board
-# check below actually observes.
-"${COMPOSE[@]}" run --rm tod-serve seed targets | grep -q 'targets:' \
-  || die "seed targets reported nothing"
-ok "the embedded raid-target catalogue is loaded"
-
+# --- up, on a database with NOTHING in it but the schema ------------------------------------------
+# No `init` and no `seed targets`. `serve` has to boot against a fresh database and serve the
+# wizard, because that is what an operator following the runbook now does.
+#
 # --- up ------------------------------------------------------------------------------------------
 "${COMPOSE[@]}" up -d
 
@@ -172,9 +165,84 @@ grep -qi '^x-content-type-options: nosniff' "$WORK/console.headers" \
 grep -q '<div id="root">' "$WORK/console.html" || die "the console did not serve its document"
 ok "the console is served, with its own security headers"
 
+# --- first-run setup: the three refusals, then the form -------------------------------------------
+# This is the walkthrough the runbook now describes, executed. ADR-0016.
+#
+# `/meta` first, because it is what the console routes on and it is public: a browser arriving at a
+# fresh instance has to be sent to `/setup` rather than to a sign-in form it cannot complete.
+curl -fsS --max-time 10 "$BASE/api/v1/meta" -o "$WORK/meta.json" || die "/meta did not answer"
+grep -q '"configured":false' "$WORK/meta.json" \
+  || { cat "$WORK/meta.json"; die "/meta claims a fresh database is configured"; }
+grep -q '"setup_available":true' "$WORK/meta.json" \
+  || { cat "$WORK/meta.json"; die "/meta does not offer first-run setup on a fresh database"; }
+ok "/meta routes a fresh instance to first-run setup"
+
+# The two refusals that make this safe to have on a public port, driven BEFORE the real thing so
+# that a green run cannot be a route that authorises everybody. They answer identically on purpose:
+# an instance with no token set and one with a wrong token guessed must not be tellable apart.
+UNSET_STATUS="$(curl -sS --max-time 10 -o "$WORK/setup-none.json" -w '%{http_code}' \
+  "$BASE/api/v1/setup")"
+WRONG_STATUS="$(curl -sS --max-time 10 -o "$WORK/setup-wrong.json" -w '%{http_code}' \
+  -H "Authorization: Bearer not-the-setup-token" "$BASE/api/v1/setup")"
+[ "$UNSET_STATUS" = "404" ] \
+  || { cat "$WORK/setup-none.json"; die "setup answered $UNSET_STATUS with no token, wanted 404"; }
+[ "$WRONG_STATUS" = "404" ] \
+  || { cat "$WORK/setup-wrong.json"; die "setup answered $WRONG_STATUS to a wrong token, wanted 404"; }
+# Compared field by field with `meta` dropped, not byte for byte: `meta.request_id` is a fresh ULID
+# on every response and is SUPPOSED to differ. Everything a caller could learn the instance's state
+# from — the status, the code, the title, the detail — has to be identical.
+python3 -c '
+import json, sys
+def shape(path):
+    d = json.load(open(path))
+    d.pop("meta", None)
+    return d
+a, b = shape(sys.argv[1]), shape(sys.argv[2])
+if a != b:
+    print("no token:", json.dumps(a, sort_keys=True))
+    print("wrong   :", json.dumps(b, sort_keys=True))
+    sys.exit(1)
+' "$WORK/setup-none.json" "$WORK/setup-wrong.json" \
+  || die "a missing setup token and a wrong one are distinguishable"
+ok "setup refuses a missing and a wrong token identically"
+
+# The form. One request creates the instance, the `local` provider, the first circle and the
+# raid-target catalogue, and hands back a one-time owner code.
+#
+# `local` is the only provider a smoke run can use: discord and oidc need a real authorization
+# server. It is why this circle reports revocation_strength=weak — which is correct, is what the
+# console shows, and is why the acknowledgement below is not optional.
+curl -fsS --max-time 60 -X POST "$BASE/api/v1/setup" \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOD_SETUP_TOKEN" \
+  -H "Idempotency-Key: smoke-setup-$$" \
+  -d "{\"name\":\"Smoke Instance\",\"public_url\":\"$TOD_PUBLIC_URL\",
+       \"provider\":{\"key\":\"local\",\"kind\":\"local\",\"display_name\":\"This server\",
+                   \"acknowledge_weak_revocation\":true},
+       \"circle\":{\"name\":\"Smoke Circle\",\"server\":\"blue\"}}" \
+  -o "$WORK/setup.json" || { cat "$WORK/setup.json" 2>/dev/null; die "first-run setup was refused"; }
+
+read -r CODE JOINPATH STRENGTH SEEDED <<EOF
+$(python3 -c '
+import json
+d = json.load(open("'"$WORK"'/setup.json"))
+print(d["owner_code"], d["join_path"], d["revocation_strength"], d["raid_targets_added"])
+')
+EOF
+[ -n "$CODE" ] || { cat "$WORK/setup.json"; die "setup returned no owner code"; }
+[ "$JOINPATH" = "/join#$CODE" ] \
+  || die "setup's join path is $JOINPATH; the code must travel in the FRAGMENT"
+[ "$STRENGTH" = "weak" ] \
+  || die "a circle accepting local reported revocation_strength=$STRENGTH, wanted weak"
+# Target IDENTITY only. Timers are community-derived and are NOT bundled (SEED001): an instance
+# without them reports `no_timer` and still records every ToD correctly, which is what the board
+# check below actually observes.
+[ "$SEEDED" -gt 0 ] || die "setup seeded no raid targets"
+ok "the wizard created the instance, the provider, the circle and $SEEDED raid targets"
+
 # --- redeem the one-time owner code, over HTTP ----------------------------------------------------
-# The code `init` printed, used the way a person actually uses it. This is the only way into a
-# fresh instance: nobody holds a credential and no route could authorise one.
+# The code the WIZARD returned, used the way a person actually uses it: the browser is redirected
+# straight to `/join#<code>`, so nothing is copied out of one page and into another.
 # The response HEADERS are kept as well as the body: an instance-realm route is session-only at
 # every scope, so the administrator half of this walkthrough cannot be driven with the PAT.
 curl -fsS --max-time 10 -X POST "$BASE/api/v1/join" \
@@ -211,11 +279,11 @@ curl -fsS --max-time 10 "$BASE/api/v1/me" -H "Authorization: Bearer $TOKEN" -o "
 grep -q "$CIRCLE" "$WORK/me.json" || { cat "$WORK/me.json"; die "/me does not name the circle"; }
 ok "the token authenticates and names the circle"
 
-# --- the last bootstrap step: somebody who can administer the instance -----------------------------
-# This is the end of docs/operations/deployment.md's first deploy, and it is here because the
-# runbook used to stop one command short of it: `instance.owner` was grantable, no route required
-# it, and `EffectiveForSession` was a plain union — so the grant the runbook told an operator to
-# make succeeded, wrote an audited ledger row, and handed them nothing.
+# --- the instance is administrable, with no console step at all ------------------------------------
+# This is the end of docs/operations/deployment.md's first deploy. Redeeming an owner grant while
+# NOBODY administers the instance grants that identity `instance.owner` in the join's own
+# transaction (ADR-0016), so there is no `instance identities` and no `instance grant` here — the
+# runbook used to stop two commands short of a usable instance, and now it stops at the form.
 #
 # The cookie is read out of the response rather than kept in a jar: it carries the `__Host-`
 # prefix, so it is `Secure`, and curl will not send a Secure cookie back over the plain HTTP this
@@ -225,33 +293,43 @@ SESSION="$(grep -i '^set-cookie: __Host-tod_session=' "$WORK/join.headers" \
   | sed 's/.*__Host-tod_session=//' | cut -d';' -f1 | tr -d '\r')"
 [ -n "$SESSION" ] || { cat "$WORK/join.headers"; die "join set no session cookie"; }
 
-# Driven in both directions, because only the pair proves anything. A 403 first: without it the
-# 200 below could be a route that authorises everybody.
-STATUS="$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
-  -H "Cookie: __Host-tod_session=$SESSION" "$BASE/api/v1/admin/identity-providers")"
-[ "$STATUS" = "403" ] || die "the admin surface answered $STATUS before any grant, wanted 403"
-
-"${COMPOSE[@]}" run --rm tod-serve instance identities > "$WORK/identities.txt" \
-  || { cat "$WORK/identities.txt"; die "instance identities failed"; }
-IDENTITY="$(grep -oE '\b[0-9A-HJKMNP-TV-Z]{26}\b' "$WORK/identities.txt" | head -n 1)"
-[ -n "$IDENTITY" ] || { cat "$WORK/identities.txt"; die "instance identities printed no id"; }
-
-"${COMPOSE[@]}" run --rm tod-serve instance grant \
-  --identity "$IDENTITY" --permission instance.owner --reason "smoke" > "$WORK/grant.txt" \
-  || { cat "$WORK/grant.txt"; die "instance grant failed"; }
-
-# The SAME session, unchanged. The ledger is read on every request, so a grant takes effect on the
-# holder's next one rather than when their session expires.
 # `|| true` on the cat: with `-f` curl leaves no output file on a 403, and `set -e` applies inside
 # the branch following the final `||` — so a failing `cat` here would exit the script with the
 # status and none of the sentence, which is a smoke failure that says nothing about itself.
 curl -fsS --max-time 10 -H "Cookie: __Host-tod_session=$SESSION" \
   "$BASE/api/v1/admin/identity-providers" -o "$WORK/providers.json" \
   || { cat "$WORK/providers.json" 2>/dev/null || true
-       die "the admin surface is still refused after granting instance.owner"; }
+       die "the admin surface is refused to the identity that redeemed the bootstrap code"; }
 grep -q '"key":"local"' "$WORK/providers.json" \
   || { cat "$WORK/providers.json"; die "the admin listing does not name the local provider"; }
-ok "instance.owner makes the instance administrable over the API, from the same session"
+ok "redeeming the owner code made the instance administrable, from the same session"
+
+# A PAT is still refused, and differently, because the fix is different: no token reaches an
+# instance-realm permission at any scope, whatever the ledger says. Without this the 200 above
+# could be a route that authorises everybody.
+STATUS="$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/admin/identity-providers")"
+[ "$STATUS" = "403" ] || die "a PAT reached the admin surface with $STATUS, wanted 403"
+ok "no personal access token reaches the instance realm"
+
+# The ledger recorded a DECISION, and `doctor` reads the same expansion the request above did.
+"${COMPOSE[@]}" run --rm tod-serve instance grants > "$WORK/grants.txt" \
+  || { cat "$WORK/grants.txt"; die "instance grants failed"; }
+grep -q 'instance.owner' "$WORK/grants.txt" \
+  || { cat "$WORK/grants.txt"; die "the ledger records no instance.owner grant after the bootstrap"; }
+
+# --- and the wizard is shut, on the ADMINISTRATOR rather than on a flag -----------------------------
+# The third refusal, and the one that matters most: the token in `.env` is still set and still
+# correct, and setup is over anyway. Nothing was written to say so — it is derived from the ledger,
+# so it cannot be reset by editing a row.
+curl -fsS --max-time 10 "$BASE/api/v1/meta" -o "$WORK/meta-after.json" || die "/meta stopped answering"
+grep -q '"setup_available":false' "$WORK/meta-after.json" \
+  || { cat "$WORK/meta-after.json"; die "/meta still offers setup after an administrator exists"; }
+STATUS="$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $TOD_SETUP_TOKEN" "$BASE/api/v1/setup")"
+[ "$STATUS" = "409" ] \
+  || die "setup answered $STATUS to a correct token after an administrator existed, wanted 409"
+ok "first-run setup is closed by the administrator, with the token still set"
 
 # --- a ToD report, by NAME, which is what the plugin sends ----------------------------------------
 # `target_name` runs the resolve ladder server-side, so a client never has to hold a catalogue.

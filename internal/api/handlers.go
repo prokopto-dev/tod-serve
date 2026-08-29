@@ -27,6 +27,20 @@ type ServerMeta struct {
 	Configured bool `json:"configured"`
 	// SelfServiceCircleCreation says whether a caller may create a circle without an operator.
 	SelfServiceCircleCreation bool `json:"self_service_circle_creation"`
+	// SetupAvailable says whether first-run setup can still be run: `TOD_SETUP_TOKEN` is set AND
+	// no identity administers this instance yet. It is what the console routes on.
+	//
+	// **It is not `!configured`, and the gap is the point.** `configured` is a fact about the
+	// `instance` row, which exists the moment setup's first step succeeds; this is a fact about
+	// whether anybody can administer the instance. Routing a browser on the first would send an
+	// operator whose setup died half-way to a board they cannot see, on an instance they cannot
+	// sign into — see ADR-0016.
+	//
+	// It is public, and that is a deliberate disclosure: it tells a stranger this instance is
+	// mid-setup. What it does not tell them is the token, which is the only thing that would let
+	// them do anything about it — and it goes false for good at the first administrator, so the
+	// window it advertises is exactly the window that already exists.
+	SetupAvailable bool `json:"setup_available"`
 	// AsOf is the instant this answer was computed. Every response carries one, and every
 	// countdown anywhere in this API is a signed offset from it.
 	AsOf core.Micros `json:"as_of"`
@@ -44,6 +58,20 @@ func (s *Server) registerMeta() error {
 				Version:     s.cfg.Version,
 				APIVersions: []string{BasePath},
 				AsOf:        s.cfg.Clock.Now(),
+			}
+			// Reported even when there is no instance row, because the two questions are
+			// independent: a database with an instance and no administrator is exactly the
+			// half-finished setup this field exists to route somebody back to.
+			//
+			// The token is consulted here and never rendered. An instance whose operator never
+			// set one answers false and stays that way, which is the same thing the routes
+			// themselves do.
+			if !s.cfg.SetupToken.Token.IsZero() {
+				available, availErr := s.cfg.Setup.Available(ctx)
+				if availErr != nil {
+					return nil, apierr.Wrap(apierr.CodeInternalError, availErr, "")
+				}
+				meta.SetupAvailable = available
 			}
 			row, err := s.cfg.Store.Queries().GetInstance(ctx)
 			switch {

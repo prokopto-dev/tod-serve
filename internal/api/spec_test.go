@@ -171,13 +171,16 @@ func TestSpec_AFloorOperation_OffersOnlyTheSessionScheme(t *testing.T) {
 	require.Positive(t, floor, "no session-only operation is documented; the filter is wrong")
 }
 
-// The security schemes are exactly three, and the absence of a fourth is the point: `Authorization:
-// Bearer` and the session cookie are the only API credentials, and the metrics token is not one.
-func TestSpec_SecuritySchemes_AreTheThreeThatExist(t *testing.T) {
+// The security schemes are exactly four, and the absence of a fifth is the point: `Authorization:
+// Bearer` and the session cookie are the only API credentials, and the other two are environment
+// variables reaching one operational surface each — the metrics listener and first-run setup.
+func TestSpec_SecuritySchemes_AreTheFourThatExist(t *testing.T) {
 	t.Parallel()
 	doc, _ := loadSpec(t)
-	require.Len(t, doc.Components.SecuritySchemes, 3)
-	for _, name := range []string{api.SchemeBearer, api.SchemeSession, api.SchemeMetricsToken} {
+	require.Len(t, doc.Components.SecuritySchemes, 4)
+	for _, name := range []string{
+		api.SchemeBearer, api.SchemeSession, api.SchemeMetricsToken, api.SchemeSetupToken,
+	} {
 		require.Contains(t, doc.Components.SecuritySchemes, name)
 	}
 }

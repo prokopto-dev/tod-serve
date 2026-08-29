@@ -184,9 +184,11 @@ func checkProviders(ctx context.Context, db *store.DB, ok, warn, bad func(string
 // every credential it could present is refused. Counting it would be this report saying an
 // instance is fine when nobody can log in to it, which is the exact failure the check exists for.
 //
-// `ListCirclesForIdentity` is the predicate rather than a new query, because it is already the one
-// `listCircles` serves: `revoked_at IS NULL AND deleted_at IS NULL`. Asking the question the API
-// asks is what stops doctor growing a second definition of "can act".
+// `instancegrant.CanAuthenticate` is the predicate rather than a new query, because it wraps the one
+// `listCircles` already serves: `revoked_at IS NULL AND deleted_at IS NULL`. Asking the question the
+// API asks is what stops doctor growing a second definition of "can act" — and it lives beside the
+// ledger because FIRST-RUN SETUP asks it too. An operator whose report says nobody can administer
+// this instance must not then meet a wizard that says setup is over (ADR-0016).
 //
 // It counts only HUMAN memberships, and that is a schema fact rather than a filter this function
 // applies: it joins on `identity_id`, and `ck_membership_human_has_an_identity` is the
@@ -227,7 +229,7 @@ func checkAdministrable(ctx context.Context, db *store.DB, ok, bad func(string))
 			continue
 		}
 		granted++
-		live, err := canAuthenticate(ctx, db, identityID)
+		live, err := instancegrant.CanAuthenticate(ctx, db.Queries(), identityID)
 		if err != nil {
 			bad(err.Error())
 			return
@@ -280,24 +282,6 @@ func checkAdministrable(ctx context.Context, db *store.DB, ok, bad func(string))
 	ok(fmt.Sprintf("%d %s administer this instance (%s)",
 		admins, plural(admins, "identity can", "identities can"),
 		authz.PermissionInstanceSecurityManage))
-}
-
-// canAuthenticate reports whether this identity has a membership a credential could actually be
-// bound to: live, human, and in a circle that still exists.
-//
-// It is a query per candidate rather than one join, and that is affordable because the candidates
-// are the identities already holding an instance permission — a handful on any instance, and this
-// is a diagnostic somebody runs by hand.
-func canAuthenticate(ctx context.Context, db *store.DB, identityID core.IdentityID) (bool, error) {
-	// The parameter is a pointer because `membership.identity_id` is nullable — a service
-	// membership has none. A non-nil one is what asks about a person.
-	id := identityID.String()
-	rows, err := db.Queries().ListCirclesForIdentity(ctx, &id)
-	if err != nil {
-		return false, fmt.Errorf(
-			"memberships for identity %s are unreadable: %w", identityID, err)
-	}
-	return len(rows) > 0, nil
 }
 
 // plural picks the wording. A report that says "1 identities" is a report somebody stops reading.

@@ -26,6 +26,7 @@ directions linked.
 | [0013](0013-the-timer-invalidation-joins-the-writing-transaction.md) | The timer invalidation joins the writing transaction | accepted |
 | [0014](0014-a-deferred-read-pool-for-multi-read-renders.md) | A second, deferred pool for multi-read renders | accepted |
 | [0015](0015-instance-owner-implies-the-instance-realm.md) | `instance.owner` implies the instance realm | accepted |
+| [0016](0016-first-run-setup-is-an-env-token-and-a-derived-window.md) | First-run setup is an env token, open only while no administrator exists | accepted |
 
 ## Where this project diverges from Dragon Kill Party
 

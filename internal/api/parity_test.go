@@ -63,6 +63,14 @@ var callPattern = regexp.MustCompile(`\bapi\s*\.\s*([A-Za-z][A-Za-z0-9_]*)\s*\(`
 //     must not be able to do, and a `self` route consults no permission — the resource IS the
 //     caller — so there is no catalogue key to look up. Canonical §6 puts `token.revoke` in the
 //     floor for the capability; the route expresses it as `AuthSelf` with no scopes.
+//
+// There is a THIRD shape, and it is checked rather than waved through: a route authorised by
+// `TOD_SETUP_TOKEN`. It refuses a PAT with `404` — not `401` or `403` — so the ordinary verdict
+// above would have counted it as reachable without a token ever having reached it, which is a pass
+// over nothing. Those routes are driven with the credential the DOCUMENT publishes for them
+// instead, and both halves are asserted: the setup token works, and the strongest possible PAT
+// does not. That is still API-first — `TOD_SETUP_TOKEN` is a published security scheme any client
+// can present, so nothing here is browser-only.
 func TestAPIParity_EveryConsoleRequest_IsReachableWithAScopedToken(t *testing.T) {
 	t.Parallel()
 	calls := consoleCalls(t)
@@ -76,7 +84,7 @@ func TestAPIParity_EveryConsoleRequest_IsReachableWithAScopedToken(t *testing.T)
 	// scope", which is the capability floor's whole claim.
 	strongest := h.seedToken(owner, allScopes()...)
 
-	reachable, floored := 0, 0
+	reachable, floored, setupReachable := 0, 0, 0
 	var floorOps []api.OperationID
 
 	for _, call := range calls {
@@ -94,6 +102,12 @@ func TestAPIParity_EveryConsoleRequest_IsReachableWithAScopedToken(t *testing.T)
 		require.Truef(t, served, "%s:%d calls api.%s, which this binary does not serve. "+
 			"A console button wired to a route with no handler is a button that 404s",
 			call.File, call.Line, call.Operation)
+
+		if route.Auth == api.AuthSetupToken {
+			setupReachable++
+			requireSetupParity(t, h, route, call, strongest)
+			continue
+		}
 
 		// Exactly the scopes the document declares for the operation, so a success proves the
 		// DECLARED scope set is sufficient — not merely that some token somewhere got through.
@@ -159,8 +173,44 @@ func TestAPIParity_EveryConsoleRequest_IsReachableWithAScopedToken(t *testing.T)
 	}
 
 	t.Logf("the console reaches %d operations: %d with a scoped token, %d needing a browser "+
-		"session because they are in the capability floor (%s)",
-		len(calls), reachable, floored, joinOps(floorOps))
+		"session because they are in the capability floor (%s), %d authorised by TOD_SETUP_TOKEN",
+		len(calls), reachable, floored, joinOps(floorOps), setupReachable)
+}
+
+// requireSetupParity drives one first-run route both ways.
+//
+// The PAT half is the one that matters. `checkSetupToken` answers `404` to everything it does not
+// recognise, so without this the caller above would score a token-refused route as token-reachable
+// and the gate would be green over a request that never got in.
+func requireSetupParity(
+	t *testing.T, h *harness, route api.Route, call consoleCall, strongest core.Secret,
+) {
+	t.Helper()
+	refused := h.do(request{
+		Method: route.Method, Path: pathFor(route, core.CircleID{}), Token: strongest,
+		Body: bodyFor(route),
+		Headers: map[string]string{
+			api.IdempotencyKeyHeader: "parity-pat-" + string(call.Operation),
+		},
+	})
+	require.Equalf(t, http.StatusNotFound, refused.Status,
+		"%s:%d calls api.%s, and a personal access token was answered %d rather than the 404 an "+
+			"unrecognised setup token gets. A PAT must not reach first-run setup",
+		call.File, call.Line, call.Operation, refused.Status)
+
+	reached := h.do(request{
+		Method: route.Method, Path: pathFor(route, core.CircleID{}), Token: testSetupTok,
+		Body: bodyFor(route),
+		Headers: map[string]string{
+			api.IdempotencyKeyHeader: "parity-setup-" + string(call.Operation),
+		},
+	})
+	require.NotEqualf(t, http.StatusNotFound, reached.Status,
+		"%s:%d calls api.%s, and the credential the document publishes for it was refused. "+
+			"Body was: %s", call.File, call.Line, call.Operation, reached.Body)
+	require.Lessf(t, reached.Status, http.StatusInternalServerError,
+		"%s:%d calls api.%s and the setup token reached a %d. Body was: %s",
+		call.File, call.Line, call.Operation, reached.Status, reached.Body)
 }
 
 // TestAPIParity_TheExtractor_ActuallyReadsTheConsole is the empty-search-space guard.

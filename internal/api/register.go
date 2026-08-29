@@ -31,6 +31,10 @@ const (
 	// SchemeMetricsToken is `TOD_METRICS_TOKEN` on the separate metrics listener. It is never a
 	// PAT scope and never appears on an API operation.
 	SchemeMetricsToken = "metricsToken"
+	// SchemeSetupToken is `TOD_SETUP_TOKEN`, and it reaches first-run setup and nothing else. It
+	// is never a PAT scope, authenticates no principal, and stops working for good the moment an
+	// identity holds an administrator permission — ADR-0016.
+	SchemeSetupToken = "setupToken"
 )
 
 // The OpenAPI extensions each operation carries. Everything the route registry knows reaches the
@@ -52,7 +56,7 @@ const (
 // PermissionExtension is the machine-readable half of what an operation requires. It is a struct
 // rather than a map because a generated document nobody can typecheck is a document that drifts.
 type PermissionExtension struct {
-	// Kind is the auth kind: `public`, `self`, `permission` or `metrics_token`.
+	// Kind is the auth kind: `public`, `self`, `permission`, `metrics_token` or `setup_token`.
 	Kind string `json:"kind"`
 	// AnyOf are the catalogue permissions, ANY of which reaches the operation. Empty for every
 	// kind except `permission`.
@@ -148,6 +152,8 @@ func securityFor(r Route) []map[string][]string {
 		return []map[string][]string{{}}
 	case AuthMetricsToken:
 		return []map[string][]string{{SchemeMetricsToken: {}}}
+	case AuthSetupToken:
+		return []map[string][]string{{SchemeSetupToken: {}}}
 	case AuthSelf, AuthPermission:
 		if r.SessionOnly() {
 			return []map[string][]string{{SchemeSession: {}}}
@@ -215,6 +221,12 @@ func errorStatusesFor(r Route) []int {
 	}
 	if r.CircleScoped || len(r.PathParams()) > 0 {
 		statuses = append(statuses, 404)
+	}
+	if r.Auth == AuthSetupToken {
+		// Documented because it is the ANSWER, not an edge case. An unset `TOD_SETUP_TOKEN` and a
+		// wrong one are both a 404, and a generated client that treated the route's ordinary
+		// refusal as an undocumented error would be a client that could not report it.
+		statuses = append(statuses, 404, 409)
 	}
 	if r.IfMatch {
 		statuses = append(statuses, 412, 428)

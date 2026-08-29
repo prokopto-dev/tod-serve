@@ -15,6 +15,7 @@ const (
 	envTokenPepper    = "TOD_TOKEN_PEPPER"
 	envSessionKey     = "TOD_SESSION_KEY"
 	envSPAJoinURL     = "TOD_SPA_JOIN_URL"
+	envSetupToken     = "TOD_SETUP_TOKEN"
 	envPublicURL      = "TOD_PUBLIC_URL"
 	envMetricsEnabled = "TOD_METRICS_ENABLED"
 	envMetricsToken   = "TOD_METRICS_TOKEN"

@@ -50,6 +50,15 @@ SET name = sqlc.arg(name), name_norm = sqlc.arg(name_norm), description = sqlc.a
 WHERE id = sqlc.arg(circle_id)
 RETURNING *;
 
+-- name: CountLiveCircles :one
+-- tenancy: SAFE, and deliberately not an enumeration: it returns a NUMBER and never a circle, so
+-- it takes no caller-supplied id and no circle's existence leaves through it.
+--
+-- It backs circle.Service.CreateFirst, which has to answer "does this instance have any circle at
+-- all" INSIDE the transaction that inserts one. The same question asked outside is what let two
+-- first-run setup requests each find none and each create one.
+SELECT COUNT(*) FROM circle WHERE deleted_at IS NULL;
+
 -- name: ListLiveCircles :many
 -- tenancy: SAFE because it takes no caller-supplied input of any kind and its result never reaches
 -- a response body. It backs `tod-serve rebuild-states` and the nightly verify job, which have no

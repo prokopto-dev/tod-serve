@@ -187,6 +187,35 @@ type DecideRequest struct {
 // the row it writes have to be consistent, and a chain built from a read outside the transaction
 // that wrote it is a chain that can fork under concurrency.
 func (s *Service) Decide(ctx context.Context, req DecideRequest) (Grant, error) {
+	var out Grant
+	err := s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
+		var txErr error
+		out, txErr = s.DecideInTx(ctx, q, req)
+		return txErr
+	})
+	if err != nil {
+		return Grant{}, err
+	}
+	s.log.InfoContext(ctx, "instance grant decided",
+		slog.String("identity_id", out.IdentityID.String()),
+		slog.String("permission", string(out.Permission)),
+		slog.String("decision", string(out.Decision)),
+		slog.Bool("by_console", out.ByConsole()))
+	return out, nil
+}
+
+// DecideInTx appends one decision through a transaction the caller already holds.
+//
+// It exists for the ONE caller that has to decide and write in the same breath: the join that
+// admits the instance's first administrator reads "does anybody administer this instance" and
+// appends `instance.owner` if nobody does, and a check on one side of a commit boundary from its
+// own write is a check two concurrent redemptions both pass.
+//
+// It does not log. [Service.Decide] logs after its commit; a caller here has a transaction that
+// may still roll back, and a log line about a decision that was undone is worse than none.
+func (s *Service) DecideInTx(
+	ctx context.Context, q *sqlitegen.Queries, req DecideRequest,
+) (Grant, error) {
 	if !authz.IsInstanceRealm(req.Permission) {
 		return Grant{}, fmt.Errorf("decide %q for identity %s: %w",
 			req.Permission, req.IdentityID, authz.ErrUnknownPermission)
@@ -200,76 +229,151 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (Grant, error) 
 	}
 
 	now := s.clock.Now()
-	var out Grant
-	err := s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
-		if _, err := q.GetIdentity(ctx, req.IdentityID.String()); err != nil {
-			if store.IsNotFound(err) {
-				return fmt.Errorf("decide %q for identity %s: %w",
-					req.Permission, req.IdentityID, ErrUnknownIdentity)
-			}
-			return fmt.Errorf("read identity %s: %w", req.IdentityID, err)
+	if _, err := q.GetIdentity(ctx, req.IdentityID.String()); err != nil {
+		if store.IsNotFound(err) {
+			return Grant{}, fmt.Errorf("decide %q for identity %s: %w",
+				req.Permission, req.IdentityID, ErrUnknownIdentity)
 		}
+		return Grant{}, fmt.Errorf("read identity %s: %w", req.IdentityID, err)
+	}
 
-		current, err := s.tail(ctx, q, req.IdentityID, req.Permission)
-		if err != nil {
-			return err
-		}
-		if current != nil && current.Decision == req.Decision {
-			return fmt.Errorf("decide %q for identity %s: %w",
-				req.Permission, req.IdentityID, ErrNoChange)
-		}
-		if current == nil && req.Decision == DecisionRevoked {
-			// Revoking something never granted would append a row asserting a removal that never
-			// happened, which is a lie in the one table nobody is supposed to have to double-check.
-			return fmt.Errorf("decide %q for identity %s: %w",
-				req.Permission, req.IdentityID, ErrNoChange)
-		}
-
-		prevHash, err := chainTail(ctx, q)
-		if err != nil {
-			return err
-		}
-
-		id, err := core.NewID[core.InstanceGrant](s.ids, now)
-		if err != nil {
-			return fmt.Errorf("mint an instance grant id: %w", err)
-		}
-		params := sqlitegen.AppendInstanceGrantParams{
-			ID:         id.String(),
-			IdentityID: req.IdentityID.String(),
-			Permission: string(req.Permission),
-			Decision:   string(req.Decision),
-			Reason:     req.Reason,
-			PrevHash:   prevHash,
-			DecidedAt:  int64(now),
-		}
-		if current != nil {
-			superseded := current.ID.String()
-			params.SupersedesID = &superseded
-		}
-		if !req.DecidedBy.IsZero() {
-			by := req.DecidedBy.String()
-			params.DecidedByIdentityID = &by
-		}
-		params.Hash = chainHash(params)
-
-		row, err := q.AppendInstanceGrant(ctx, params)
-		if err != nil {
-			return fmt.Errorf("append instance grant %q for identity %s: %w",
-				req.Permission, req.IdentityID, err)
-		}
-		out, err = convertOne(row)
-		return err
-	})
+	current, err := s.tail(ctx, q, req.IdentityID, req.Permission)
 	if err != nil {
 		return Grant{}, err
 	}
-	s.log.InfoContext(ctx, "instance grant decided",
-		slog.String("identity_id", out.IdentityID.String()),
-		slog.String("permission", string(out.Permission)),
-		slog.String("decision", string(out.Decision)),
-		slog.Bool("by_console", out.ByConsole()))
-	return out, nil
+	if current != nil && current.Decision == req.Decision {
+		return Grant{}, fmt.Errorf("decide %q for identity %s: %w",
+			req.Permission, req.IdentityID, ErrNoChange)
+	}
+	if current == nil && req.Decision == DecisionRevoked {
+		// Revoking something never granted would append a row asserting a removal that never
+		// happened, which is a lie in the one table nobody is supposed to have to double-check.
+		return Grant{}, fmt.Errorf("decide %q for identity %s: %w",
+			req.Permission, req.IdentityID, ErrNoChange)
+	}
+
+	prevHash, err := chainTail(ctx, q)
+	if err != nil {
+		return Grant{}, err
+	}
+
+	id, err := core.NewID[core.InstanceGrant](s.ids, now)
+	if err != nil {
+		return Grant{}, fmt.Errorf("mint an instance grant id: %w", err)
+	}
+	params := sqlitegen.AppendInstanceGrantParams{
+		ID:         id.String(),
+		IdentityID: req.IdentityID.String(),
+		Permission: string(req.Permission),
+		Decision:   string(req.Decision),
+		Reason:     req.Reason,
+		PrevHash:   prevHash,
+		DecidedAt:  int64(now),
+	}
+	if current != nil {
+		superseded := current.ID.String()
+		params.SupersedesID = &superseded
+	}
+	if !req.DecidedBy.IsZero() {
+		by := req.DecidedBy.String()
+		params.DecidedByIdentityID = &by
+	}
+	params.Hash = chainHash(params)
+
+	row, err := q.AppendInstanceGrant(ctx, params)
+	if err != nil {
+		return Grant{}, fmt.Errorf("append instance grant %q for identity %s: %w",
+			req.Permission, req.IdentityID, err)
+	}
+	return convertOne(row)
+}
+
+// Administers reports whether a held set of instance grants makes somebody an ADMINISTRATOR of
+// this instance, as opposed to a holder of one narrow instance capability.
+//
+// The key is `instance.security.manage`, and it is one key rather than a list because
+// [authz.ExpandInstance] already answers the rest: an identity granted `instance.owner` holds it,
+// so ownership closes the same door without this function knowing that ownership exists. Asking
+// through the expansion is also what stops this drifting from what the middleware would decide —
+// `auth.Principal.Holds` asks the same question the same way.
+//
+// It is NOT "holds any instance-realm key". `ops.read` is a dashboard and `catalogue.manage` is
+// timer curation; neither makes its holder able to configure who may sign in, which is what
+// ADR-0012 calls being administrable over the API and what first-run setup exists to hand
+// somebody.
+func Administers(held authz.Set) bool {
+	return authz.ExpandInstance(held).Has(authz.PermissionInstanceSecurityManage)
+}
+
+// AdministratorExists reports whether any identity on this instance currently administers it.
+//
+// **It is the first-run setup window, derived rather than stored** (ADR-0016): setup is open
+// exactly while this is false. It takes the query set rather than reading the pool so that the
+// join admitting the first administrator can ask it inside its own transaction — SQLite has one
+// writer, so a check and an append in one transaction cannot both be taken by two redemptions.
+//
+// **A GRANT IS NOT ENOUGH, and that is the half that makes this a window rather than a latch.** An
+// instance grant is on an identity, and an identity only reaches a request through a membership:
+// `Authenticator.membership` reads one on every call and refuses a revoked one, or one in a deleted
+// circle. The ledger outlives both — a revocation is a membership row, not a grant row — so an
+// identity can hold `instance.owner` while every credential it could present is refused. Closing
+// first-run setup on that would lock the operator out of the instance AND out of the one browser
+// door back into it, which is the exact failure ADR-0016 exists to prevent.
+//
+// A REVOKED decision is not an administrator either, so an instance whose last owner was revoked is
+// recoverable through this door as well as through the console.
+//
+// [CanAuthenticate] is the predicate rather than a second definition of "can act", and
+// `checkAdministrable` in `tod-serve doctor` asks the same function: an operator whose report says
+// nobody can administer this instance must not meet a wizard that says setup is over.
+func AdministratorExists(ctx context.Context, q *sqlitegen.Queries) (bool, error) {
+	rows, err := q.ListInstanceGrantDecisions(ctx)
+	if err != nil {
+		return false, fmt.Errorf("read the instance grants: %w", err)
+	}
+	grants, err := convert(rows)
+	if err != nil {
+		return false, err
+	}
+	held := map[core.IdentityID][]authz.Permission{}
+	for _, g := range grants {
+		if g.Decision == DecisionGranted {
+			held[g.IdentityID] = append(held[g.IdentityID], g.Permission)
+		}
+	}
+	for identityID, perms := range held {
+		if !Administers(authz.NewSet(perms...)) {
+			continue
+		}
+		live, err := CanAuthenticate(ctx, q, identityID)
+		if err != nil {
+			return false, err
+		}
+		if live {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// CanAuthenticate reports whether an identity has a membership it could actually present.
+//
+// `ListCirclesForIdentity` is the predicate rather than a query written for this, because it is
+// already the one `listCircles` serves and the one the authenticator enforces:
+// `revoked_at IS NULL AND deleted_at IS NULL`, joined on `identity_id` so a service membership —
+// which has none; a bot has an owner rather than an identity — cannot qualify. Asking the question
+// the API asks is what stops a second definition of "can act" existing.
+func CanAuthenticate(
+	ctx context.Context, q *sqlitegen.Queries, identityID core.IdentityID,
+) (bool, error) {
+	// The parameter is a pointer because `membership.identity_id` is nullable — a service
+	// membership has none. A non-nil one is what asks about a person.
+	id := identityID.String()
+	rows, err := q.ListCirclesForIdentity(ctx, &id)
+	if err != nil {
+		return false, fmt.Errorf("memberships for identity %s are unreadable: %w", identityID, err)
+	}
+	return len(rows) > 0, nil
 }
 
 // chainTail returns the hash the next decision must name as its predecessor: the hash of the row

@@ -14,6 +14,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
+	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 )
@@ -29,7 +30,12 @@ type Config struct {
 	IDs      *core.Generator
 	Minter   *auth.Minter
 	Identity *identity.Service
-	Log      *slog.Logger
+	// Grants is the instance-permission ledger, and the join path writes to it in exactly one
+	// case: the redemption that admits an instance with no administrator its first one.
+	// ADR-0016. It is required rather than optional, because a nil one would turn the bootstrap
+	// into a branch that silently did nothing on the one run it exists for.
+	Grants *instancegrant.Service
+	Log    *slog.Logger
 	// Entropy mints nothing here directly; it is held so the service can be constructed with the
 	// same source everything else uses, and so a wiring site that forgot one fails at startup.
 	Entropy io.Reader
@@ -42,6 +48,7 @@ type Service struct {
 	ids      *core.Generator
 	minter   *auth.Minter
 	identity *identity.Service
+	grants   *instancegrant.Service
 	log      *slog.Logger
 }
 
@@ -58,6 +65,8 @@ func New(cfg Config) (*Service, error) {
 		return nil, errors.New("membership service: no token minter")
 	case cfg.Identity == nil:
 		return nil, errors.New("membership service: no identity service")
+	case cfg.Grants == nil:
+		return nil, errors.New("membership service: no instance grant ledger")
 	case cfg.Log == nil:
 		return nil, errors.New("membership service: no logger")
 	case cfg.Entropy == nil:
@@ -65,7 +74,7 @@ func New(cfg Config) (*Service, error) {
 	}
 	return &Service{
 		db: cfg.Store, clock: cfg.Clock, ids: cfg.IDs, minter: cfg.Minter,
-		identity: cfg.Identity, log: cfg.Log,
+		identity: cfg.Identity, grants: cfg.Grants, log: cfg.Log,
 	}, nil
 }
 

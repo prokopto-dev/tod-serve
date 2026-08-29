@@ -11,7 +11,7 @@
 // first time comes through an invite link, which is the whole point of the link.
 
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, Navigate } from 'react-router-dom'
 
 import { api, body, toError } from '../api'
 import { useResource } from '../app/useResource'
@@ -33,6 +33,16 @@ export function SignIn() {
   const [busy, setBusy] = useState(false)
 
   const rows = providers.data?.items ?? []
+
+  // An instance nobody administers yet, with a setup token set, is one that has not been stood up.
+  // Sending somebody here to a sign-in form they cannot complete is the worst version of that:
+  // there is no circle to sign into and no provider to sign in with.
+  //
+  // It routes on `setup_available` and NOT on `configured`. The two differ exactly where it
+  // matters — an instance row whose owner code was never redeemed is `configured` and still needs
+  // this — and `setup_available` is false when no `TOD_SETUP_TOKEN` is set, so this never sends
+  // anybody to a wizard that cannot work. ADR-0016.
+  if (meta.data?.setup_available) return <Navigate to="/setup" replace />
 
   const startBrowserFlow = (providerKey: string) => {
     if (!circleID) return
@@ -81,7 +91,8 @@ export function SignIn() {
         </h1>
         <p className="text-xs text-ink-500">
           {meta.data?.configured === false
-            ? 'This instance has not been set up yet. Run tod-serve init.'
+            ? 'This instance has not been set up yet, and no setup token is configured: set ' +
+              'TOD_SETUP_TOKEN and restart to use the browser wizard, or run tod-serve init.'
             : 'Sign in to a circle you already belong to.'}
         </p>
       </header>

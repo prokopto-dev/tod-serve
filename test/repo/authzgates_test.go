@@ -59,9 +59,14 @@ func unreachedPermissions() map[authz.Permission]string {
 //
 //  1. THE ROUTE REGISTRY, as data. `Route.Permissions` is what the middleware checks before a
 //     handler runs.
-//  2. HANDLER SOURCE, as an AST. Some permissions shape a response rather than gate a route —
-//     `tod.read.attribution` is the observer role, and it is asked inside the board handler — so a
-//     registry-only walk would call it unreachable and be wrong.
+//  2. HANDLER SOURCE, as an AST, over `internal/api` and nothing else. Some permissions shape a
+//     response rather than gate a route — `tod.read.attribution` is the observer role, and it is
+//     asked inside the board handler — so a registry-only walk would call it unreachable and be
+//     wrong. The walk is confined to the edge because "consulted" has to mean *asked about a
+//     caller*: a domain package that GRANTS a permission names the same constant, and counting
+//     that as reachability is how arm 3 goes quiet — `internal/membership` writes
+//     `instance.owner` when it admits an instance's first administrator (ADR-0016), and a
+//     whole-`internal` walk read that write as a check.
 //  3. AN EXPANSION, from [authz.Implies]. `instance.owner` reaches no route itself and expands to
 //     the instance realm, whose members must be reachable by (1) or (2) in their own right. The
 //     expansion may not contain the key itself, or this arm would prove anything.
@@ -174,17 +179,17 @@ func permissionsConsultedByHandlers(t *testing.T, root string) map[authz.Permiss
 	t.Helper()
 
 	names := permissionConstants(t, root)
-	skipDir := filepath.Join(root, "internal", "authz")
+	// The registry is arm 1's source and must not double as arm 2's: a route's declared
+	// permissions are already counted, and reading them here again would make every arm agree
+	// with itself.
 	skipFile := filepath.Join(root, "internal", "api", "registry.go")
 
 	used := map[string]bool{}
 	files := 0
-	err := filepath.WalkDir(filepath.Join(root, "internal"), func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(filepath.Join(root, "internal", "api"), func(path string, d fs.DirEntry, err error) error {
 		switch {
 		case err != nil:
 			return err
-		case d.IsDir() && path == skipDir:
-			return filepath.SkipDir
 		case d.IsDir() || !strings.HasSuffix(path, ".go"):
 			return nil
 		case strings.HasSuffix(path, "_test.go") || path == skipFile:
@@ -205,7 +210,7 @@ func permissionsConsultedByHandlers(t *testing.T, root string) map[authz.Permiss
 		return nil
 	})
 	require.NoError(t, err)
-	require.Positive(t, files, "no production Go under internal was parsed; the walk is wrong")
+	require.Positive(t, files, "no production Go under internal/api was parsed; the walk is wrong")
 
 	out := map[authz.Permission]bool{}
 	for key, ident := range names {

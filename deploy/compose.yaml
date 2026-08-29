@@ -57,6 +57,13 @@ services:
       TOD_TOKEN_PEPPER: ${TOD_TOKEN_PEPPER:?set TOD_TOKEN_PEPPER in .env — see deploy/env.example}
       TOD_SESSION_KEY: ${TOD_SESSION_KEY:?set TOD_SESSION_KEY in .env — see deploy/env.example}
 
+      # First-run setup, at https://$TOD_DEPLOY_HOST/setup. OPTIONAL and unset by default: the
+      # `:-` form means a `.env` with no TOD_SETUP_TOKEN line brings the stack up with the wizard
+      # refusing everybody, which is what an already-administered instance wants. It is `${VAR:-}`
+      # and NOT `${VAR:?}` for exactly that reason — the two secrets above are required forever,
+      # this one is required once and then wants deleting. ADR-0016.
+      TOD_SETUP_TOKEN: ${TOD_SETUP_TOKEN:-}
+
       # Off, and spelled as a literal rather than read from `.env`. The metrics listener is a
       # SECOND listener (canonical §13) and this stack publishes no port for it and gives Traefik
       # no router for it, so turning it on from the host would bind something nothing can reach and

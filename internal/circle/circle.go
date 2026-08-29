@@ -115,6 +115,50 @@ type CreateRequest struct {
 // "tell an owner what they would get" cannot disagree. A new circle that silently accepted the
 // unverifiable provider would be a circle whose revocation is advisory before anybody chose that.
 func (s *Service) Create(ctx context.Context, req CreateRequest) (Circle, error) {
+	return s.create(ctx, req, nil)
+}
+
+// ErrNotFirst is returned by [Service.CreateFirst] when the instance already has a live circle.
+//
+// It is a sentinel rather than a rendered problem because the caller — first-run setup — has a
+// better sentence to say about it than this package does: setup can name the circle it found and
+// tell the operator which field to put it in.
+var ErrNotFirst = errors.New("this instance already has a circle")
+
+// CreateFirst writes a circle only if the instance has none, and returns [ErrNotFirst] if it has.
+//
+// **The count and the insert are one transaction, and that is the whole point of the method.**
+// First-run setup reads the instance's circles to decide whether to create one, and any gap
+// between that read and the write is a gap a second setup run fits inside: two runs each see zero
+// circles, each create one, and the instance ends up with a circle nobody asked for and an owner
+// code for the wrong one. The writing pool is opened `_txlock=immediate` (see internal/store), so
+// BEGIN takes SQLite's write lock — the second caller does not merely re-read, it cannot start
+// until the first has committed or rolled back. That holds across processes, which is the half a
+// mutex in this binary cannot reach.
+//
+// It counts rather than lists, and that is not an optimisation: `ListLiveCircles` returns every
+// circle on the instance and `TestCircleEnumeration_IsReachableOnlyFromTheProjection` confines it
+// to the projection and to `cmd` verbs, because a circle's existence is part of what canonical §7
+// hides. The question here is "any at all", which a number answers.
+func (s *Service) CreateFirst(ctx context.Context, req CreateRequest) (Circle, error) {
+	return s.create(ctx, req, func(ctx context.Context, q *sqlitegen.Queries) error {
+		live, err := q.CountLiveCircles(ctx)
+		if err != nil {
+			return fmt.Errorf("count the instance's circles: %w", err)
+		}
+		if live > 0 {
+			return ErrNotFirst
+		}
+		return nil
+	})
+}
+
+// create is the shared body. `guard` runs inside the transaction, before the insert, and is where
+// a caller puts a condition that has to hold at the moment of the write rather than at the moment
+// it was read.
+func (s *Service) create(
+	ctx context.Context, req CreateRequest, guard func(context.Context, *sqlitegen.Queries) error,
+) (Circle, error) {
 	name, err := validName(req.Name)
 	if err != nil {
 		return Circle{}, err
@@ -135,6 +179,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (Circle, error)
 	}
 
 	err = s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
+		if guard != nil {
+			if txErr := guard(ctx, q); txErr != nil {
+				return txErr
+			}
+		}
 		_, txErr := q.CreateCircle(ctx, sqlitegen.CreateCircleParams{
 			CircleID: id.String(), Name: name, NameNorm: core.Normalise(name),
 			Description: req.Description, Server: string(req.Server), Timezone: timezone,
@@ -162,6 +211,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (Circle, error)
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, ErrNotFirst) {
+			return Circle{}, err
+		}
 		if store.IsUniqueViolation(err) {
 			return Circle{}, apierr.Wrap(apierr.CodeConflict, err,
 				"a circle with that name already exists on that server")

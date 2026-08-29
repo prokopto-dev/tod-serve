@@ -57,10 +57,15 @@ func newServeCommand() *cobra.Command {
 				return fmt.Errorf("%s is required: it signs every browser session", envSessionKey)
 			}
 			metricsToken := core.Secret(os.Getenv(envMetricsToken))
+			// Optional, and its ABSENCE is the safe state: with no setup token the first-run
+			// routes refuse every caller, which is what an instance that has finished setting up
+			// should look like. ADR-0016.
+			setupToken := core.Secret(os.Getenv(envSetupToken))
 			if err := refusePlaceholders(map[string]core.Secret{
 				envTokenPepper:  pepper,
 				envSessionKey:   sessionKey,
 				envMetricsToken: metricsToken,
+				envSetupToken:   setupToken,
 			}); err != nil {
 				return err
 			}
@@ -82,7 +87,9 @@ func newServeCommand() *cobra.Command {
 				return fmt.Errorf("%w: run `tod-serve migrate` first", err)
 			}
 
-			svc, err := wire(ctx, db, log, pepper, sessionKey)
+			// The empty join URL means "resolve it": $TOD_SPA_JOIN_URL, then $TOD_PUBLIC_URL,
+			// then the instance row, and an error naming all three rather than a guess.
+			svc, err := wire(ctx, db, log, pepper, sessionKey, "")
 			if err != nil {
 				return err
 			}
@@ -117,6 +124,8 @@ func newServeCommand() *cobra.Command {
 					Enabled: os.Getenv(envMetricsEnabled) == "true",
 					Token:   metricsToken,
 				},
+				Setup:      svc.setup,
+				SetupToken: api.SetupConfig{Token: setupToken},
 			})
 			if err != nil {
 				return err

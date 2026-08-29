@@ -10,10 +10,13 @@
 # hardening — read-only root, no capabilities, no new privileges, uid 65532 — is identical, because
 # none of it depends on there being a proxy in front.
 #
-#   cp deploy/env.example .env        # then fill in the two secrets; `serve` refuses the placeholders
+#   cp deploy/env.example .env        # then fill in the secrets; `serve` refuses the placeholders
 #   docker compose -f deploy/compose.local.yaml run --rm tod-serve migrate
-#   docker compose -f deploy/compose.local.yaml run --rm tod-serve init --name "…" --circle "…" --server blue
 #   docker compose -f deploy/compose.local.yaml up -d
+#
+# then open http://localhost:8080/setup and paste TOD_SETUP_TOKEN. One form creates the instance,
+# the identity provider, the first circle and the raid-target catalogue, and hands back a one-time
+# owner code — there is no `init` and no `seed targets` to run. ADR-0016.
 #
 # ONE THING TO KNOW BEFORE YOU USE THE CONSOLE OVER PLAIN HTTP: the browser session cookie is
 # `__Host-` prefixed and unconditionally `Secure` (internal/auth/session.go). What that means for
@@ -48,6 +51,10 @@ services:
 
       TOD_TOKEN_PEPPER: ${TOD_TOKEN_PEPPER:?set TOD_TOKEN_PEPPER in .env — see deploy/env.example}
       TOD_SESSION_KEY: ${TOD_SESSION_KEY:?set TOD_SESSION_KEY in .env — see deploy/env.example}
+      # Optional, and unset unless you put it in `.env`: it authorises the first-run wizard at
+      # <TOD_PUBLIC_URL>/setup and nothing else. `deploy/smoke.sh` sets it, because driving that
+      # wizard is how the walkthrough is executed rather than described.
+      TOD_SETUP_TOKEN: ${TOD_SETUP_TOKEN:-}
       TOD_METRICS_ENABLED: "false"
 
     volumes:

@@ -20,6 +20,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
 	"github.com/prokopto-dev/tod-serve/internal/projection"
+	"github.com/prokopto-dev/tod-serve/internal/setup"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/tod"
 )
@@ -42,6 +43,7 @@ type services struct {
 	catalogue *catalogue.Service
 	tods      *tod.Service
 	states    *projection.Service
+	setup     *setup.Service
 }
 
 // identityConfig builds the configuration `identity.New` is given.
@@ -109,8 +111,13 @@ func dataServices(db *store.DB, clk clock.Clock, ids *core.Generator, log *slog.
 // exactly one spelling of that hash in the process. Two spellings would let the OAuth flow resolve
 // one invite and redemption resolve another, and the failure would look like an expired invite
 // rather than like a bug.
+// spaJoin is where the OAuth callback sends a browser once it holds a ticket. An EMPTY one is
+// resolved from the environment and then from the instance row, which is what `serve` passes; a
+// caller that already knows the answer — a test standing an instance up before any row exists —
+// passes it, so this function reads no environment on its behalf.
 func wire(
 	ctx context.Context, db *store.DB, log *slog.Logger, pepper, sessionKey core.Secret,
+	spaJoin string,
 ) (*services, error) {
 	clk := clock.System{}
 	ids := core.NewGenerator(rand.Reader)
@@ -143,12 +150,13 @@ func wire(
 	if err != nil {
 		return nil, err
 	}
-	spaJoinURL, err := spaJoinURL(ctx, db)
-	if err != nil {
-		return nil, err
+	if spaJoin == "" {
+		if spaJoin, err = spaJoinURL(ctx, db); err != nil {
+			return nil, err
+		}
 	}
 	identities, err := identity.New(
-		identityConfig(identityStore, clients, clk, ids, spaJoinURL, log))
+		identityConfig(identityStore, clients, clk, ids, spaJoin, log))
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +167,11 @@ func wire(
 	}
 	members, err := membership.New(membership.Config{
 		Store: db, Clock: clk, IDs: ids, Minter: minter, Identity: identities,
-		Log: log, Entropy: rand.Reader,
+		// The ledger, so that redeeming the bootstrap owner code on an instance nobody
+		// administers grants that identity `instance.owner` in the join's own transaction —
+		// ADR-0016. It is the same service the authenticator reads grants from.
+		Grants: grants,
+		Log:    log, Entropy: rand.Reader,
 	})
 	if err != nil {
 		return nil, err
@@ -168,11 +180,22 @@ func wire(
 	if err != nil {
 		return nil, err
 	}
+	// First-run setup composes the services above rather than reaching past them, which is what
+	// makes the wizard and `tod-serve init` write the same rows through the same validation —
+	// ADR-0016. It holds no credential material of its own: what authorises it is
+	// `TOD_SETUP_TOKEN` at the edge, and the absence of an administrator in the ledger.
+	first, err := setup.New(setup.Config{
+		Store: db, Circles: circles, Invites: invites, Identities: identities,
+		Catalogue: catalogues, Clock: clk, Log: log,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	return &services{
 		store: db, clock: clk, ids: ids, log: log, minter: minter, codec: codec,
 		authn: authn, grants: grants, identity: identities, circles: circles, invites: invites,
-		members: members, catalogue: catalogues, tods: tods, states: states,
+		members: members, catalogue: catalogues, tods: tods, states: states, setup: first,
 	}, nil
 }
 
@@ -223,8 +246,14 @@ func spaJoinURL(ctx context.Context, db *store.DB) (string, error) {
 	if err != nil && !store.IsNotFound(err) {
 		return "", fmt.Errorf("read the instance row: %w", err)
 	}
+	// Named in the order an operator should try them. `$TOD_PUBLIC_URL` is FIRST because it is what
+	// the shipped compose files set and what the first-run wizard prefills its form from: an
+	// instance meant to be set up in the browser has to boot before there is any row to read one
+	// from, so this is part of the `.env` step rather than something setup can supply. `init`
+	// remains listed because it is still the way back when nobody can sign in.
 	return "", fmt.Errorf(
-		"this instance has no public URL: run `tod-serve init --public-url …`, or set $%s or $%s",
+		"this instance has no public URL: set $%s (or $%s) before starting, "+
+			"or run `tod-serve init --public-url …`",
 		envPublicURL, envSPAJoinURL)
 }
 

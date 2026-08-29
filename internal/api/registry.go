@@ -29,6 +29,8 @@ func (o OperationID) String() string { return string(o) }
 // The operation ids, in the order docs/design/02-api-design.md lists them.
 const (
 	OpGetServerMeta          OperationID = "getServerMeta"
+	OpGetSetupState          OperationID = "getSetupState"
+	OpRunSetup               OperationID = "runSetup"
 	OpListIdentityProviders  OperationID = "listIdentityProviders"
 	OpCreateAuthorizationURL OperationID = "createAuthorizationURL"
 	OpCompleteAuthorization  OperationID = "completeAuthorization"
@@ -104,6 +106,17 @@ const (
 	// AuthMetricsToken is `TOD_METRICS_TOKEN` on the separate metrics listener. It is never gated
 	// by a PAT scope and never reaches the authz catalogue at all — canonical §13.
 	AuthMetricsToken Auth = "metrics_token"
+	// AuthSetupToken is `TOD_SETUP_TOKEN`, and it reaches first-run setup and nothing else.
+	//
+	// It is a kind here rather than a check inside a handler for the same reason every other kind
+	// is: the middleware resolves it before any handler runs, the OpenAPI document publishes a
+	// scheme for it rather than calling the operation public, and [SetupRoutes] is what the three
+	// refusal tests walk — so a second setup route cannot be added uncovered. ADR-0016.
+	//
+	// It authenticates NO PRINCIPAL. There is nobody to be on a fresh database, which is the
+	// whole problem first-run setup exists to solve, so a route carrying this kind reaches no
+	// permission, no circle and no membership.
+	AuthSetupToken Auth = "setup_token"
 )
 
 // Idempotency says who replays a retry of a state-creating POST.
@@ -246,7 +259,7 @@ func (r Route) SessionOnly() bool {
 	switch r.Auth {
 	case AuthPermission, AuthSelf:
 		return !r.AnyScope && len(r.Scopes) == 0
-	case AuthPublic, AuthMetricsToken:
+	case AuthPublic, AuthMetricsToken, AuthSetupToken:
 		return false
 	default:
 		return false
@@ -283,6 +296,28 @@ func routes() []Route {
 			ID: OpGetServerMeta, Method: http.MethodGet, Path: "/meta", Versioned: true,
 			Auth:    AuthPublic,
 			Summary: "Version, API versions, feature flags, and whether self-service circle creation is on",
+		},
+		{
+			ID: OpGetSetupState, Method: http.MethodGet, Path: "/setup", Versioned: true,
+			Auth:    AuthSetupToken,
+			Summary: "What first-run setup has to work with: the instance row, providers, circles and catalogue",
+		},
+		{
+			ID: OpRunSetup, Method: http.MethodPost, Path: "/setup", Versioned: true,
+			Auth: AuthSetupToken, CreatesState: true, Idempotency: IdempotencyHandler,
+			// `Idempotency-Key` is required and validated at the edge, like every other operation
+			// that creates state: `routeMiddleware` reaches its handler through one tail, so the
+			// branch that resolves no principal cannot skip it.
+			//
+			// `IdempotencyHandler` says what happens after that, and it is NOT a replay. There is
+			// no `idempotency_record` to key on — that table's `principal_membership_id` is NOT
+			// NULL and setup has no principal at all — and the response could not be reproduced
+			// from the database anyway, because the owner code is held only as a hash. What the
+			// handler owns instead is convergence: every step is create-if-absent and a second
+			// circle is refused outright, so a retry of a lost response mints nothing and is told
+			// which field resumes the run.
+			// `TestRunSetup_ARepeatedRequest_MintsNoSecondOwnerCode` is that promise.
+			Summary: "Create the instance, its first provider and its first circle, and return a one-time owner code",
 		},
 		{
 			ID: OpListIdentityProviders, Method: http.MethodGet, Path: "/identity-providers",
@@ -717,6 +752,19 @@ func InviteOracleRoutes() []Route {
 	var out []Route
 	for _, r := range routes() {
 		if r.InviteOracle {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// SetupRoutes returns every route authorised by `TOD_SETUP_TOKEN` — the set the three first-run
+// refusals are driven over, so a second setup route cannot be added without being covered by all
+// of them. It is the same shape as [CircleScopedRoutes] and the tenancy gate over it.
+func SetupRoutes() []Route {
+	var out []Route
+	for _, r := range routes() {
+		if r.Auth == AuthSetupToken {
 			out = append(out, r)
 		}
 	}

@@ -115,6 +115,8 @@ func permissionCell(r api.Route) string {
 		return "self"
 	case api.AuthMetricsToken:
 		return "`TOD_METRICS_TOKEN`"
+	case api.AuthSetupToken:
+		return "`TOD_SETUP_TOKEN`"
 	default:
 		names := make([]string, 0, len(r.Permissions))
 		for _, p := range r.Permissions {
