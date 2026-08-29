@@ -336,3 +336,96 @@ func TestTenancy_ATimerOverride_OfAnotherCircle_IsInvisible(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(stillTheirs.Body), &theirPage))
 	require.Len(t, theirPage.Items, 1, "the other circle's override was removed by a 404")
 }
+
+// A cross-circle id does not have to arrive in the PATH. It can arrive in a body or a query
+// string, where the tenancy middleware never looks: `checkTenancy` reads `circle_id` out of the
+// path and compares it, and every other identifier in the request is the handler's problem.
+//
+// These are the three the API accepts today. Each is a caller-supplied reference to a
+// circle-scoped row, on a route whose own circle is the caller's — so the middleware passes and
+// the only thing left is whether the read behind it names the tenant.
+func TestTenancy_ACrossCircleIDInABodyOrQuery_ReachesNothing(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	mine := h.seedCircle("Mine")
+	owner := h.seedMember(mine, authz.RoleOwner)
+	session := h.session(owner, true)
+	token := h.seedToken(owner, allScopes()...)
+
+	theirs := h.seedCircle("Theirs")
+	theirsOwner := h.seedMember(theirs, authz.RoleOwner)
+	theirsToken := h.seedToken(theirsOwner, allScopes()...)
+	target := h.seedTarget("Lady Vox", "Permafrost")
+
+	// A real report in the other circle, so the reporter filter below has something it could
+	// wrongly return.
+	report := h.do(request{
+		Method: http.MethodPost, Path: reportsPath(theirs), Token: theirsToken,
+		Headers: map[string]string{api.IdempotencyKeyHeader: "theirs"},
+		Body:    reportBody(target, fixtureNow.Add(-2*60*60*1_000_000)),
+	})
+	require.Equal(t, http.StatusOK, report.Status, report.Body)
+
+	t.Run("createServiceMember owned by another circle's human", func(t *testing.T) {
+		t.Parallel()
+		// `owner_membership_id` is NOT NULL for a service membership so the audit always names a
+		// responsible human. Naming somebody else's human would put a bot in my circle whose
+		// answerable person is in a circle I cannot see — and whose revocation, in a circle whose
+		// officers have never heard of this bot, would silently kill my token.
+		got := h.do(request{
+			Method: http.MethodPost, Path: circlePath(mine) + "/service-members",
+			Session: session,
+			Headers: map[string]string{api.IdempotencyKeyHeader: "cross-owner"},
+			Body: `{"display_name":"parser","owner_membership_id":"` +
+				theirsOwner.String() + `"}`,
+		})
+		require.Equal(t, http.StatusUnprocessableEntity, got.Status, got.Body)
+		require.Equal(t, apierr.CodeValidationFailed, got.Problem.Code,
+			"a bot was accepted with an owner from another circle")
+	})
+
+	t.Run("listTodReports filtered by another circle's reporter", func(t *testing.T) {
+		t.Parallel()
+		// A filter, not a path segment, so a 404 would be the wrong answer: the request is
+		// well-formed and the honest reply is that my circle holds no such reports. What must not
+		// happen is the other circle's report coming back.
+		got := h.do(request{
+			Method: http.MethodGet, Token: token,
+			Path: reportsPath(mine) + "?reporter_membership_id=" + theirsOwner.String(),
+		})
+		require.Equal(t, http.StatusOK, got.Status, got.Body)
+		var page api.Page[map[string]any]
+		require.NoError(t, json.Unmarshal([]byte(got.Body), &page))
+		require.Empty(t, page.Items,
+			"filtering my circle's report log by another circle's reporter returned %d rows",
+			len(page.Items))
+	})
+
+	t.Run("retractTodReport of another circle's report", func(t *testing.T) {
+		t.Parallel()
+		// The report id is in the path here, and it is covered by the loop above. What this adds
+		// is the CONSEQUENCE: the other circle's log is unchanged afterwards. A retraction is an
+		// append, so a leak here would be a write into somebody else's append-only log.
+		before := h.do(request{
+			Method: http.MethodGet, Path: reportsPath(theirs), Token: theirsToken,
+		})
+		require.Equal(t, http.StatusOK, before.Status, before.Body)
+
+		var reported api.TodReportResponse
+		require.NoError(t, json.Unmarshal([]byte(report.Body), &reported))
+		got := h.do(request{
+			Method: http.MethodPost, Token: token,
+			Path:    reportsPath(mine) + "/" + reported.ID.String() + "/retract",
+			Headers: map[string]string{api.IdempotencyKeyHeader: "cross-retract"},
+			Body:    `{"reason":"not mine to retract"}`,
+		})
+		require.Equal(t, http.StatusNotFound, got.Status, got.Body)
+
+		after := h.do(request{
+			Method: http.MethodGet, Path: reportsPath(theirs), Token: theirsToken,
+		})
+		require.Equal(t, before.Body, after.Body,
+			"the other circle's append-only report log changed after a cross-circle retraction")
+	})
+}
