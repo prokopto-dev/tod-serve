@@ -112,4 +112,54 @@ else
   report DOC002 "docs/concepts/invariants.md is missing; it is where every gate is registered"
 fi
 
+# --- DOC003 — every gate invariants.md NAMES actually exists ----------------------------------
+# The reverse of DOC002, and the direction nothing checked until three phantoms were found by hand:
+# `SQL002`, `scripts/licence-gate.sh` and `TestAuthFlow_RateLimitedCaller_CreatesNoRows` were all
+# named as enforcement, all believed, and all absent. DOC002 polices gate-to-doc; without this,
+# doc-to-gate was policed by nobody, so invariants.md could promise a mechanism that does not exist
+# and CI stayed green.
+#
+# DOC001 is NOT this check despite the name suggesting a pair — it compares docs/errors/ against the
+# error codes in the API design and never looks at a gate id.
+#
+# Only BACKTICKED ids count. A gate id in this repository is always written `LIKE001` in prose, so
+# a backtick is the marker for "this gate exists" — which is what lets invariants.md discuss a
+# DEAD id (SQL002, written bare) without the gate treating it as a live claim. The
+# algorithm names below are skipped because they share the shape and are not gates; the list is
+# deliberately short, and adding to it is a decision somebody has to make on purpose.
+NOT_GATES='SHA256 SHA384 SHA512 RS256 RS384 RS512 ES256 ES384 ES512 PS256 PS384 PS512 HS256 HS384 HS512'
+
+# Overridable so test/repo can point this at a page that names a gate nobody wrote and require the
+# finding — the same seam the SQL gates in repo-gates.sh take a directory for.
+INVARIANTS_PAGE="${TOD_INVARIANTS_PAGE:-docs/concepts/invariants.md}"
+
+if [ -f "$INVARIANTS_PAGE" ]; then
+  named=$(grep -ohE '`[A-Z]{2,10}[0-9]{3}`' "$INVARIANTS_PAGE" \
+          | tr -d '`' | sort -u)
+  if [ -z "$named" ]; then
+    report DOC003 "no gate ids were parsed out of $INVARIANTS_PAGE; the pattern is wrong"
+  else
+    # Every place a gate id is DEFINED. Three, because the gates live in three shapes: a shell
+    # report, a can-fail test in test/repo, and an AST rule id in internal/repogate.
+    defined=$( { grep -ohE '(report|pass|vacant) [A-Z]+[0-9]{3}' scripts/*.sh
+                 grep -ohE 'func Test[A-Z]+[0-9]{3}_' test/repo/*.go 2>/dev/null
+                 grep -ohE '"[A-Z]+[0-9]{3}"' internal/repogate/*.go 2>/dev/null
+               } | grep -oE '[A-Z]+[0-9]{3}' | sort -u )
+    missing=""; n=0
+    for g in $named; do
+      case " $NOT_GATES " in *" $g "*) continue ;; esac
+      n=$((n + 1))
+      echo "$defined" | grep -qx "$g" || missing="$missing  $g\n"
+    done
+    if [ -n "$missing" ]; then
+      report DOC003 "$INVARIANTS_PAGE names a gate that is defined in no script, test/repo test or repogate rule:"
+      printf "%b" "$missing"
+    else
+      pass DOC003 "$n gate(s) named in $INVARIANTS_PAGE, each one that actually exists"
+    fi
+  fi
+else
+  report DOC003 "$INVARIANTS_PAGE is missing; it is where every gate is registered"
+fi
+
 exit $fail
