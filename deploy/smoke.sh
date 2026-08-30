@@ -421,5 +421,32 @@ if grep -qi '^strict-transport-security:' "$WORK/tls.headers"; then
 fi
 ok "the console is served over TLS with its own headers, and no HSTS"
 
+# --- post-deploy: the shipped image can run the maintenance verbs it ships ------------------------
+# NOT a step of a first deploy, and deliberately after the walkthrough rather than inside it —
+# nobody sweeps a database they installed ninety seconds ago. It is here because this script is the
+# only place anything runs in the SHIPPED environment: FROM scratch, no shell, read-only root, uid
+# 65532, /tmp a 64m tmpfs, the database on a named volume. `internal/sweep`'s tests drive this same
+# cobra command against real SQLite on a developer machine, which proves the logic and proves
+# nothing about whether the binary can take a write lock as that uid under that root filesystem.
+#
+# `exec` on the RUNNING container rather than `run --rm`, for the reason the backup above uses it:
+# the sweep is scheduled from cron against a LIVE instance, so a server holding the same database
+# open is the contention it has to survive, not an aside. Absolute path for the same reason too —
+# `docker exec` does not apply the ENTRYPOINT and there is no shell to find it.
+#
+# **It deletes nothing here, and that is still the assertion worth making.** Every row this run
+# created is minutes old and the grace period is 24 hours. The write pool opens `_txlock=immediate`
+# (see `store.dsn`), so the sweep's transaction takes the write lock at BEGIN whether or not a row
+# matches: a reported zero means the binary opened the volume read-write, held the lock against a
+# live server and committed. What it does NOT prove is a large delete, which nothing but a
+# long-lived instance can produce — that is left to the unit tests, which seed the rows.
+"${COMPOSE[@]}" exec -T tod-serve /usr/local/bin/tod-serve sweep > "$WORK/sweep.txt" \
+  || { cat "$WORK/sweep.txt"; die "the shipped image could not run the sweep verb"; }
+# The counts, not merely the exit code: a sweep that ran and said nothing is the failure
+# internal/sweep exists to prevent, and it would be invisible to a status check.
+grep -q 'swept 0 expired rows' "$WORK/sweep.txt" \
+  || { cat "$WORK/sweep.txt"; die "the sweep did not report its counts"; }
+ok "the shipped image runs tod-serve sweep against the live database"
+
 PASSED=1
 printf '\n\033[32msmoke passed\033[0m  %s\n' "$IMAGE"

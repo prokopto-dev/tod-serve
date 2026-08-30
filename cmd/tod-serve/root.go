@@ -77,6 +77,7 @@ func newRootCommand() *cobra.Command {
 		newHealthcheckCommand(),
 		newRebuildStatesCommand(),
 		newVerifyStatesCommand(),
+		newSweepCommand(),
 	)
 	return root
 }

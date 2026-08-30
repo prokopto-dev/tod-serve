@@ -139,6 +139,7 @@ For a real deployment — a droplet, Traefik, GHCR and an approved deploy —
 | [Invariants](docs/concepts/invariants.md) | Every rule and the mechanism that enforces it |
 | [Deploying](docs/operations/deployment.md) | The droplet, the two workflows, and what is deliberately not covered |
 | [Backups](docs/operations/backup.md) | Taking one, checking it, and restoring — the only undo there is |
+| [Maintenance](docs/operations/maintenance.md) | The two scheduled jobs, and why only one of them is an alert |
 | [Discord app](docs/operations/discord-app.md) | Registering your own, and what a removed role does not do |
 
 ## Contributing
