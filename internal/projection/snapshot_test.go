@@ -196,10 +196,12 @@ func TestBoard_ATimerCommittingMidRender_NeverPairsAWindowWithADiedAtFromAnother
 //
 // `getTargetState` is where this is observable, and that is not a coincidence: it re-derives from
 // the report log on every call, so the flag it renders and the derivation beside it are produced
-// microseconds apart. The board reads a CACHED row, and nothing recomputes that row when the flag
-// flips — a separate and larger defect, tracked at
-// https://github.com/prokopto-dev/tod-serve/issues/21, which no snapshot can close because there
-// is no torn read: the row on disk is simply wrong.
+// microseconds apart. The board reads a CACHED row, which is a separate defect and was issue #21:
+// the flip recomputed nothing, so the row on disk was simply wrong and no snapshot could close it.
+// `catalogue.Update` now pushes [projection.Service.OnQuakeTargetChange] inside its own
+// transaction, which is why the flips below are doing instance-wide recomputations as well as
+// racing this read. TestQuakeTargetFlip_TheBoardAndTheDetailPage_Agree is that gate; this one is
+// still about the torn read, which the push does not address.
 func TestGetTargetState_AQuakeFlagFlippingMidRead_NeverRendersItAgainstTheOtherDerivation(
 	t *testing.T,
 ) {
@@ -327,7 +329,8 @@ func (t *timerFlips) stop() {
 // [timerFlips.stop]. Continuous for the reason [fixture.flipTimerContinuously] gives.
 //
 // **It is `catalogue.Update`, not a bare UPDATE**, because the point is that a supported write
-// path moves a derivation input in a transaction of its own.
+// path moves a derivation input in a transaction of its own — and, since issue #21, recomputes
+// every board on the instance inside that same transaction.
 func (f *fixture) flipQuakeFlagContinuously(target catalogue.Target) *timerFlips {
 	flips := &timerFlips{
 		failure:  make(chan error, 1),
@@ -346,7 +349,7 @@ func (f *fixture) flipQuakeFlagContinuously(target catalogue.Target) *timerFlips
 			on := quake
 			quake = !quake
 			if _, err := f.catalogue.Update(f.t.Context(), target.ID,
-				catalogue.UpdateRequest{IsQuakeTarget: &on}); err != nil {
+				catalogue.UpdateRequest{IsQuakeTarget: &on}, f.states); err != nil {
 				flips.failure <- err
 				return
 			}

@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -530,4 +531,78 @@ func TestPutCircleTimerOverride_WhenTheProjectionsOwnWriteIsRefused_TheOverrideI
 		})
 	require.True(t, store.IsNotFound(err),
 		"the override survived a transaction that could not write the board derived from it")
+}
+
+// TestUpdateRaidTarget_OnlyAQuakeFlagFlip_PushesTheInvalidation is the route half of issue #21.
+//
+// `updateRaidTarget` moves no window, so it carries no `InvalidatesTimer` and the two registry
+// gates above do not reach it. It moves something else: `is_quake_target` is copied onto every
+// [consensus.Timer] the resolve ladder returns, so flipping it decides whether a kill before the
+// latest quake still counts — in every circle on the instance, with nothing appended to the report
+// log to say so. Before this the route pushed nothing, and the board and `getTargetState`
+// disagreed about the same mob until something unrelated recomputed the row.
+//
+// Both directions are here for the reason the service-level table cannot cover from the edge: a
+// push on every update would fan a recomputation out over the whole instance whenever somebody
+// fixed a typo in a mob's name, under the write lock, writing `timer_change` onto boards that did
+// not move.
+func TestUpdateRaidTarget_OnlyAQuakeFlagFlip_PushesTheInvalidation(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedCatalogue()
+	reader, circleID := h.catalogueReader()
+	owner := h.seedMember(circleID, authz.RoleOwner)
+	h.grantInstance(owner, authz.PermissionCatalogueManage)
+	session := h.session(owner, true)
+	id := h.resolveTargetID(reader, "Lord Nagafen")
+	path := api.BasePath + "/raid-targets/" + id
+
+	patch := func(body string) response {
+		return h.do(request{
+			Method: http.MethodPatch, Path: path, Session: session,
+			Headers: map[string]string{api.IfMatchHeader: "*"}, Body: body,
+		})
+	}
+	flagOf := func() int64 {
+		row, err := h.store.Queries().GetRaidTarget(t.Context(), id)
+		require.NoError(t, err)
+		return row.IsQuakeTarget
+	}
+
+	// Identity, not derivation. A rename moves no board.
+	h.invalidator.reset()
+	renamed := patch(`{"zone": "Somewhere Else"}`)
+	require.Equal(t, http.StatusOK, renamed.Status, renamed.Body)
+	require.Empty(t, h.invalidator.recorded(),
+		"a re-zoning recomputed every board on the instance, under the write lock, and wrote "+
+			"timer_change onto answers that did not change")
+
+	flipped := flagOf() == 0
+	h.invalidator.reset()
+	got := patch(fmt.Sprintf(`{"is_quake_target": %t}`, flipped))
+	require.Equal(t, http.StatusOK, got.Status, got.Body)
+
+	pushed := h.invalidator.recorded()
+	require.Len(t, pushed, 1,
+		"the flag moved and the projection was not told, so every circle that has reported this "+
+			"target keeps a board derived under the old flag")
+	require.Equal(t, "quake_target", pushed[0].Scope,
+		"a raid_target is instance-wide and carries no server, so this is neither of the two "+
+			"timer fan-outs")
+	require.Equal(t, id, pushed[0].Target.String())
+
+	// And the write is the invalidation's to lose. This is the edge's copy of ADR-0013's
+	// property: a push that fails takes the flag with it, so the retry finds the old value and
+	// does both again — rather than leaving a flipped flag whose boards nothing will recompute.
+	was := flagOf()
+	h.invalidator.failWith(errors.New("the projection is unreachable"))
+	h.invalidator.reset()
+	failed := patch(fmt.Sprintf(`{"is_quake_target": %t}`, !flipped))
+	require.GreaterOrEqual(t, failed.Status, http.StatusInternalServerError,
+		"the flip was reported as written while no board behind it was recomputed: %s", failed.Body)
+	require.Len(t, h.invalidator.recorded(), 1,
+		"the request failed before it reached the push, so this ran the wrong experiment")
+	require.Equal(t, was, flagOf(),
+		"the flag kept its new value after the invalidation failed; nothing recomputed the "+
+			"boards derived from it and nothing ever will until the nightly job")
 }

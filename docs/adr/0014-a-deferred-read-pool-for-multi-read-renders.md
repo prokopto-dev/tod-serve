@@ -49,7 +49,7 @@ it exists to replace.
 **What it does not close.** A snapshot is reads: everything here writes what it derived *after* the
 snapshot ends, so a timer committing in that gap leaves a row derived under a window that has moved.
 Unchanged from before, and recorded as `DerivedWriteFollowsItsSnapshot`. Nor does it touch a row simply WRONG on
-disk — issue #21.
+disk (issue #21, since closed).
 
 **Mechanisms.** `TestInReadSnapshot_AWriteCommittedWhileItIsOpen_IsNotVisibleInsideIt` is the
 isolation; `TestInReadSnapshot_HoldsNoWriteLock_SoAConcurrentWriteCommits` the concurrency this was

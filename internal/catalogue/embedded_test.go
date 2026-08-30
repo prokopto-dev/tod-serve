@@ -167,7 +167,7 @@ func TestSeedTargets_ATargetTheOperatorEdited_IsLeftAlone(t *testing.T) {
 	edited, err := f.svc.Update(t.Context(), vulak.Target.ID, catalogue.UpdateRequest{
 		Zone:  ptr("Temple of Veeshan, top floor"),
 		State: ptr(schemaenum.RaidTargetStateRetired),
-	})
+	}, f.inv)
 	require.NoError(t, err)
 
 	report := f.seedEmbedded()
@@ -285,7 +285,7 @@ func TestNamespace_ANameAndAnAlias_CannotBeTheSameSpelling(t *testing.T) {
 				other := f.target("Lady Vox", "Permafrost Caverns")
 				_, err := f.svc.Update(t.Context(), other.ID, catalogue.UpdateRequest{
 					Name: ptr("Naggy"),
-				})
+				}, f.inv)
 				return err
 			},
 			code: apierr.CodeConflict,
@@ -332,14 +332,14 @@ func TestNamespace_ReplacingATargetsOwnAliases_IsNotACollisionWithItself(t *test
 
 	got, err := f.svc.Update(t.Context(), target.ID, catalogue.UpdateRequest{
 		Aliases: &[]string{"Naggy", "Nagafen", "Nag"},
-	})
+	}, f.inv)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"Naggy", "Nagafen", "Nag"}, got.Aliases)
 
 	// And re-sending the identical set, which is what a client that PATCHes a read does.
 	same, err := f.svc.Update(t.Context(), target.ID, catalogue.UpdateRequest{
 		Aliases: &[]string{"Naggy", "Nagafen", "Nag"},
-	})
+	}, f.inv)
 	require.NoError(t, err)
 	require.ElementsMatch(t, got.Aliases, same.Aliases)
 }

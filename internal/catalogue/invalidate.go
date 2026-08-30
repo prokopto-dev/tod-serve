@@ -9,7 +9,12 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 )
 
-// TimerInvalidator is told, INSIDE the transaction that moved a respawn window, that it moved.
+// TimerInvalidator is told, INSIDE the transaction that moved a derivation, that it moved.
+//
+// Three of the four writes that reach it move a respawn WINDOW, which is what named it. The fourth
+// -- `is_quake_target` on the target row -- moves the derivation without moving a window, and is
+// pushed through the same port because it needs the same thing: the recomputation committing with
+// the write or not at all. See [TimerInvalidator.OnQuakeTargetChange].
 //
 // It is the fifth `target_state.change_reason` given a caller. The other four are read back off
 // the report log, which is what lets invalidation be a DELETE inside the writing transaction: the
@@ -68,6 +73,29 @@ type TimerInvalidator interface {
 	OnCatalogueTimerChange(
 		ctx context.Context, q *sqlitegen.Queries,
 		server core.Server, targetID core.RaidTargetID,
+	) error
+	// OnQuakeTargetChange recomputes one target for EVERY live circle on the instance, on every
+	// server, and skips none of them.
+	//
+	// It is the third method for the same reason there is a second: the caller knows what it did,
+	// and what it did here is wider than either of the others. `raid_target.is_quake_target` is
+	// not a window and is not per-server -- it is a column on the instance-wide target row, copied
+	// onto the resolved [consensus.Timer] by every rung of the ladder -- so flipping it moves the
+	// derivation for every circle that has reported that target, on every server at once.
+	//
+	// **And it must not skip the circles that hold an override.** That skip is right for
+	// [TimerInvalidator.OnCatalogueTimerChange], whose write genuinely does not reach a circle
+	// that disagreed with the catalogue. It would be exactly wrong here: an override replaces the
+	// WINDOW and never the flag, so `timerOf` stamps the new `is_quake_target` onto an overridden
+	// timer just as it does onto a catalogue one, and skipping those circles would leave the
+	// boards of everyone who had tracked a mob themselves holding the stale answer.
+	//
+	// The reason recorded is `timer_change`, which is honest rather than approximate:
+	// `IsQuakeTarget` is a field of [consensus.Timer], so the timer the derivation ran under is
+	// what changed. A sixth `target_state.change_reason` would say the same thing in a new enum
+	// value, a migration and a regenerated CHECK list.
+	OnQuakeTargetChange(
+		ctx context.Context, q *sqlitegen.Queries, targetID core.RaidTargetID,
 	) error
 }
 

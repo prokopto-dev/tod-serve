@@ -317,12 +317,19 @@ func (s *Server) registerRaidTargets() error {
 				if err = RequireIfMatch(in.IfMatch, current); err != nil {
 					return nil, err
 				}
+				// `is_quake_target` is a derivation input and not identity: it is copied onto
+				// the resolved timer and decides whether a kill before the latest quake still
+				// counts. A flip therefore moves the answer for every circle that has reported
+				// this target, on every server, with nothing appended anywhere to say so — so the
+				// projection is told INSIDE the write's own transaction, exactly as a moved
+				// window is. The service pushes only when the flag actually changes; a rename
+				// moves no derivation. See [catalogue.TimerInvalidator] and issue #21.
 				if _, err = s.cfg.Catalogue.Update(ctx, id, catalogue.UpdateRequest{
 					Name: in.Body.Name, Zone: in.Body.Zone,
 					Expansion: in.Body.Expansion, Category: in.Body.Category,
 					IsQuakeTarget: in.Body.IsQuakeTarget, State: in.Body.State,
 					Aliases: in.Body.Aliases,
-				}); err != nil {
+				}, s.cfg.Invalidator); err != nil {
 					return nil, err
 				}
 				view, err := s.targetResponse(ctx, id)

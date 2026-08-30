@@ -252,7 +252,7 @@ func TestResolve_ARetiredTarget_KeepsItsExactNameAndLeavesTheFuzzyRungs(t *testi
 
 	_, err := f.svc.Update(t.Context(), retired.ID, catalogue.UpdateRequest{
 		State: ptr(schemaenum.RaidTargetStateRetired),
-	})
+	}, f.inv)
 	require.NoError(t, err)
 
 	byName, err := f.svc.Resolve(t.Context(), catalogue.Ref{Name: "Sontalak Minor"})
