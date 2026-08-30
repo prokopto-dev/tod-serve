@@ -622,13 +622,22 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     env002=1
   fi
 
-  # A secret assigned a real-looking literal, in any tracked file. The value must be 16+ characters
-  # and must not start with `$` (deploy/smoke.sh's `$(openssl …)`, the compose interpolations),
-  # `<` (this repository's documentation placeholders) or be a `CHANGE_ME_` placeholder — every one
-  # of those exclusions is a line that exists here today.
-  secrets=$(git ls-files -z \
-    | xargs -0 grep -InE '(TOD_TOKEN_PEPPER|TOD_SESSION_KEY|TOD_SETUP_TOKEN|TOD_METRICS_TOKEN)="?[^ "$<]{16,}' \
-    | grep -v 'CHANGE_ME' || true)
+  # A secret assigned a real-looking literal, in any tracked file. BOTH spellings an assignment
+  # takes here: `NAME=VALUE`, the dotenv and shell form, and `NAME: VALUE`, the Compose form. The
+  # compose files are the ones that actually name these variables, so an equals-only check would
+  # miss a secret hardcoded where the interpolation belongs — the likeliest way one gets committed
+  # in a repository whose deployment is two YAML files.
+  #
+  # The two are matched differently and have to be. After `=` any 16+ character token that is not a
+  # `CHANGE_ME_` placeholder, a `$`-interpolation (deploy/smoke.sh's `$(openssl …)`) or a
+  # `<PLACEHOLDER>` is a finding, because nothing writes `NAME=` except an assignment. After `:`
+  # the value must also LOOK generated — base64 or hex, whole token — because `NAME: words` is how
+  # English writes a label: docs/operations/getting-started.md quotes an error message reading
+  # `…environment.TOD_TOKEN_PEPPER: required variable`, and a bare length rule would fire on it.
+  names='TOD_TOKEN_PEPPER|TOD_SESSION_KEY|TOD_SETUP_TOKEN|TOD_METRICS_TOKEN'
+  secrets=$( { git ls-files -z | xargs -0 grep -InE "($names)=\"?[^ \"\$<]{16,}"
+               git ls-files -z | xargs -0 grep -InE "($names):[[:space:]]+\"?([A-Za-z0-9+/]{16,}={0,2}|[0-9a-fA-F]{32,})\"?([[:space:]]|\$)"
+             } | grep -v 'CHANGE_ME' | sort -u || true)
   if [ -n "$secrets" ]; then
     report ENV002 "a generated secret is committed; remove it and ROTATE it — it is in the history:"
     printf '%s\n' "$secrets" | head -5

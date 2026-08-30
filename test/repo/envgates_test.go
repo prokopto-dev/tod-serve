@@ -39,7 +39,23 @@ var secretEnvNames = []string{
 	"TOD_METRICS_TOKEN",
 }
 
-var secretAssignment = regexp.MustCompile(`(` + strings.Join(secretEnvNames, "|") + `)=(\S*)`)
+// secretAssignment matches both spellings an assignment takes in this repository: `NAME=VALUE`,
+// which is the dotenv and shell form, and `NAME: VALUE`, which is the Compose form. The compose
+// files here are the ones that actually name these variables, so a gate that only understood `=`
+// would miss a secret hardcoded where the interpolation belongs — the likeliest way one gets
+// committed in a repository whose deployment is two YAML files.
+//
+// The separator is captured because the two are validated DIFFERENTLY, and they have to be: `=` is
+// only ever an assignment, while `NAME: text` is also how English writes a label. This file itself
+// contains `services.tod-serve.environment.TOD_TOKEN_PEPPER: required variable` inside a quoted
+// error message.
+var secretAssignment = regexp.MustCompile(
+	`(` + strings.Join(secretEnvNames, "|") + `)(=|:[ \t]*)(\S*)`)
+
+// generatedSecretShape is what `openssl rand -base64 48` produces (64 characters of base64, no
+// padding) or a hex token. It is required of the `NAME: VALUE` form ONLY, where an ordinary English
+// word would otherwise satisfy a bare length rule.
+var generatedSecretShape = regexp.MustCompile(`^(?:[A-Za-z0-9+/]{16,}={0,2}|[0-9a-fA-F]{32,})$`)
 
 // minSecretLength is what separates a generated secret from a fixture. `openssl rand -base64 48`
 // produces 64 characters; the existing gate fixtures assign `x`. Sixteen is comfortably between
@@ -198,13 +214,23 @@ func TestENV002_NoSecretVariable_IsAssignedARealValue(t *testing.T) {
 }
 
 // scanSecrets returns one description per assignment of a secret variable to a real-looking value.
+//
+// The two separators are held to different standards on purpose. After `=` any non-placeholder
+// token of a plausible length is a finding, because nothing writes `NAME=` except an assignment.
+// After `:` the value must additionally LOOK generated — base64 or hex — because `NAME: words` is
+// how prose writes a label, and a bare length rule there would fire on documentation.
 func scanSecrets(body string) []string {
 	var out []string
 	for _, m := range secretAssignment.FindAllStringSubmatch(body, -1) {
-		if looksLikeARealSecret(m[2]) {
-			out = append(out, m[1]+" is assigned a "+
-				itoa(len(strings.Trim(m[2], `"'`)))+"-character literal")
+		name, sep, value := m[1], m[2], m[3]
+		if !looksLikeARealSecret(value) {
+			continue
 		}
+		trimmed := strings.Trim(strings.TrimSpace(value), `"'`)
+		if strings.HasPrefix(sep, ":") && !generatedSecretShape.MatchString(trimmed) {
+			continue
+		}
+		out = append(out, name+" is assigned a "+itoa(len(trimmed))+"-character literal")
 	}
 	return out
 }
@@ -238,10 +264,23 @@ func TestENV002_Scanner_FindsARealSecretAndSparesAFixture(t *testing.T) {
 		{"a quoted generated key", `TOD_SESSION_KEY="` + strings.Repeat("b", 64) + `"` + "\n", true},
 		{"a setup token in a fenced block", "```\nTOD_SETUP_TOKEN=" + strings.Repeat("c", 64) + "\n```\n", true},
 		{"a commented-out real secret", "# TOD_SESSION_KEY=" + strings.Repeat("d", 64) + "\n", true},
+		// The Compose form. `deploy/compose.yaml` and `compose.local.yaml` name these variables
+		// this way, so hardcoding one where the interpolation belongs is the likeliest accident in
+		// this repository — and an equals-only matcher walks straight past it.
+		{"a secret hardcoded in a compose file",
+			"    environment:\n      TOD_SESSION_KEY: " + strings.Repeat("e", 64) + "\n", true},
+		{"a quoted secret in a compose file",
+			`      TOD_TOKEN_PEPPER: "` + strings.Repeat("f", 64) + `"` + "\n", true},
+		{"a hex secret in a compose file",
+			"      TOD_METRICS_TOKEN: " + strings.Repeat("a1b2", 12) + "\n", true},
 
 		{"env.example's placeholder", "TOD_TOKEN_PEPPER=CHANGE_ME_generate_with_openssl_rand_base64_48\n", false},
 		{"smoke.sh's command substitution", "TOD_SESSION_KEY=\"$(openssl rand -base64 48)\"\n", false},
 		{"a compose interpolation", "TOD_TOKEN_PEPPER: ${TOD_TOKEN_PEPPER:?set it}\n", false},
+		{"a compose default interpolation", "TOD_SETUP_TOKEN: ${TOD_SETUP_TOKEN:-}\n", false},
+		{"prose using a colon as a label", "TOD_TOKEN_PEPPER: required variable\n", false},
+		{"an error message quoted in a doc",
+			"services.tod-serve.environment.TOD_TOKEN_PEPPER: required variable\n", false},
 		{"the documentation's placeholder", "TOD_SETUP_TOKEN=<YOUR_SETUP_TOKEN>\n", false},
 		{"the ENV001 fixture", "TOD_TOKEN_PEPPER=x\n", false},
 		{"env.example's commented metrics token", "# TOD_METRICS_TOKEN=\n", false},
