@@ -234,9 +234,19 @@ docs-check:
 verify-commands:
 	@bash scripts/verify-commands.sh
 
+## licence-check: no copyleft or source-available runtime dependency
+# NOT in `lint-repo`, and the reason is the same one that keeps `verify-commands` out of it: this
+# needs the Go toolchain to resolve the module graph, and the `lint / repo` CI job deliberately has
+# none. It fails rather than skips when `go` is absent — a licence gate that quietly passed on the
+# machine without a toolchain would be enforcing nothing on exactly the machines that skip the
+# full suite.
+.PHONY: licence-check
+licence-check:
+	@bash scripts/licence-gate.sh
+
 ## check: what CI runs
 .PHONY: check
-check: verify-commands docs-check lint vet build test
+check: verify-commands licence-check docs-check lint vet build test
 
 ## clean: remove build output
 .PHONY: clean
