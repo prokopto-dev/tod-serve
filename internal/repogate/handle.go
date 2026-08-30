@@ -309,7 +309,7 @@ func CheckHandles(root string, dirs []string) (Result, error) {
 				}
 				rel = filepath.ToSlash(rel)
 				if d.IsDir() {
-					if d.Name() == "testdata" || d.Name() == "vendor" {
+					if skipDir(d.Name()) {
 						return fs.SkipDir
 					}
 					return nil
