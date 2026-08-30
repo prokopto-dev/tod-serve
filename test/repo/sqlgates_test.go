@@ -38,6 +38,34 @@ func TestInstanceScopedAllowlist_MatchesRepoGates(t *testing.T) {
 	}
 }
 
+// The instance-scoped allowlist exists in FOUR places: canonical §9, ADR-0002, INSTANCE_SCOPED in
+// scripts/repo-gates.sh, and — by subtraction — the schema test. Three of them were compared and
+// the ADR was not, so it sat three tables short: it omitted instance_grant, auth_flow and
+// credential_ticket, each of which IS instance-scoped and each of which a reader of that ADR would
+// have concluded needs a circle_id.
+//
+// Canonical §9 is the authority; this asserts the ADR repeats it exactly. Both documents introduce
+// the list with the same sentence, so one parser reads both and there is no second spelling to
+// drift.
+func TestInstanceScopedAllowlist_TheADRAndCanonical_Agree(t *testing.T) {
+	t.Parallel()
+
+	canonical, err := canondoc.InstanceScopedTables()
+	require.NoError(t, err)
+	require.NotEmpty(t, canonical, "canonical §9 parsed to an empty allowlist")
+	sort.Strings(canonical)
+
+	adr, err := canondoc.InstanceScopedTablesInTenancyADR()
+	require.NoError(t, err)
+	require.NotEmpty(t, adr, "ADR-0002 parsed to an empty allowlist; the lead-in sentence moved")
+	sort.Strings(adr)
+
+	if diff := cmp.Diff(canonical, adr); diff != "" {
+		t.Errorf("the instance-scoped allowlist differs between canonical §9 and ADR-0002 "+
+			"(-canonical +adr):\n%s", diff)
+	}
+}
+
 // A gate nobody has seen fail is a gate nobody knows works. This one is pointed at a query file
 // that reads a circle-scoped table without naming the tenant, and it must say so.
 func TestTEN001_AQueryMissingCircleID_IsReported(t *testing.T) {
