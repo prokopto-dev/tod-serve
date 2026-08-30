@@ -1,8 +1,14 @@
 // Package store is the only package in this repository that holds a *sql.DB.
 //
 // Everything above it takes a [*DB] or the typed query set it exposes, so "which layer talks to
-// the database" is a compile-time fact rather than a review habit. SQL001 in
-// scripts/repo-gates.sh and TestSQL001_DatabaseSQL_IsImportedOnlyByTheStore are the mechanism.
+// the database" is a compile-time fact rather than a review habit.
+//
+// Two mechanisms, because they fail differently. SQL001 in scripts/repo-gates.sh greps every
+// non-test file outside this package for `database/sql`, which answers "who imports it";
+// TestSQL001_DatabaseSQLOutsideTheStore_IsReported in test/repo is what proves that grep fires.
+// SQL002 in internal/repogate is the AST analyser for the half a grep cannot see — whether a
+// handle can be OBTAINED without importing the package, which `db := store.Raw()` does; it is run
+// by TestSQL002_TheStore_HandsOutNoHandle.
 //
 // The generated half lives in internal/store/sqlitegen and is never hand-edited: `make gen` writes
 // it from db/queries with sqlc.
@@ -63,9 +69,13 @@ var ErrNoSnapshot = errors.New("store has no read snapshot pool")
 // ErrNoRows is what a `:one` query returns when it finds nothing.
 //
 // It is re-exported here because `database/sql` is imported by this package and no other — SQL001
-// and TestSQL001_DatabaseSQL_IsImportedOnlyByTheStore are the mechanism — and a caller that has to
-// distinguish "no such row" from a real failure would otherwise have to break that rule to spell
-// the sentinel. Compare with errors.Is, never ==.
+// and SQL002 are the mechanism, and the package comment says which half each one covers — and a
+// caller that has to distinguish "no such row" from a real failure would otherwise have to break
+// that rule to spell the sentinel. Compare with errors.Is, never ==.
+//
+// Re-exporting the sentinel is not handing out a handle: `sql.ErrNoRows` is an error value and
+// carries no ability to issue a query. SQL002 says so by type rather than by exception, and
+// TestSQL002_AnExportedHandle_IsReported pins the distinction.
 var ErrNoRows = sql.ErrNoRows
 
 // DB is an open database. It is safe for concurrent use.

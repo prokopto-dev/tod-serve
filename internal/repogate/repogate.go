@@ -101,6 +101,14 @@ func RouteRule() Rule {
 	}
 }
 
+// skipDir reports whether a directory is outside what this module builds.
+//
+// The Go toolchain does not build `testdata` or `vendor`, so a rule about what this module
+// compiles does not reach them. It is one function rather than the same two comparisons in each
+// walker: three copies of a skip list is three chances for one of them to grow a third entry
+// nobody else has, and a gate that walks MORE than its siblings reports findings they do not.
+func skipDir(name string) bool { return name == "testdata" || name == "vendor" }
+
 // Finding is one violation, with enough detail to click.
 type Finding struct {
 	// Rule is the gate ID.
@@ -145,7 +153,7 @@ func Check(root string, dirs []string, rules []Rule) (Result, error) {
 			}
 			rel = filepath.ToSlash(rel)
 			if d.IsDir() {
-				if d.Name() == "testdata" || d.Name() == "vendor" {
+				if skipDir(d.Name()) {
 					return fs.SkipDir
 				}
 				return nil

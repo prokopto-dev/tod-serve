@@ -55,6 +55,10 @@ const getLatestEventSeq = `-- name: GetLatestEventSeq :one
 SELECT COALESCE(MAX(event_seq), 0) AS event_seq FROM event_outbox
 `
 
+// tenancy: `event_seq` is the ONE global sequence (canonical section 4), so its head is an
+// instance-wide fact by construction and a per-circle MAX would be a different number with the
+// same name. It is not a per-circle read and must never become the cursor a circle's stream
+// resumes from: that cursor is ListCircleEventsSince's, which names circle_id.
 func (q *Queries) GetLatestEventSeq(ctx context.Context) (interface{}, error) {
 	row := q.db.QueryRowContext(ctx, getLatestEventSeq)
 	var event_seq interface{}

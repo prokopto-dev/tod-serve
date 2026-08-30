@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
@@ -623,4 +624,96 @@ func TestRunSetup_ConcurrentRuns_LeaveOneCircleAndTheWinnersInstance(t *testing.
 		require.Equal(t,
 			fmt.Sprintf("https://tod-%d.example.com", winner), described.PublicURL)
 	}
+}
+
+// TestSetupToken_ReachesNothingButTheSetupRoutes bounds the blast radius of `TOD_SETUP_TOKEN`.
+//
+// It travels in `Authorization: Bearer …`, the SAME header a personal access token uses, and it is
+// the most powerful string this instance knows: whoever holds it while setup is open takes the
+// instance over. What keeps it off every other route today is that `authenticateToken` runs it
+// through `Minter.Verify`, which refuses anything that is not a `tods_pat_…` token — a format
+// check, several packages away from the decision it is protecting, asserted by nothing.
+//
+// The failure this guards is an ordinary convenience: making the setup token a real minted token
+// so an operator can paste it into the same client. That would silently turn it into a credential
+// for whatever membership it named, and no existing test would notice.
+//
+// Both directions. The setup token reaches no other operation, and a real PAT reaches no setup
+// operation — so the two credential kinds cannot start overlapping from either side.
+func TestSetupToken_ReachesNothingButTheSetupRoutes(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	circleID := h.seedCircle("Mine")
+	member := h.seedMember(circleID, authz.RoleOwner)
+	pat := h.seedToken(member, allScopes()...)
+
+	setupRoutes := map[api.OperationID]bool{}
+	for _, r := range api.SetupRoutes() {
+		setupRoutes[r.ID] = true
+	}
+	require.NotEmpty(t, setupRoutes, "no setup routes; the filter is wrong")
+
+	served := map[api.OperationID]bool{}
+	for _, id := range h.server.Registered() {
+		served[id] = true
+	}
+
+	elsewhere, authenticated := 0, 0
+	for _, route := range api.Routes() {
+		if setupRoutes[route.ID] || !served[route.ID] || route.Auth == api.AuthMetricsToken {
+			continue
+		}
+		elsewhere++
+		if route.Authenticated() {
+			authenticated++
+		}
+
+		path := fillRemainingPathParams(
+			strings.ReplaceAll(route.FullPath(), api.CirclePathParam, circleID.String()))
+		drive := func(token core.Secret, key string) response {
+			return h.do(request{
+				Method: route.Method, Path: path, Token: token, Body: bodyFor(route),
+				Headers: map[string]string{
+					api.IdempotencyKeyHeader: string(route.ID) + key,
+					api.IfMatchHeader:        "*",
+				},
+			})
+		}
+		got := drive(testSetupTok, "-setup-token")
+
+		if !route.Authenticated() {
+			// A public route answers everybody, so "not 200" would be the wrong assertion. What
+			// must be true is that the token bought NOTHING: the same request with no credential
+			// at all gets the same answer.
+			bare := drive("", "-no-credential")
+			require.Equal(t, bare.Status, got.Status,
+				"%s is public and answered %d with TOD_SETUP_TOKEN where it answers %d with no "+
+					"credential; the token changed something on a route it does not authorise",
+				route.ID, got.Status, bare.Status)
+			continue
+		}
+
+		// Not merely "not 200": the setup token must be UNRECOGNISED here, never a caller whose
+		// role or scopes happened to fall short. A 403 or an insufficient_scope would mean it had
+		// authenticated somebody.
+		require.Equal(t, apierr.CodeTokenInvalid, got.Problem.Code,
+			"%s did not treat TOD_SETUP_TOKEN as an invalid token but as %q, which means it "+
+				"authenticated a principal. Body: %s", route.ID, got.Problem.Code, got.Body)
+	}
+
+	// The other direction: a real PAT is refused by the setup routes exactly the way a wrong token
+	// is, so nobody's device credential is a key to the takeover surface either.
+	for _, route := range api.SetupRoutes() {
+		got := h.do(request{
+			Method: route.Method, Path: route.FullPath(), Token: pat, Body: bodyFor(route),
+			Headers: map[string]string{api.IdempotencyKeyHeader: string(route.ID) + "-pat"},
+		})
+		h.requireProblem(got, apierr.CodeNotFound)
+	}
+
+	require.Positive(t, elsewhere, "no non-setup routes were driven; the filter is wrong")
+	require.Positive(t, authenticated,
+		"no authenticated route was driven, so the token_invalid half asserted nothing")
+	t.Logf("TOD_SETUP_TOKEN was refused by %d other operations, %d of them authenticated; "+
+		"a PAT was refused by all %d setup operations", elsewhere, authenticated, len(setupRoutes))
 }

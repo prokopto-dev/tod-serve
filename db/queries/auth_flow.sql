@@ -13,11 +13,13 @@ INSERT INTO auth_flow (
 RETURNING *;
 
 -- name: GetAuthFlowByState :one
+-- tenancy: keyed on the unguessable server-minted `state`, never on a caller-supplied circle.
 -- Looked up by the unguessable server-minted state, never by circle. That is why a missing
 -- `WHERE circle_id = ?` cannot leak across tenants here (canonical section 9).
 SELECT * FROM auth_flow WHERE state = sqlc.arg(state);
 
 -- name: ConsumeAuthFlow :one
+-- tenancy: keyed on the unguessable server-minted `state`, like the read above.
 -- `consumed_at IS NULL` in the WHERE is the race-free half; the BEFORE UPDATE trigger is what
 -- makes a second consumption unrepresentable even if a caller forgets it.
 UPDATE auth_flow
@@ -26,4 +28,6 @@ WHERE state = sqlc.arg(state) AND consumed_at IS NULL
 RETURNING *;
 
 -- name: DeleteExpiredAuthFlows :execrows
+-- tenancy: the expiry sweeper. It is instance-wide by definition -- litter in every circle is
+-- still litter -- and it selects on time alone.
 DELETE FROM auth_flow WHERE expires_at < sqlc.arg(before);

@@ -460,3 +460,92 @@ func seedRivalCircle(t *testing.T, ctx context.Context, db *DB, mine fixture) fi
 		schemaenum.MembershipRoleOwner, int64(now), int64(now), int64(now))
 	return rival
 }
+
+// nullableCircleOnAnInstanceScopedTable names the instance-scoped tables that legitimately carry a
+// NULLABLE `circle_id`, and the reason each one does.
+//
+// It is a closed list with reasons rather than a blanket exemption because the reason is the whole
+// argument: canonical §9 admits these rows precisely because **no circle owns them** — an
+// instance-level event belongs to no circle, and an OAuth flow's circle is a hint for building a
+// provider request that is re-decided at redemption. A row that is always owned by exactly one
+// circle is circle-scoped, and `NOT NULL` is how the schema says which it is.
+func nullableCircleOnAnInstanceScopedTable() map[string]string {
+	return map[string]string{
+		"event_outbox": "an instance-level event belongs to no circle (canonical §9)",
+		"auth_flow":    "the circle is a hint from an invite code, re-decided at redemption (canonical §9)",
+	}
+}
+
+// TestInstanceScopedAllowlist_HoldsNothingThatIsActuallyCircleScoped is the OTHER DIRECTION of the
+// allowlist, and without it the allowlist is a hole rather than a gate.
+//
+// TestInstanceScopedAllowlist_MatchesTheAppliedSchema asserts "not on the list ⇒ carries
+// circle_id". It says nothing about the converse, because it SKIPS every table on the list — so
+// moving a circle-scoped table onto the allowlist is the one edit that makes both this repository's
+// tenancy gates quieter without making anything red. Done consistently across all three copies of
+// the list, `tod_report` — the report log itself — can be declared instance-scoped and:
+//
+//   - this file's allowlist test skips it,
+//   - the three copies still agree, so the drift tests pass,
+//   - the table is still documented, so the table-set test passes,
+//   - and `TEN001` silently stops checking its eight queries while reporting success.
+//
+// That was verified by doing it. This closes it: a table on the allowlist must not carry a
+// mandatory `circle_id`, because a `circle_id NOT NULL REFERENCES circle(id)` IS the schema saying
+// the row belongs to exactly one circle.
+func TestInstanceScopedAllowlist_HoldsNothingThatIsActuallyCircleScoped(t *testing.T) {
+	t.Parallel()
+	ctx, db := openMigrated(t)
+
+	allowed, err := canondoc.InstanceScopedTables()
+	require.NoError(t, err)
+	require.NotEmpty(t, allowed, "the allowlist parsed empty; this test would check nothing")
+
+	permitted := nullableCircleOnAnInstanceScopedTable()
+	applied := map[string]bool{}
+	tables, err := db.Tables(ctx)
+	require.NoError(t, err)
+	for _, tbl := range tables {
+		applied[tbl.Name] = true
+	}
+
+	checked, withCircle := 0, 0
+	for _, name := range allowed {
+		require.True(t, applied[name],
+			"%s is on the instance-scoped allowlist and is not in the applied schema", name)
+		checked++
+
+		columns, err := db.Columns(ctx, name)
+		require.NoError(t, err)
+		var circleID *ColumnInfo
+		for i, c := range columns {
+			if c.Name == "circle_id" {
+				circleID = &columns[i]
+			}
+		}
+		if circleID == nil {
+			continue
+		}
+		withCircle++
+
+		reason, ok := permitted[name]
+		require.True(t, ok,
+			"%s is on the instance-scoped allowlist and carries a circle_id column. Either it is "+
+				"circle-scoped and belongs off the allowlist, or no circle owns its rows — in "+
+				"which case name it in nullableCircleOnAnInstanceScopedTable with the reason, so "+
+				"the exemption is a reviewed decision rather than a column nobody noticed", name)
+		require.False(t, circleID.NotNull,
+			"%s.circle_id is NOT NULL, which is the schema saying every row belongs to exactly "+
+				"one circle — that is the definition of circle-scoped. Its allowlist entry says: "+
+				"%s", name, reason)
+	}
+
+	// Both counters, because the two ways this test goes quiet are different: an allowlist that
+	// parsed empty, and an allowlist whose every entry stopped carrying a circle_id so the
+	// interesting branch never runs.
+	require.Greater(t, checked, 5, "the allowlist check found almost no tables")
+	require.Equal(t, len(permitted), withCircle,
+		"%d allowlisted tables carry a circle_id and %d are named in "+
+			"nullableCircleOnAnInstanceScopedTable; a name left there after the column went is an "+
+			"exemption nobody is using and nobody will remove", withCircle, len(permitted))
+}

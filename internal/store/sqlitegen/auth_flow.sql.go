@@ -22,6 +22,7 @@ type ConsumeAuthFlowParams struct {
 	State      string
 }
 
+// tenancy: keyed on the unguessable server-minted `state`, like the read above.
 // `consumed_at IS NULL` in the WHERE is the race-free half; the BEFORE UPDATE trigger is what
 // makes a second consumption unrepresentable even if a caller forgets it.
 func (q *Queries) ConsumeAuthFlow(ctx context.Context, arg ConsumeAuthFlowParams) (AuthFlow, error) {
@@ -101,6 +102,8 @@ const deleteExpiredAuthFlows = `-- name: DeleteExpiredAuthFlows :execrows
 DELETE FROM auth_flow WHERE expires_at < ?1
 `
 
+// tenancy: the expiry sweeper. It is instance-wide by definition -- litter in every circle is
+// still litter -- and it selects on time alone.
 func (q *Queries) DeleteExpiredAuthFlows(ctx context.Context, before int64) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteExpiredAuthFlows, before)
 	if err != nil {
@@ -113,6 +116,7 @@ const getAuthFlowByState = `-- name: GetAuthFlowByState :one
 SELECT id, state, pkce_verifier, provider_id, invite_code_hash, circle_id, expires_at, consumed_at, created_at, updated_at FROM auth_flow WHERE state = ?1
 `
 
+// tenancy: keyed on the unguessable server-minted `state`, never on a caller-supplied circle.
 // Looked up by the unguessable server-minted state, never by circle. That is why a missing
 // `WHERE circle_id = ?` cannot leak across tenants here (canonical section 9).
 func (q *Queries) GetAuthFlowByState(ctx context.Context, state string) (AuthFlow, error) {

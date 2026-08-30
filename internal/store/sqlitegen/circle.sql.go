@@ -60,6 +60,9 @@ type CreateCircleParams struct {
 // `server` is absent from UpdateCircle on purpose. It is immutable after creation - a BEFORE
 // UPDATE trigger enforces it and the edge answers 422 field_immutable - and a query that offered
 // to set it would be a second opinion about that.
+// tenancy: the tenant root's own INSERT. This is the one statement that CREATES a circle, so
+// there is no circle to be scoped to yet -- the id in the VALUES is the tenant key being minted,
+// not a filter. internal/store spells the same exception out as `tenantRoot`.
 func (q *Queries) CreateCircle(ctx context.Context, arg CreateCircleParams) (Circle, error) {
 	row := q.db.QueryRowContext(ctx, createCircle,
 		arg.CircleID,
