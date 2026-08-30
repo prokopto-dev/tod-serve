@@ -226,6 +226,20 @@ const CallbackPathParam = "/{provider_key}"
 // TestCallbackBaseURL_MatchesTheRegistry fails first, in CI.
 var ErrCallbackPathChanged = errors.New("the completeAuthorization route no longer ends in " + CallbackPathParam)
 
+// ErrPublicURLNotAnOrigin reports a public URL carrying something an origin cannot carry: a query
+// string, a fragment, or userinfo.
+//
+// Refused rather than stripped, and the difference matters. A provider key is appended to the
+// callback base, so a preserved query puts it INSIDE the query — `…/callback?tenant=one/discord`
+// — and the redirect URI then addresses `/api/v1/auth/callback` with no provider key, which is
+// not a route this server has. A fragment is worse: no browser transmits anything after `#`, so
+// the callback would arrive carrying no provider key at all and the flow could never complete.
+//
+// Stripping would produce a working URL that is not the one the operator configured, which is the
+// same class of quiet surprise this whole check exists to remove. `$TOD_PUBLIC_URL` is an ORIGIN;
+// a value that is not one is a mistake worth reading at startup.
+var ErrPublicURLNotAnOrigin = errors.New("a public URL is an origin: it carries no query, fragment or userinfo")
+
 // CallbackBaseURL renders the absolute URL a provider redirects back to, minus the provider key.
 //
 // It exists because the redirect URI an operator pastes into Discord's developer portal has to be
@@ -253,6 +267,13 @@ func CallbackBaseURL(publicURL string) (string, error) {
 	}
 	if u.Scheme == "" || u.Host == "" {
 		return "", fmt.Errorf("public url %q is not absolute", publicURL)
+	}
+	// Checked on the PARSED url rather than by looking for `?` or `#` in the string, so an encoded
+	// one is caught too. RawQuery is empty for both "no query" and a bare trailing `?`; ForceQuery
+	// distinguishes them, and `https://host/?` appending a key yields `…/callback/?discord`, which
+	// is as broken as the rest.
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" || u.User != nil {
+		return "", fmt.Errorf("public url %q: %w", publicURL, ErrPublicURLNotAnOrigin)
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + path
 	return u.String(), nil

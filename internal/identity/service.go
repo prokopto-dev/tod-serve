@@ -119,6 +119,21 @@ func New(cfg Config) (*Service, error) {
 	if callbackBase.Scheme == "" || callbackBase.Host == "" {
 		return nil, fmt.Errorf("identity service: callback base url %q is not absolute", cfg.CallbackBaseURL)
 	}
+	// [Service.ExpectedRedirectURI] appends "/" + the provider key to this, so anything the base
+	// carries after its path swallows the key: `…/callback?t=1` becomes `…/callback?t=1/discord`,
+	// which addresses the callback route WITHOUT a provider key — and a fragment is worse still,
+	// because no browser transmits one to a server.
+	//
+	// The wiring builds this with `api.CallbackBaseURL`, which refuses the same shapes. Checked
+	// again here because this is a public constructor and the corruption surfaces in this
+	// package's output, not in the caller's input.
+	if callbackBase.RawQuery != "" || callbackBase.ForceQuery ||
+		callbackBase.Fragment != "" || callbackBase.RawFragment != "" || callbackBase.User != nil {
+		return nil, fmt.Errorf(
+			"identity service: callback base url %q carries a query, fragment or userinfo; "+
+				"a provider key is appended to it, so anything after the path swallows the key",
+			cfg.CallbackBaseURL)
+	}
 
 	return &Service{
 		store:   cfg.Store,

@@ -296,3 +296,40 @@ func TestAddProvider_OIDCWithNoClientSecret_IsStillAccepted(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, created.ClientSecret.IsZero())
 }
+
+// The same rule at the constructor, because this is where the corruption would surface.
+//
+// [Service.ExpectedRedirectURI] appends "/" + the provider key, so a callback base carrying
+// anything after its path swallows the key: `…/callback?t=1` becomes `…/callback?t=1/discord`,
+// which addresses the callback route with no provider key at all. The wiring builds this value
+// with `api.CallbackBaseURL`, which refuses the same shapes — but this is a public constructor,
+// and a check that lives only in the caller is a check the next caller does not get.
+func TestNew_ACallbackBaseThatIsNotAnOrigin_RefusesToStart(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	base := identity.Config{
+		Store: h.store, Clients: h.clients, Clock: h.clock,
+		IDs: core.NewGenerator(&countingEntropy{}), Entropy: &countingEntropy{},
+		SPAJoinURL: spaJoinURL, CallbackBaseURL: callbackBaseURL,
+		Logger: slog.New(slog.DiscardHandler),
+	}
+	_, err := identity.New(base)
+	require.NoError(t, err, "the positive control: everything but the field under test is sound")
+
+	notOrigins := map[string]string{
+		"a query string": callbackBaseURL + "?tenant=one",
+		"a fragment":     callbackBaseURL + "#frag",
+		"userinfo":       "https://user:pass@tod.example.com/api/v1/auth/callback",
+	}
+	for name, raw := range notOrigins {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			broken := base
+			broken.CallbackBaseURL = raw
+			_, err := identity.New(broken)
+			require.Error(t, err)
+			require.ErrorContains(t, err, "swallows the key")
+		})
+	}
+}

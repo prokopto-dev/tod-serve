@@ -334,6 +334,51 @@ func TestCallbackBaseURL_NormalisesThePublicURL(t *testing.T) {
 	}
 }
 
+// A public URL is an ORIGIN, and one carrying a query, a fragment or userinfo is refused rather
+// than repaired.
+//
+// This is not tidiness. `ExpectedRedirectURI` appends "/" + the provider key to whatever this
+// returns, so anything sitting after the path SWALLOWS the key:
+//
+//	https://tod.example.com?tenant=one  ->  …/callback?tenant=one/discord
+//
+// That URI addresses `/api/v1/auth/callback` with no provider key, which is not a route this
+// server has — the registry entry is `/auth/callback/{provider_key}`. The fragment case is worse
+// still: no browser transmits anything after `#` to a server, so the callback would arrive
+// carrying no key at all and the flow could never complete. Both would be STORED as a valid
+// redirect URI and fail only when somebody tried to sign in.
+//
+// Refused rather than silently stripped, because a stripped value is a working URL that is not
+// the one the operator configured — the same quiet surprise the redirect-URI check exists to
+// remove.
+func TestCallbackBaseURL_APublicURLThatIsNotAnOrigin_IsRefused(t *testing.T) {
+	t.Parallel()
+
+	notOrigins := map[string]string{
+		"a query string":              "https://tod.example.com?tenant=one",
+		"a query on a trailing slash": "https://tod.example.com/?a=b",
+		"a bare question mark":        "https://tod.example.com/?",
+		"a fragment":                  "https://tod.example.com#frag",
+		"a query and a fragment":      "https://tod.example.com/tod?a=b#c",
+		"userinfo":                    "https://user:pass@tod.example.com",
+	}
+	for name, raw := range notOrigins {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := api.CallbackBaseURL(raw)
+			require.ErrorIs(t, err, api.ErrPublicURLNotAnOrigin)
+			require.Empty(t, got)
+		})
+	}
+
+	// The positive control, and the specific thing that must keep working: a path prefix is NOT a
+	// query, and an instance behind a shared front legitimately has one.
+	got, err := api.CallbackBaseURL("https://example.com/tod")
+	require.NoError(t, err)
+	require.Equal(t, "https://example.com/tod/api/v1/auth/callback", got)
+	require.Equal(t, "https://example.com/tod/api/v1/auth/callback/discord", got+"/discord")
+}
+
 // The second half of the invite-oracle defence, at the end the documents actually claim.
 //
 // `TestInviteOracle_ARateLimitedCaller_ReachesNoHandler` proves the limiter runs before the
