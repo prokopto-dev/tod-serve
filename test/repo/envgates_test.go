@@ -267,20 +267,28 @@ func TestENV002_Scanner_FindsARealSecretAndSparesAFixture(t *testing.T) {
 		// The Compose form. `deploy/compose.yaml` and `compose.local.yaml` name these variables
 		// this way, so hardcoding one where the interpolation belongs is the likeliest accident in
 		// this repository — and an equals-only matcher walks straight past it.
-		{"a secret hardcoded in a compose file",
-			"    environment:\n      TOD_SESSION_KEY: " + strings.Repeat("e", 64) + "\n", true},
-		{"a quoted secret in a compose file",
-			`      TOD_TOKEN_PEPPER: "` + strings.Repeat("f", 64) + `"` + "\n", true},
-		{"a hex secret in a compose file",
-			"      TOD_METRICS_TOKEN: " + strings.Repeat("a1b2", 12) + "\n", true},
+		{
+			"a secret hardcoded in a compose file",
+			"    environment:\n      TOD_SESSION_KEY: " + strings.Repeat("e", 64) + "\n", true,
+		},
+		{
+			"a quoted secret in a compose file",
+			`      TOD_TOKEN_PEPPER: "` + strings.Repeat("f", 64) + `"` + "\n", true,
+		},
+		{
+			"a hex secret in a compose file",
+			"      TOD_METRICS_TOKEN: " + strings.Repeat("a1b2", 12) + "\n", true,
+		},
 
 		{"env.example's placeholder", "TOD_TOKEN_PEPPER=CHANGE_ME_generate_with_openssl_rand_base64_48\n", false},
 		{"smoke.sh's command substitution", "TOD_SESSION_KEY=\"$(openssl rand -base64 48)\"\n", false},
 		{"a compose interpolation", "TOD_TOKEN_PEPPER: ${TOD_TOKEN_PEPPER:?set it}\n", false},
 		{"a compose default interpolation", "TOD_SETUP_TOKEN: ${TOD_SETUP_TOKEN:-}\n", false},
 		{"prose using a colon as a label", "TOD_TOKEN_PEPPER: required variable\n", false},
-		{"an error message quoted in a doc",
-			"services.tod-serve.environment.TOD_TOKEN_PEPPER: required variable\n", false},
+		{
+			"an error message quoted in a doc",
+			"services.tod-serve.environment.TOD_TOKEN_PEPPER: required variable\n", false,
+		},
 		{"the documentation's placeholder", "TOD_SETUP_TOKEN=<YOUR_SETUP_TOKEN>\n", false},
 		{"the ENV001 fixture", "TOD_TOKEN_PEPPER=x\n", false},
 		{"env.example's commented metrics token", "# TOD_METRICS_TOKEN=\n", false},
