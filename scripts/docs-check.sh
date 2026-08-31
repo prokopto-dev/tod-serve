@@ -147,17 +147,108 @@ if [ -f "$INVARIANTS_PAGE" ]; then
                  grep -ohE 'func Test[A-Z]+[0-9]{3}_' test/repo/*.go 2>/dev/null
                  grep -ohE '"[A-Z]+[0-9]{3}"' internal/repogate/*.go 2>/dev/null
                } | grep -oE '[A-Z]+[0-9]{3}' | sort -u )
-    missing=""; n=0
+    # Compared in ONE pass, not one subprocess per name. The loop this replaces ran
+    # `echo "$defined" | grep -qx "$g"` per id and read ANY non-zero exit as "absent" — including a
+    # grep that never ran. Under `go test ./test/repo`, several copies of this script run at once
+    # and each was forking a few hundred greps; the ones that lost the race were reported as
+    # phantom gates, naming a different innocent test on every run. A gate whose findings are
+    # sometimes fiction is worse than no gate, because the first false one teaches everybody to
+    # ignore the true ones. `grep -Fxv -f` answers the same question with a single process, so
+    # there is no longer an exit status that can mean two different things.
+    named_gates=""; n=0
     for g in $named; do
       case " $NOT_GATES " in *" $g "*) continue ;; esac
       n=$((n + 1))
-      echo "$defined" | grep -qx "$g" || missing="$missing  $g\n"
+      named_gates="$named_gates$g
+"
     done
+    missing=$(printf '%s' "$named_gates" | grep -Fxv -f <(printf '%s\n' "$defined"))
     if [ -n "$missing" ]; then
       report DOC003 "$INVARIANTS_PAGE names a gate that is defined in no script, test/repo test or repogate rule:"
-      printf "%b" "$missing"
+      printf '%s\n' "$missing" | sed 's/^/  /'
+    fi
+
+    # A gate id is not the only shape of mechanism this page cites, and the narrow check was not
+    # enough to justify the claim made for it. Of the three phantoms that motivated DOC003 only
+    # SQL002 was an id: the other two were `scripts/licence-gate.sh` and
+    # `TestAuthFlow_RateLimitedCaller_CreatesNoRows`, and an id-only gate would have caught neither
+    # — it would have shipped as the gate that "would have caught all three" while two of the three
+    # walked straight past it. So every backticked shape the page uses to name a mechanism is
+    # resolved against the tree: an id, a test function, and a repository path.
+    #
+    # No vacancy check on these two. The id parse above is the canary that says the page was read
+    # at all, and a page may legitimately cite no test and no path; a second "parsed nothing"
+    # branch here would fire on every small fixture without telling anybody anything new.
+
+    # Rows that start NOT HELD are dropped first. The page's own header fixes that convention —
+    # "Some rows say the mechanism is missing, and they start `NOT HELD`" — and such a row names a
+    # test or a path precisely to describe what does NOT exist yet. Checking them would make the
+    # gate demand that a recorded gap be closed before it can be recorded, which is how a page
+    # stops recording gaps.
+    #
+    # Gate ids are still read from the WHOLE page, deliberately. They carry their own in-band
+    # marker: an id is bare when it is not a claim. A path or a test name is backticked either way,
+    # because that is just code formatting, so the row label is the only marker those two have.
+    claims=$(grep -v '^| \*\*NOT HELD' "$INVARIANTS_PAGE")
+
+    # Backticked Test names must be functions somebody actually wrote. node_modules is excluded
+    # because it is another language's dependency tree, not this module's tests.
+    # Named directories rather than the whole tree: `.` walks .git and every build output, which is
+    # slower, non-deterministic under a parallel `go test ./...`, and buys nothing — every _test.go
+    # in this module is under one of these three, and `test/repo` asserts that stays true.
+    # Overridable for the same reason the page is: test/repo has to be able to drive the vacancy
+    # branch below, and it can only do that by pointing the search somewhere with no tests in it.
+    TEST_ROOTS="${TOD_TEST_ROOTS:-internal cmd test}"
+    # shellcheck disable=SC2086 # deliberately word-split: this is a list of roots, not one path.
+    defined_tests=$(grep -rhoE '^func Test[A-Za-z0-9_]+\(' --include='*_test.go' \
+                      $TEST_ROOTS 2>/dev/null \
+                    | sed 's/^func //; s/(.*//' | sort -u)
+
+    # Its OWN vacancy check, and the reason it is not optional: an empty extraction makes every
+    # single test the page cites look absent, so a broken parse would not fail quietly — it would
+    # fail LOUDLY and wrongly, reporting two hundred phantoms and burying the one real finding
+    # somebody needed to see. A gate that cannot read the repository must say so about itself
+    # rather than accuse the page.
+    if [ -z "$defined_tests" ]; then
+      report DOC003 "no test functions were found under internal/, cmd/ or test/; this gate's own parse is wrong"
     else
-      pass DOC003 "$n gate(s) named in $INVARIANTS_PAGE, each one that actually exists"
+      named_tests=$(printf '%s\n' "$claims" | grep -ohE '`Test[A-Za-z0-9_]+`' | tr -d '`' | sort -u)
+      tn=$(printf '%s\n' "$named_tests" | grep -c '[^[:space:]]')
+      missing_tests=$(printf '%s\n' "$named_tests" | grep -v '^$' \
+                      | grep -Fxv -f <(printf '%s\n' "$defined_tests"))
+      if [ -n "$missing_tests" ]; then
+        report DOC003 "$INVARIANTS_PAGE names a test that no _test.go file defines:"
+        printf '%s\n' "$missing_tests" | sed 's/^/  /'
+      fi
+    fi
+
+    # Backticked repository FILES must exist. This is the shape `scripts/licence-gate.sh` had: the
+    # page named a script as its enforcement for a long time before the file existed, and nothing
+    # noticed, because a path is not a gate id and nothing resolved it.
+    #
+    # Files, not directories, and that is the header's line rather than a convenience: "a row that
+    # names a test, a SCRIPT or a trigger is a claim that it exists". A directory is how the page
+    # says where something lives or will live — `internal/events` is named twice as the Phase 6
+    # package that does not exist yet, in a row whose own rule is landed — so demanding one exist
+    # would make the page unable to say "later" without lying. A glob is skipped rather than
+    # guessed at.
+    named_paths=$(printf '%s\n' "$claims" \
+                  | grep -ohE '`(scripts|internal|db|deploy|test|cmd|web)/[A-Za-z0-9_./-]+`' \
+                  | tr -d '`' | sort -u)
+    missing_paths=""; pn=0
+    for rpath in $named_paths; do
+      case "$rpath" in *'*'*) continue ;; esac
+      case "$(basename "$rpath")" in *.*) ;; *) continue ;; esac
+      pn=$((pn + 1))
+      [ -e "$rpath" ] || missing_paths="$missing_paths  $rpath\n"
+    done
+    if [ -n "$missing_paths" ]; then
+      report DOC003 "$INVARIANTS_PAGE names a repository path that does not exist:"
+      printf '%b' "$missing_paths"
+    fi
+
+    if [ -z "$missing" ] && [ -z "$missing_tests" ] && [ -z "$missing_paths" ]; then
+      pass DOC003 "$n gate(s), $tn test(s) and $pn path(s) named in $INVARIANTS_PAGE, each one that actually exists"
     fi
   fi
 else
