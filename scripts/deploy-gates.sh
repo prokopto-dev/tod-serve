@@ -114,7 +114,16 @@ case "$mode" in
     # 2. And nothing in the deployment files names a variable the binary does not read. This is the
     #    direction that catches a typo: `TOD_TOKEN_PEPER` in a compose file interpolates to empty
     #    and the server refuses to start with a message about a variable that IS set.
+    #
+    #    NEITHER find NOR grep IS ALL-OR-NOTHING, so both are checked on STATUS and not only on
+    #    emptiness. A `grep` that cannot open one file still prints every match from the others and
+    #    exits 2; a `find` that cannot descend one directory still lists the rest. Partial output
+    #    passes an is-it-empty test, `2>/dev/null` swallows the diagnostic, and without `set -e` a
+    #    non-zero status is simply dropped — so the gate reported success over files it never
+    #    opened, and the file it skipped is exactly where the unknown name would be. Watched: a
+    #    fixture whose compose.yaml is mode 000 and holds TOD_TOKEN_PEPER exited 0 printing "1".
     scanned=$(find "$dir" -type f 2>/dev/null | sort)
+    find_status=$?
     if [ -z "$scanned" ]; then
       # A checker that checked nothing must never look like a checker that found nothing — and here
       # it is worse than that. `grep -r PATTERN` with no file operand reads the CURRENT DIRECTORY,
@@ -122,6 +131,10 @@ case "$mode" in
       # this guard here reported TOD_NEW_THING and TOD_TOKEN_PEPER, which are fixtures inside
       # test/repo/deploygates_test.go, as findings against deploy/.
       printf 'ENV001 listed no files under %s; it must never fall back to scanning the tree\n' "$dir"
+      exit 1
+    fi
+    if [ "$find_status" -ne 0 ]; then
+      printf 'ENV001 could not list every file under %s (find exited %d); a partial list drops the file an unknown name would be in\n' "$dir" "$find_status"
       exit 1
     fi
 
@@ -139,6 +152,13 @@ case "$mode" in
     #    false negative, which is worse than the red one above. env.example lives inside "$dir" and
     #    documents every constant, so a run that finds no TOD_ name there did not scan.
     deploy_names=$(grep -rhoE 'TOD_[A-Z0-9_]+' $scanned 2>/dev/null | sort -u)
+    scan_status=$?
+    # 1 is grep's "nothing matched" and is answered by the emptiness guard below; 2 and above are
+    # read errors, and those are the ones that can arrive WITH output attached.
+    if [ "$scan_status" -gt 1 ]; then
+      printf 'ENV001 could not read every file under %s (the scan exited %d); a partial scan drops exactly the file an unknown name would be in\n' "$dir" "$scan_status"
+      exit 1
+    fi
     if [ -z "$deploy_names" ]; then
       printf 'ENV001 found no TOD_ names in %s; it must never pass on a scan that read nothing\n' "$dir"
       exit 1
@@ -158,9 +178,26 @@ case "$mode" in
     # 3. The prefix means what it says. A TOD_DEPLOY_ name reaching Go source would be a variable
     #    the gate above has been told to ignore AND the binary reads, which is the one combination
     #    that makes the whole convention worthless.
-    leaked=$(grep -rlE "\"${deploy_prefix}[A-Z0-9_]+\"" ./cmd ./internal 2>/dev/null || true)
-    if [ -n "$leaked" ]; then
-      findings="${findings}  ${deploy_prefix}* names the binary must never read appear in: ${leaked}"$'\n'
+    #    Status-checked for the same reason as the scan: `|| true` was swallowing a read error here
+    #    too, and 1 is the CLEAN answer for `grep -l` (nothing matched) while 2 and above are
+    #    errors, so the two cannot be collapsed into "non-zero is fine".
+    #
+    #    Conditioned on the search roots existing because this direction reads the SOURCE TREE,
+    #    relative to the working directory, while the other two read "$dir". Under the fixture
+    #    harness in test/repo the working directory has no ./cmd, so direction 3 has nothing to
+    #    say there and has always been a no-op — pre-existing, and not something this change is
+    #    the place to alter. What the status check buys is the case that matters: a run from the
+    #    repository root, where an unreadable internal/ used to pass as "no leaked names".
+    if [ -d ./cmd ] && [ -d ./internal ]; then
+      leaked=$(grep -rlE "\"${deploy_prefix}[A-Z0-9_]+\"" ./cmd ./internal 2>/dev/null)
+      leak_status=$?
+      if [ "$leak_status" -gt 1 ]; then
+        printf 'ENV001 could not search cmd and internal for %s names (grep exited %d)\n' "$deploy_prefix" "$leak_status"
+        exit 1
+      fi
+      if [ -n "$leaked" ]; then
+        findings="${findings}  ${deploy_prefix}* names the binary must never read appear in: ${leaked}"$'\n'
+      fi
     fi
 
     if [ -n "$findings" ]; then
