@@ -150,6 +150,21 @@ while IFS='|' read -r path dir; do
   fi
 done <<< "$mods"
 
+# The third and last way in: an input that arrived COMPLETE and NON-EMPTY and still classified
+# nothing. `go list` can exit 0, `$mods` can be full, and every line can still be filtered out —
+# the main module is skipped by design — leaving a green "0 runtime module(s), each under a
+# permissive licence", which is a sentence about nothing said in the voice of a guarantee.
+#
+# This is the shape four gates were caught in this week: SQL001 and NET001 passed over zero files
+# when their allowances excluded everything, ENV001 exited 0 with a failed name-scan, and this. In
+# every one the gate passed because its input was empty or truncated and nothing said so, so the
+# floor is asserted here rather than left to whoever reads the count. `vacant` is deliberately NOT
+# used: an absent console is a legitimate state for WEB001, but this binary has dependencies, and a
+# walk that classified none of them did not check the invariant — it just did not look.
+if [ "$checked" -eq 0 ]; then
+  report LIC001 "no dependency module was classified; the walk yielded only $MAIN_MODULE, so this gate checked nothing"
+fi
+
 [ $fail -eq 0 ] && pass LIC001 \
   "$checked runtime module(s), each under a permissive licence (Apache-2.0, MIT, BSD or ISC)"
 

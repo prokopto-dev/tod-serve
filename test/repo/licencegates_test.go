@@ -289,3 +289,40 @@ func runLicenceGate(t *testing.T, bin string) (string, error) {
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// The third way a gate passes without checking anything, and the one the other two guards miss: an
+// input that arrived COMPLETE and NON-EMPTY and still classified nothing. `go list` exits 0, the
+// module list is full, and every line is filtered out — the main module is skipped by design — so
+// the gate printed "0 runtime module(s), each under a permissive licence" in green. A sentence
+// about nothing, in the voice of a guarantee.
+//
+// This is the fourth gate caught in that shape: SQL001 and NET001 passed over zero files when their
+// allowances excluded everything, and ENV001 exited 0 on a failed name-scan. The count is asserted
+// as a floor here rather than merely printed, because a number in a green log line is read by
+// nobody — 0 and 19 look equally fine at a glance.
+func TestLIC001_AWalkThatClassifiesNothing_IsReported(t *testing.T) {
+	t.Parallel()
+
+	// A clean, successful walk that yields only the main module, which the gate skips by design.
+	bin := goShim(t, "github.com/prokopto-dev/tod-serve|"+t.TempDir(), "", 0)
+
+	out, err := runLicenceGate(t, bin)
+	require.Error(t, err, "LIC001 reported a pass having classified no dependency at all:\n%s", out)
+	require.Contains(t, out, "this gate checked nothing")
+	require.NotContains(t, out, "0 runtime module(s)",
+		"the green line must not be reachable with a count of zero")
+}
+
+// And the count in the passing line is load-bearing rather than decorative: it is what makes a
+// silent drop visible in a CI log at all. If the walk quietly returned three modules instead of
+// nineteen, no assertion above would notice — but the number on the green line would change.
+func TestLIC001_ThePassingLine_ReportsHowManyItClassified(t *testing.T) {
+	t.Parallel()
+
+	bin := goShim(t, "example.com/dep|"+permissiveModule(t), "", 0)
+
+	out, err := runLicenceGate(t, bin)
+	require.NoError(t, err, "LIC001 reported a finding over a clean single-module walk:\n%s", out)
+	require.Contains(t, out, "1 runtime module(s)",
+		"the pass must state the count, so a walk that silently shrank is visible in the log")
+}
