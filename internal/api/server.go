@@ -394,6 +394,7 @@ func (s *Server) registerAll() error {
 		s.registerAdmin(),
 		s.registerAuth(),
 		s.registerJoin(),
+		s.registerSignOut(),
 		s.registerTods(),
 		s.registerQuakes(),
 		s.registerHealth(),

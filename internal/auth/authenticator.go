@@ -243,6 +243,23 @@ func (a *Authenticator) authenticateSession(ctx context.Context, value string) (
 	if err != nil {
 		return Principal{}, apierr.Wrap(apierr.CodeUnauthenticated, err, "the session is not valid")
 	}
+	// Read on EVERY request, and read FIRST: a session somebody signed out of is refused before
+	// anything else is looked up, so a cookie copied off a shared machine before the sign-out is
+	// as dead as the cookie jar it was copied from. Signing out clears the browser's cookie and
+	// this is what makes that a fact about the server rather than a request the browser can
+	// decline to honour.
+	revoked, err := a.db.Queries().CountSessionRevocations(ctx, s.ID)
+	if err != nil {
+		// A revocation table that cannot be read refuses the request rather than admitting it.
+		// Failing open here would make one unreadable row un-sign-out everybody, silently, which
+		// is precisely the confidently wrong answer this project is built against.
+		return Principal{}, apierr.Wrap(apierr.CodeInternalError, err, "")
+	}
+	if revoked > 0 {
+		a.log.InfoContext(ctx, "session rejected",
+			slog.String("reason", "signed out"), slog.String("membership_id", s.MembershipID))
+		return Principal{}, apierr.New(apierr.CodeUnauthenticated, "the session is not valid")
+	}
 	member, err := a.membership(ctx, s.MembershipID)
 	if err != nil {
 		return Principal{}, err
@@ -258,14 +275,16 @@ func (a *Authenticator) authenticateSession(ctx context.Context, value string) (
 		return Principal{}, apierr.Wrap(apierr.CodeInternalError, err, "")
 	}
 	return Principal{
-		Kind:           KindSession,
-		MembershipID:   member.id,
-		CircleID:       member.circleID,
-		Role:           member.role,
-		DisplayName:    member.displayName,
-		IdentityID:     member.identityID,
-		InstanceGrants: grants,
-		SteppedUpAt:    s.SteppedUpAt,
+		Kind:            KindSession,
+		MembershipID:    member.id,
+		CircleID:        member.circleID,
+		Role:            member.role,
+		DisplayName:     member.displayName,
+		IdentityID:      member.identityID,
+		InstanceGrants:  grants,
+		SteppedUpAt:     s.SteppedUpAt,
+		SessionID:       s.ID,
+		SessionExpiryAt: s.ExpiresAt,
 	}, nil
 }
 

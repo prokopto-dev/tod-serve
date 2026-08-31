@@ -44,7 +44,7 @@ redeemer reads, and a table holding a day of litter is still bounded.
 Every run says what it took, on stdout and as one structured log line:
 
 ```
-swept 41 expired rows: 3 auth flows, 12 credential tickets, 26 idempotency records
+swept 45 expired rows: 3 auth flows, 12 credential tickets, 26 idempotency records, 4 session revocations
 ```
 
 **A run that removed nothing still logs**, so silence means the job is not running rather than

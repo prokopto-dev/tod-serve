@@ -50,6 +50,14 @@ type Principal struct {
 	// SteppedUpAt is when a session last proved its identity. Zero for a token, which can never
 	// step up.
 	SteppedUpAt core.Micros
+	// SessionID names the browser session behind the request, and is empty for a token. It is what
+	// `signOut` writes into `session_revocation`, so the route ends the caller's OWN session
+	// without taking an id from the request — there is no session id a caller can name, which is
+	// what stops sign-out being a way to end somebody else's.
+	SessionID string
+	// SessionExpiryAt is when that session stops being accepted regardless, and is zero for a
+	// token. A revocation is only worth keeping until then.
+	SessionExpiryAt core.Micros
 	// IdentityID is the person behind a human membership, and is zero for a service membership —
 	// a bot has no identity, it has an owner. It is the key an instance grant hangs off.
 	IdentityID core.IdentityID

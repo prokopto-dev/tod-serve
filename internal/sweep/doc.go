@@ -1,11 +1,15 @@
 // Package sweep removes rows that have outlived their expiry.
 //
-// Three tables hold litter rather than history: `auth_flow` (one in-flight OAuth authorization),
-// `credential_ticket` (a verified subject for 120 seconds) and `idempotency_record` (a request
-// and the response it replays). Every row in all three carries `expires_at`, every reader already
-// refuses a row past it, and nothing deleted them — so they grew without bound. The domain model
-// calls the first two "mutable, prunable"; this is the pruning, which is why those tables have a
-// DELETE and `tod_report` does not.
+// Four tables hold litter rather than history: `auth_flow` (one in-flight OAuth authorization),
+// `credential_ticket` (a verified subject for 120 seconds), `idempotency_record` (a request and the
+// response it replays) and `session_revocation` (a browser session somebody signed out of). Every
+// row in all four carries `expires_at`, every reader already refuses a row past it, and nothing
+// deleted them — so they grew without bound. The domain model calls them "mutable, prunable"; this
+// is the pruning, which is why those tables have a DELETE and `tod_report` does not.
+//
+// `session_revocation` is the one whose `expires_at` is about something else: it is the expiry of
+// the SESSION the row revokes, not of the row. That is what makes deleting it safe — past it the
+// cookie is refused by its own expiry, with nothing consulted.
 //
 // # Why a command rather than a goroutine
 //
@@ -26,11 +30,12 @@
 // # Why a grace period
 //
 // The sweep deletes rows that expired longer ago than [Grace], not rows that merely expired. The
-// reason is that for one of the three tables a deleted row and an expired row are not the same
+// reason is that for one of the four tables a deleted row and an expired row are not the same
 // answer: `identity.Service.RedeemProviderTicket` reports `auth_ticket_expired` for a ticket it can
 // still see and `auth_ticket_invalid` for one it cannot, and that distinction is the whole reason
 // it reads before it consumes. Sweeping at the instant of expiry would quietly downgrade the error
 // a late redeemer reads. `auth_flow` answers `auth_flow_expired` either way and the idempotency
-// path deletes an expired record on sight, so the grace costs those two nothing and buys the third
-// its error message. A table holding [Grace] of litter is still bounded, which is the point.
+// path deletes an expired record on sight, and a revoked session is refused by its own expiry once
+// it passes — so the grace costs those three nothing and buys the fourth its error message. A table
+// holding [Grace] of litter is still bounded, which is the point.
 package sweep

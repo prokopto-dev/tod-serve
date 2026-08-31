@@ -49,7 +49,7 @@ caller found a valid id; a circle's existence is part of what it is hiding.
 
 The instance-scoped allowlist is explicit and short: `tod_meta`, `instance`, `identity_provider`,
 `identity`, `identity_link`, `instance_grant`, `auth_flow`, `credential_ticket`, `raid_target`,
-`raid_target_alias`, `raid_target_timer`, `api_token`, `idempotency_record`, `event_outbox`. Adding
+`raid_target_alias`, `raid_target_timer`, `api_token`, `session_revocation`, `idempotency_record`, `event_outbox`. Adding
 to it is a reviewed decision. The list is written the same way in
 [canonical §9](../design/00-canonical-conventions.md), and
 `TestInstanceScopedAllowlist_TheADRAndCanonical_Agree` diffs the two — this copy sat three tables

@@ -999,6 +999,13 @@ export type SetupStep = {
   outcome: string
 }
 
+export type SignOutResponse = {
+  /** RFC 3339 with microsecond precision, always UTC. */
+  as_of: string
+  /** Live personal access tokens this membership still holds. Signing out never revokes one */
+  tokens_kept: number
+}
+
 export type Target = {
   /** Every spelling that resolves to this target */
   aliases: Array<string> | null
@@ -1303,6 +1310,7 @@ export type OperationId =
   | 'revokeToken'
   | 'runSetup'
   | 'setCircleProviders'
+  | 'signOut'
   | 'updateCircle'
   | 'updateIdentityProvider'
   | 'updateMember'
@@ -1953,6 +1961,20 @@ export const OPERATIONS = {
     etag: true,
     ifMatch: true,
   },
+  signOut: {
+    id: 'signOut',
+    method: 'DELETE',
+    path: '/api/v1/sessions',
+    pathParams: [],
+    queryParams: [],
+    scopes: [],
+    sessionOnly: true,
+    stepUp: false,
+    circleScoped: false,
+    idempotency: '',
+    etag: false,
+    ifMatch: false,
+  },
   updateCircle: {
     id: 'updateCircle',
     method: 'PATCH',
@@ -2378,6 +2400,10 @@ export interface SetCircleProvidersInput {
 }
 export type SetCircleProvidersResult = CircleResponse
 
+/** End my own browser session. Ends this session only, and touches no token */
+export type SignOutInput = EmptyInput
+export type SignOutResult = SignOutResponse
+
 /** Rename the circle or change its settings. `server` is immutable */
 export interface UpdateCircleInput {
   /** The circle */
@@ -2508,6 +2534,8 @@ export const api = {
     send(OPERATIONS.runSetup, input, opts),
   setCircleProviders: (input: SetCircleProvidersInput, opts?: CallOptions): Promise<Result<SetCircleProvidersResult>> =>
     send(OPERATIONS.setCircleProviders, input, opts),
+  signOut: (input: SignOutInput, opts?: CallOptions): Promise<Result<SignOutResult>> =>
+    send(OPERATIONS.signOut, input, opts),
   updateCircle: (input: UpdateCircleInput, opts?: CallOptions): Promise<Result<UpdateCircleResult>> =>
     send(OPERATIONS.updateCircle, input, opts),
   updateIdentityProvider: (input: UpdateIdentityProviderInput, opts?: CallOptions): Promise<Result<UpdateIdentityProviderResult>> =>

@@ -34,6 +34,7 @@ not the other is a red test rather than a review catch.
 | POST | `/invites/preview` | `previewInvite` | public | — | Code **in the body, never the path**. Returns circle name, server, granted role, accepted providers, `revocation_strength`. Hard rate limit. |
 | POST | `/join` | `redeemInvite` | public | — | Redeem, verify credential, create identity + membership, mint a PAT. `Idempotency-Key` required. |
 | POST | `/sessions` | `authenticateIdentity` | public | — | Re-auth an existing membership on a new device, no invite. `403 membership_revoked` if revoked; `404` if no membership. |
+| DELETE | `/sessions` | `signOut` | self | — | End **my own** browser session and clear the cookie. The session id comes off the verified cookie, so no caller can name somebody else's. Writes `session_revocation`, so a cookie copied before the sign-out is refused too. **Ends this session only** and revokes no personal access token — the response says how many are still live. |
 | GET | `/tokens` | `listMyTokens` | self | any | My devices only. Officers see nobody's. |
 | DELETE | `/tokens/{token_id}` | `revokeToken` | self | — | Revoke my own device |
 

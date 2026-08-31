@@ -50,9 +50,9 @@ func newSweepCommand() *cobra.Command {
 			}
 			if _, err := fmt.Fprintf(cmd.OutOrStdout(),
 				"swept %d expired rows: %d auth flows, %d credential tickets, "+
-					"%d idempotency records\n",
+					"%d idempotency records, %d session revocations\n",
 				report.Total(), report.AuthFlows, report.CredentialTickets,
-				report.IdempotencyRecords); err != nil {
+				report.IdempotencyRecords, report.SessionRevocations); err != nil {
 				return fmt.Errorf("write the sweep summary: %w", err)
 			}
 			return nil

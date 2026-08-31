@@ -5,12 +5,12 @@
 // server is stated in the header rather than being a filter somebody can change.
 
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
-import { api, type Circle } from '../api'
+import { api, body, toError, type Circle } from '../api'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { RevocationBanner } from '../components/RevocationBanner'
-import { Spinner } from '../components/ui'
+import { Button, Spinner } from '../components/ui'
 import { classes } from '../lib/format'
 import { rememberCircle } from '../lib/storage'
 import { usePrincipalState } from './principal'
@@ -93,9 +93,12 @@ export function Shell() {
             </li>
           ))}
         </ul>
-        <div className="border-t border-ink-800 px-3 py-2.5">
-          <p className="truncate text-xs text-ink-200">{principal.view.display_name}</p>
-          <p className="text-[11px] text-ink-500">{principal.view.role}</p>
+        <div className="space-y-2 border-t border-ink-800 px-3 py-2.5">
+          <div>
+            <p className="truncate text-xs text-ink-200">{principal.view.display_name}</p>
+            <p className="text-[11px] text-ink-500">{principal.view.role}</p>
+          </div>
+          <SignOut />
         </div>
       </nav>
 
@@ -108,6 +111,67 @@ export function Shell() {
           <Outlet />
         </main>
       </div>
+    </div>
+  )
+}
+
+/**
+ * SignOut ends this browser session — this one, not every session the identity holds.
+ *
+ * It sits under the principal because that is where somebody looks to answer "who am I signed in
+ * as", and the answer they most often want to act on is "not this person, on this machine".
+ *
+ * Two things are stated rather than assumed. It says the session it ends is THIS one, because the
+ * identity may hold others and a control that silently ended them all would be the destructive
+ * reading of the same button. And when the server answers, it says how many personal access tokens
+ * are still live: signing out of the console revokes none of them, and somebody whose raid depends
+ * on a plugin token should be able to see that rather than take it on faith.
+ *
+ * A failure is rendered rather than swallowed. The one thing this control must never do is look
+ * like it worked: somebody walking away from a shared machine believing they are signed out, when
+ * the server never heard the request, is the exact harm sign-out exists to prevent — so the error
+ * stays on screen and the navigation does not happen.
+ */
+function SignOut() {
+  const [error, setError] = useState<Error | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [kept, setKept] = useState<number | null>(null)
+  const navigate = useNavigate()
+  const { reload } = usePrincipalState()
+
+  async function signOut() {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = body(await api.signOut({}))
+      setKept(result.tokens_kept)
+      // The principal is re-read before navigating, so the router acts on what the server says
+      // rather than on this component's belief about what just happened.
+      reload()
+      navigate('/signin', { replace: true })
+    } catch (e) {
+      setError(toError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {error && <ProblemNotice error={error} />}
+      {kept !== null && !error && (
+        <p className="text-[11px] text-ink-500">
+          Signed out. {kept === 1 ? '1 API token is' : `${kept} API tokens are`} untouched.
+        </p>
+      )}
+      <Button
+        className="w-full justify-center"
+        disabled={busy}
+        onClick={() => void signOut()}
+        title="Ends this browser session only. Your API tokens keep working."
+      >
+        {busy ? 'Signing out' : 'Sign out'}
+      </Button>
     </div>
   )
 }
