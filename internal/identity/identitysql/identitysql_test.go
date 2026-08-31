@@ -4,6 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"testing"
@@ -33,6 +36,35 @@ func hashCode(code string) []byte {
 	return sum[:]
 }
 
+// grantKey and grantByCodeHash are this file's OWN spelling of the owner-grant lookup, written by
+// hand rather than imported from internal/invite, for the reason [hashCode] is a stand-in: a test
+// that called the real function would compare the implementation against itself. What is under
+// test here is that [identitysql.Store.InviteByCodeHash] consults the port at all, and maps what
+// it says onto the same liveness an invite gets. That the REAL pair agrees is a different claim,
+// and TestOwnerGrant_CompletesAWholeBrowserAuthorization in internal/identity is what holds it.
+func grantKey(hash []byte) string { return "owner_grant/" + hex.EncodeToString(hash) }
+
+func grantByCodeHash(
+	ctx context.Context, q *sqlitegen.Queries, hash []byte,
+) (circleID string, expiresAt, consumedAt core.Micros, err error) {
+	row, err := q.GetMeta(ctx, grantKey(hash))
+	if err != nil {
+		if store.IsNotFound(err) {
+			return "", 0, 0, fmt.Errorf("owner grant: %w", store.ErrNoRows)
+		}
+		return "", 0, 0, err
+	}
+	var grant struct {
+		CircleID   string      `json:"circle_id"`
+		ExpiresAt  core.Micros `json:"expires_at"`
+		ConsumedAt core.Micros `json:"consumed_at,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(row.Value), &grant); err != nil {
+		return "", 0, 0, err
+	}
+	return grant.CircleID, grant.ExpiresAt, grant.ConsumedAt, nil
+}
+
 type fixture struct {
 	ctx        context.Context
 	store      *identitysql.Store
@@ -52,7 +84,7 @@ func newFixture(t *testing.T) *fixture {
 	require.NoError(t, db.Migrate(ctx))
 
 	testClock := clock.NewTest(now)
-	adapter, err := identitysql.New(db.Queries(), testClock, hashCode)
+	adapter, err := identitysql.New(db.Queries(), testClock, hashCode, grantByCodeHash)
 	require.NoError(t, err)
 
 	f := &fixture{
@@ -346,6 +378,120 @@ func TestInvite_LivenessAndDeadCodes(t *testing.T) {
 
 	_, err = f.store.InviteByCode(f.ctx, "TODI-NOSUC-H0001")
 	require.ErrorIs(t, err, identity.ErrNotFound)
+}
+
+// A code can name an owner grant instead of an invite, and this lookup has to say so.
+//
+// It did not, and that was the whole bug: `createAuthorizationURL` and the OAuth callback both
+// come through here, so a first-run owner code was `invite_invalid` on every browser sign-in while
+// `previewInvite` — which resolves through internal/invite and has always had both rungs — showed
+// the same code as valid.
+func TestOwnerGrant_ResolvesThroughTheInviteLookup(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	circleID, _ := f.seedCircle(t)
+
+	tests := []struct {
+		name       string
+		expiresAt  core.Micros
+		consumedAt core.Micros
+		wantLive   bool
+		wantDead   identity.Code
+	}{
+		{name: "a live grant resolves", expiresAt: now.Add(time.Hour), wantLive: true},
+		{
+			// A grant is single-use by construction, so a spent one is exhausted rather than
+			// revoked: the code was spent, which is what `uses >= max_uses` records for an invite.
+			name: "a redeemed grant is exhausted", expiresAt: now.Add(time.Hour),
+			consumedAt: now, wantDead: identity.CodeInviteExhausted,
+		},
+		{
+			name: "an expired grant is expired", expiresAt: now.Add(-time.Second),
+			wantDead: identity.CodeInviteExpired,
+		},
+		{
+			// Most-specific first, exactly as the invite ladder above orders it.
+			name: "a redeemed grant that also expired is exhausted", expiresAt: now.Add(-time.Second),
+			consumedAt: now, wantDead: identity.CodeInviteExhausted,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			code := "TODI-GRANT-" + tt.name[:5]
+			f.seedGrant(t, code, circleID, tt.expiresAt, tt.consumedAt)
+
+			got, err := f.store.InviteByCode(f.ctx, code)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantLive, got.Live)
+			require.Equal(t, tt.wantDead, got.DeadCode)
+			require.Equal(t, circleID, got.CircleID)
+			require.Equal(t, hashCode(code), got.CodeHash)
+
+			// The callback holds the hash and never the code, so the two spellings have to agree
+			// or the flow would start on a grant and finish on nothing.
+			byHash, err := f.store.InviteByCodeHash(f.ctx, hashCode(code))
+			require.NoError(t, err)
+			require.Equal(t, got, byHash)
+		})
+	}
+}
+
+// A grant carries no invite id, because there is no `invite` row to name. Asserted rather than
+// left implicit: internal/identity reads `CircleID` and `CodeHash` and never `ID`, and a caller
+// that started keying on `ID` would break first-run sign-in and nothing else.
+func TestOwnerGrant_ResolvesWithNoInviteID(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	circleID, _ := f.seedCircle(t)
+	code := "TODI-GRANT-NOID1"
+	f.seedGrant(t, code, circleID, now.Add(time.Hour), 0)
+
+	got, err := f.store.InviteByCode(f.ctx, code)
+	require.NoError(t, err)
+	require.True(t, got.Live)
+	require.Empty(t, got.ID, "an owner grant has no invite row, and must not claim one")
+}
+
+// A grant whose circle has been tombstoned answers what an unissued code answers, which is what
+// the invite branch answers for the same state. Anything else would let a spent code confirm what
+// happened to a circle its holder can no longer see.
+func TestOwnerGrant_DeletedCircle_IsNotFound(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	circleID, _ := f.seedCircle(t)
+	code := "TODI-GRANT-GONE1"
+	f.seedGrant(t, code, circleID, now.Add(time.Hour), 0)
+
+	deletedAt := int64(now)
+	_, err := f.queries.SoftDeleteCircle(f.ctx, sqlitegen.SoftDeleteCircleParams{
+		DeletedAt: &deletedAt, UpdatedAt: int64(now), CircleID: circleID,
+	})
+	require.NoError(t, err)
+
+	_, err = f.store.InviteByCode(f.ctx, code)
+	require.ErrorIs(t, err, identity.ErrNotFound)
+}
+
+// seedGrant writes an owner grant the way internal/invite writes one — a `tod_meta` row keyed on
+// the hash of the code — with this file's own key spelling. A zero consumedAt is an unredeemed
+// grant, which is the convention the stored JSON uses.
+func (f *fixture) seedGrant(
+	t *testing.T, code, circleID string, expiresAt, consumedAt core.Micros,
+) {
+	t.Helper()
+	value, err := json.Marshal(map[string]any{
+		"circle_id": circleID, "expires_at": expiresAt, "created_at": now,
+		"consumed_at": consumedAt,
+	})
+	require.NoError(t, err)
+	require.NoError(t, f.queries.SetMeta(f.ctx, sqlitegen.SetMetaParams{
+		Key: grantKey(hashCode(code)), Value: string(value), UpdatedAt: int64(now),
+	}))
 }
 
 func TestIdentityBySubject_ReportsTheInstanceBlock(t *testing.T) {

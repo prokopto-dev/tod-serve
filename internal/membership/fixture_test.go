@@ -60,7 +60,7 @@ func newFixture(t *testing.T) *fixture {
 	minter, err := auth.NewMinter(core.Secret("membership-test-pepper"), rand.Reader)
 	require.NoError(t, err)
 
-	identityStore, err := identitysql.New(db.Queries(), clk, invite.HashCode)
+	identityStore, err := identitysql.New(db.Queries(), clk, invite.HashCode, invite.GrantByCodeHash)
 	require.NoError(t, err)
 	clients, err := identity.NewGuardedClients(clk)
 	require.NoError(t, err)

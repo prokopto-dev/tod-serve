@@ -11,8 +11,12 @@ import (
 
 	"github.com/prokopto-dev/tod-serve/internal/api"
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
+	"github.com/prokopto-dev/tod-serve/internal/authz"
+	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
+	"github.com/prokopto-dev/tod-serve/internal/invite"
+	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 )
 
 const (
@@ -85,30 +89,103 @@ func TestListIdentityProviders_TheClientSecret_NeverReachesTheWire(t *testing.T)
 }
 
 // `createAuthorizationURL` is the second oracle for invite-code validity, and it is held to
-// `previewInvite`'s disclosure as a CEILING rather than reasoned about separately. An unissued
-// code gets the same answer from both — status and code — so a guesser learns nothing from the
-// newer route that the metered one did not already tell them.
+// `previewInvite`'s disclosure as a CEILING rather than reasoned about separately: a guesser must
+// learn nothing from the newer route that the metered one did not already tell them.
+//
+// **It used to drive one input — an unissued code — and that is how a P0 got through.** Both
+// routes answer `404 invite_invalid` for a code nobody was issued, so the comparison was made at
+// the one point where a path that resolved only the `invite` table and a path that resolved
+// everything already agreed. A LIVE OWNER GRANT is where they disagreed: `previewInvite` showed
+// the circle and "you would join as owner", and `createAuthorizationURL` said no such invite — so
+// the first-run owner could not sign in through any browser provider on the instance. The ceiling
+// is a claim about every code shape, so this drives every code shape.
 //
 // This is the name docs/design/04-identity-and-revocation.md §5,
 // docs/design/02-api-design.md and docs/concepts/invariants.md all cite it by.
 func TestCreateAuthorizationURL_RevealsNoMoreThanPreviewInvite(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.seedOIDCProvider(true)
 
-	viaPreview := h.do(request{
-		Method: http.MethodPost, Path: api.BasePath + "/invites/preview",
-		Body: `{"code":"TODI-4KQ7M-9XPB2"}`,
-	})
-	viaAuth := h.do(request{
-		Method: http.MethodPost, Path: authURLPath,
-		Body: `{"provider":"oidc-test","invite_code":"TODI-4KQ7M-9XPB2"}`,
-	})
+	tests := []struct {
+		name string
+		// code returns what to present to both routes. It runs against a harness whose OIDC
+		// provider is already seeded, so a circle it creates auto-accepts that provider.
+		code func(t *testing.T, h *harness) string
+	}{
+		{
+			name: "a code nobody was issued",
+			code: func(_ *testing.T, _ *harness) string { return "TODI-4KQ7M-9XPB2" },
+		},
+		{
+			name: "a code that is not a code at all",
+			code: func(_ *testing.T, _ *harness) string { return "not-a-code" },
+		},
+		{
+			name: "a live first-run owner grant",
+			code: func(t *testing.T, h *harness) string { return h.seedOwnerGrant(t) },
+		},
+		{
+			name: "an owner grant somebody already redeemed",
+			code: func(t *testing.T, h *harness) string {
+				code := h.seedOwnerGrant(t)
+				_, err := invite.ConsumeGrant(
+					t.Context(), h.store.Queries(), invite.Code(code), h.clock.Now())
+				require.NoError(t, err)
+				return code
+			},
+		},
+		{
+			name: "a live ordinary invite",
+			code: func(t *testing.T, h *harness) string {
+				view, err := h.circles.Create(t.Context(), circle.CreateRequest{
+					Name: "Invited", Server: core.Server(schemaenum.ServerBlue),
+				})
+				require.NoError(t, err)
+				minted, err := h.invites.Create(t.Context(), invite.CreateRequest{
+					CircleID: view.ID, Actor: h.seedMember(view.ID, authz.RoleOwner),
+					Role: authz.RoleMember,
+				})
+				require.NoError(t, err)
+				return string(minted.Code)
+			},
+		},
+	}
 
-	require.Equal(t, viaPreview.Status, viaAuth.Status,
-		"the two invite-code routes answer differently for an unissued code: preview said %s, "+
-			"authorization-url said %s", viaPreview.Body, viaAuth.Body)
-	require.Equal(t, viaPreview.Problem.Code, viaAuth.Problem.Code)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.seedOIDCProvider(true)
+			code := tt.code(t, h)
+
+			viaPreview := h.do(request{
+				Method: http.MethodPost, Path: api.BasePath + "/invites/preview",
+				Body: `{"code":"` + code + `"}`,
+			})
+			viaAuth := h.do(request{
+				Method: http.MethodPost, Path: authURLPath,
+				Body: `{"provider":"oidc-test","invite_code":"` + code + `"}`,
+			})
+
+			require.Equal(t, viaPreview.Status, viaAuth.Status,
+				"the two invite-code routes answer differently: preview said %s, "+
+					"authorization-url said %s", viaPreview.Body, viaAuth.Body)
+			require.Equal(t, viaPreview.Problem.Code, viaAuth.Problem.Code)
+		})
+	}
+}
+
+// seedOwnerGrant mints the code `tod-serve init` prints, on a circle created AFTER the OIDC
+// provider — so the circle auto-accepts it, and a difference between the two routes is about the
+// code rather than about the circle refusing the provider.
+func (h *harness) seedOwnerGrant(t *testing.T) string {
+	t.Helper()
+	view, err := h.circles.Create(t.Context(), circle.CreateRequest{
+		Name: "First Run", Server: core.Server(schemaenum.ServerBlue),
+	})
+	require.NoError(t, err)
+	code, _, err := h.invites.MintOwnerGrant(t.Context(), view.ID)
+	require.NoError(t, err)
+	return string(code)
 }
 
 // The route takes NO circle id, and that absence is the design rather than an omission: a public

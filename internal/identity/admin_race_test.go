@@ -15,6 +15,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/identity/identitysql"
+	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 )
 
@@ -148,7 +149,7 @@ func newRacingService(t *testing.T) (*identity.Service, *racingStore) {
 	real, err := identitysql.New(db.Queries(), clk, func(code string) []byte {
 		sum := sha256.Sum256([]byte(code))
 		return sum[:]
-	})
+	}, invite.GrantByCodeHash)
 	require.NoError(t, err)
 
 	racing := &racingStore{Store: real, at: raceNow}

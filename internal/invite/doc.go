@@ -28,4 +28,11 @@
 // by one conditional UPDATE. It resolves through the same [Service.Resolve] as an invite, so
 // `previewInvite` and `/join` have one code path, and it is a different row in a different table
 // because it is a different thing.
+//
+// There is a THIRD path, and forgetting it is what broke first-run sign-in on a real instance: the
+// browser OAuth flow resolves a code too, through `identitysql`, and it never called [Resolve].
+// That is why [GrantByCodeHash] is handed to `identitysql.New` beside [HashCode] — same direction,
+// same argument. This package owns the `tod_meta` key a grant lives under, so nothing else has to
+// spell it, and a path that resolves codes without a grant rung is now a path that had to be
+// wired without one on purpose.
 package invite

@@ -48,6 +48,11 @@ type Ticket struct {
 // `previewInvite`'s disclosure as a CEILING, so the less this type can express, the harder it is
 // for the newer endpoint to drift wider than the older one.
 type Invite struct {
+	// ID is the `invite` row's id, and is EMPTY when the code named the one-time owner grant
+	// instead — a `tod_meta` entry, not an invite row. Nothing in this package reads it: the flow
+	// needs the circle and the hash, and keying on the id here would break first-run sign-in and
+	// nothing else. `TestOwnerGrant_ResolvesWithNoInviteID` says so where an implementer will
+	// trip over it.
 	ID       string
 	CircleID string
 	CodeHash []byte
@@ -119,9 +124,16 @@ type TicketPort interface {
 	ConsumeTicket(ctx context.Context, hash []byte, at core.Micros) (Ticket, error)
 }
 
-// InvitePort resolves an invite. The implementation owns the code hashing, which is why both
-// lookups are here rather than a hash function being exported from this package: two spellings of
-// one hash is exactly the drift that would make a flow resolve one invite and redeem another.
+// InvitePort resolves the code a caller pasted. The implementation owns the code hashing, which is
+// why both lookups are here rather than a hash function being exported from this package: two
+// spellings of one hash is exactly the drift that would make a flow resolve one invite and redeem
+// another.
+//
+// "Invite" is the shape, not the row. A code may name an ordinary `invite` or the one-time owner
+// grant that gives a circle its first owner, and the implementation must answer for BOTH — an
+// implementation that resolved only the invite table would refuse every first-run owner code, with
+// the browser already back from a successful sign-in. That is not a hypothetical failure; it is
+// the one this sentence was added after.
 type InvitePort interface {
 	InviteByCode(ctx context.Context, code string) (Invite, error)
 	InviteByCodeHash(ctx context.Context, hash []byte) (Invite, error)

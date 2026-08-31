@@ -107,12 +107,17 @@ func dataServices(db *store.DB, clk clock.Clock, ids *core.Generator, log *slog.
 
 // wire builds every service the API needs.
 //
-// The invite-code hash is handed to `identitysql.New` from internal/invite rather than defined
-// there, and that direction is the point: whichever package MINTS codes owns hashing them.
+// The invite-code hash and the owner-grant lookup are handed to `identitysql.New` from
+// internal/invite rather than defined there, and that direction is the point: whichever package
+// MINTS a credential owns finding it again.
 // internal/identity never hashes a code — its port takes both the code and the hash — so there is
 // exactly one spelling of that hash in the process. Two spellings would let the OAuth flow resolve
 // one invite and redemption resolve another, and the failure would look like an expired invite
 // rather than like a bug.
+//
+// The grant lookup is the second half of that argument, and it is spelled out here because it
+// was once missing: a first-run owner code is a `tod_meta` row rather than an `invite` one, so
+// the OAuth flow refused every one of them while `previewInvite` accepted the same code.
 // public is the origin this instance is reachable at — `$TOD_PUBLIC_URL`. An EMPTY one is
 // resolved from the environment and then from the instance row, which is what `serve` passes; a
 // caller that already knows the answer — a test standing an instance up before any row exists —
@@ -148,7 +153,7 @@ func wire(
 		return nil, err
 	}
 
-	identityStore, err := identitysql.New(db.Queries(), clk, invite.HashCode)
+	identityStore, err := identitysql.New(db.Queries(), clk, invite.HashCode, invite.GrantByCodeHash)
 	if err != nil {
 		return nil, err
 	}
