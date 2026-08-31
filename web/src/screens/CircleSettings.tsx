@@ -368,6 +368,8 @@ function ProviderChoice({
         </p>
       )}
 
+      {/* The gate of a provider that cannot be sent is read-only for the same reason its tickbox
+          is: an edit here would be typed, look accepted, and reach nothing. */}
       {choice.accepted && choice.kind === 'discord' && (
         <div className="mt-2 space-y-2">
           <GateSummary
@@ -381,7 +383,7 @@ function ProviderChoice({
             >
               <Input
                 value={choice.discord_guild_id}
-                disabled={readOnly}
+                disabled={readOnly || !choice.available}
                 onChange={(e) => onChange({ discord_guild_id: e.target.value.trim() })}
               />
             </Field>
@@ -391,7 +393,7 @@ function ProviderChoice({
             >
               <Input
                 value={choice.discord_required_role_ids.join(', ')}
-                disabled={readOnly}
+                disabled={readOnly || !choice.available}
                 onChange={(e) =>
                   onChange({
                     discord_required_role_ids: e.target.value
