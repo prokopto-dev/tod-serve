@@ -12,7 +12,12 @@ import (
 	"strings"
 )
 
-// HandleRuleID is SQL002, as AGENTS.md law 2 names it.
+// HandleRuleID is SQL002: the analyser half of law 2, beside SQL001's grep. It answers whether a
+// handle can be OBTAINED without importing database/sql, which the grep cannot see.
+//
+// This comment used to cite AGENTS.md as its authority, at a time when AGENTS.md law 2 said no
+// SQL002 existed — two PRs raced and the prose lost. A comment naming a document that contradicts
+// it is worse than no comment, so it states the rule instead of pointing at a copy of it.
 const HandleRuleID = "SQL002"
 
 // handleImport is the package whose handles must not leave internal/store.
