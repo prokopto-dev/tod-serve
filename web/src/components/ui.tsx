@@ -38,7 +38,7 @@ export function Card({
   )
 }
 
-type ButtonVariant = 'primary' | 'ghost' | 'danger'
+type ButtonVariant = 'primary' | 'ghost' | 'danger' | 'discord'
 
 export function Button({
   variant = 'ghost',
@@ -51,6 +51,14 @@ export function Button({
     // Used for revocation and retraction. It is a strong colour because both are consequential,
     // not because either is an error.
     danger: 'bg-ink-800 text-rose-300 hover:bg-rose-950/60 border-rose-900/70',
+    // Discord's own control, in Discord's own colours. It is a VARIANT rather than a bespoke
+    // element so that it inherits the height, radius, border, transition, disabled treatment and
+    // focus behaviour of every button beside it — a sign-in button that sits in the visual system
+    // instead of looking pasted into it. `components/ProviderButton.tsx` is what decides when it
+    // is used, and it decides on provider `kind`.
+    discord:
+      'bg-discord-blurple text-white border-discord-blurple ' +
+      'hover:bg-discord-blurple-dark hover:border-discord-blurple-dark',
   }
   return (
     <button

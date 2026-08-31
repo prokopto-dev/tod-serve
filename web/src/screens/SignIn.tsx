@@ -16,6 +16,7 @@ import { Link, Navigate } from 'react-router-dom'
 import { api, body, toError } from '../api'
 import { useResource } from '../app/useResource'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
+import { ProviderButton } from '../components/ProviderButton'
 import { Banner, Button, Card, Empty, Field, Input, Select, Spinner } from '../components/ui'
 import { forgetCircle, rememberedCircles, setPendingJoin } from '../lib/storage'
 
@@ -171,17 +172,16 @@ export function SignIn() {
                       : 'advisory revocation — nobody can tell us this account is gone'}
                   </p>
                 </div>
-                <Button
-                  variant="primary"
+                <ProviderButton
+                  kind={provider.kind}
+                  label={provider.browser_flow ? 'Continue' : 'Sign in'}
                   disabled={!circleID || (!provider.browser_flow && !displayName.trim())}
                   onClick={() =>
                     provider.browser_flow
                       ? startBrowserFlow(provider.key)
                       : signInLocally(provider.key)
                   }
-                >
-                  {provider.browser_flow ? 'Continue' : 'Sign in'}
-                </Button>
+                />
               </div>
             ))}
             {rows.some((p) => !p.browser_flow) && (

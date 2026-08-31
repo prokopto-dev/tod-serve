@@ -16,6 +16,7 @@ import { api, body, ProblemError, type InvitePreview, type Joined, toError } fro
 import { usePrincipalState } from '../app/principal'
 import { useResource } from '../app/useResource'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
+import { ProviderButton } from '../components/ProviderButton'
 import { RevocationBanner } from '../components/RevocationBanner'
 import { Banner, Button, Card, Field, Input, Mono, Spinner } from '../components/ui'
 import { takeFragment, type Fragment } from '../lib/hash'
@@ -329,21 +330,19 @@ function PreviewCard({
                   </p>
                 </div>
                 {provider.kind === 'local' ? (
-                  <Button
-                    variant="primary"
+                  <ProviderButton
+                    kind={provider.kind}
+                    label="Join"
                     disabled={!displayName.trim() || !provider.available}
                     onClick={() => onLocal(provider.key)}
-                  >
-                    Join
-                  </Button>
+                  />
                 ) : (
-                  <Button
-                    variant="primary"
+                  <ProviderButton
+                    kind={provider.kind}
+                    label="Continue"
                     disabled={!provider.available}
                     onClick={() => onBrowserFlow(provider.key)}
-                  >
-                    Continue
-                  </Button>
+                  />
                 )}
               </div>
             ))}
