@@ -17,7 +17,6 @@ is the toolchain's pattern, so this shape outlives nParse+.
 | A — Discord OAuth inside the plugin | No new flow in tod-serve | A desktop binary holds no client secret, so it needs a **public, per-install** app — the shared-app model [ADR-0011](0011-operator-registered-discord-application.md) removed to close cross-instance replay — and it puts a Discord token on a player's disk |
 | B — Loopback redirect (RFC 8252) | Standard; no polling endpoint | Every operator must register a per-instance redirect URI, and it fails when the browser is on another machine — a second OAuth surface for a client that only wanted a token |
 | C — RFC 8628 device grant against **tod-serve** | The plugin never touches Discord: tod-serve is already the relying party, so no secret ships and ADR-0011's per-instance app and `GET /oauth2/@me` audience check are untouched | Two new **unauthenticated** routes and a polling endpoint, plus a table, a sweep target and a console screen |
-| D — One long-lived cross-circle token | One credential to store | [ADR-0005](0005-pats-bound-to-memberships.md) rejected this deliberately: it needs an `admin:*`-shaped scope the catalogue lacks, and it survives a revocation in any one circle |
 
 ## Decision outcome
 
@@ -48,9 +47,10 @@ stays session-only.
 holds, so adding it once Phase 6 ships a handler widens the transport, not the rows. Today it would
 put a scope on live tokens that grants nothing yet must be reviewed as if it did.
 
-**Per-membership, unchanged.** Approval names memberships: a user in Blue and Green approves both,
-and `/device/token` returns **two tokens**, each an ordinary ADR-0005 PAT bound to one membership
-and checked every request. No device principal, no new token kind.
+**What an approval yields is [ADR-0019](0019-a-device-grant-is-identity-scoped.md)'s question.**
+This ADR decides how a device is authorized. What it then holds — an identity-scoped grant that
+exchanges for per-membership tokens — is decided there, together with the long-lived cross-circle
+token this one no longer weighs and the ceiling that one Discord login cannot span instances.
 
 **The new public surface.** `/device/authorize` and `/device/token` are `AuthPublic` and join the
 invite-oracle bucket via `Route.InviteOracle`, whose comment already says a third code-taking route
@@ -78,13 +78,14 @@ invite. Invites keep one job: first entry into a circle.
 ### Consequences
 
 - Good, because no client secret ships in a desktop binary and ADR-0011 is untouched.
-- Good, because these are ordinary PATs: revocation, listing and authz are unchanged.
+- Good, because the credential a route sees is an ordinary PAT: revocation, listing and authz
+  are unchanged.
 - **Bad, because a compromised Discord account now yields durable tokens, not just a session.** The
   scope set bounds what they reach, not how long they last.
 - **Bad, because the bucket is keyed per caller,** so a distributed guesser gets a budget per
   address. Entropy and short expiry defend this, not the limiter.
-- **Bad, because two circles means two tokens in one response,** which every client author will get
-  wrong once.
+- **Bad, because a client ends up holding one token per circle** (ADR-0019), which every client
+  author will get wrong once.
 - **Bad, because `authorization_pending` must not become a timing oracle** for whether a code
   exists — nothing in the tree tests that today.
 
