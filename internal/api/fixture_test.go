@@ -27,6 +27,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/identity/identitysql"
 	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
+	"github.com/prokopto-dev/tod-serve/internal/instancesettings"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
 	"github.com/prokopto-dev/tod-serve/internal/projection"
@@ -106,23 +107,24 @@ func newHarness(t *testing.T) *harness {
 	invalidator := &recordingInvalidator{delegate: svc.states}
 
 	server, err := api.New(api.Config{
-		Version:     "0.0.0-test",
-		Store:       db,
-		Auth:        authn,
-		Sessions:    codec,
-		Circles:     svc.circles,
-		Members:     svc.members,
-		Invites:     svc.invites,
-		Identities:  svc.identities,
-		Catalogue:   svc.catalogue,
-		Tods:        svc.tods,
-		States:      svc.states,
-		Invalidator: invalidator,
-		Clock:       clk,
-		Log:         log,
-		IDs:         ids,
-		Metrics:     api.MetricsConfig{Enabled: true, Token: testMetricsTok},
-		Setup:       svc.setup,
+		Version:          "0.0.0-test",
+		Store:            db,
+		Auth:             authn,
+		Sessions:         codec,
+		Circles:          svc.circles,
+		Members:          svc.members,
+		Invites:          svc.invites,
+		Identities:       svc.identities,
+		Catalogue:        svc.catalogue,
+		InstanceSettings: svc.settings,
+		Tods:             svc.tods,
+		States:           svc.states,
+		Invalidator:      invalidator,
+		Clock:            clk,
+		Log:              log,
+		IDs:              ids,
+		Metrics:          api.MetricsConfig{Enabled: true, Token: testMetricsTok},
+		Setup:            svc.setup,
 		// Armed on the DEFAULT harness, so that "setup is reachable" is the state every test in
 		// this package runs against and a route that stopped refusing correctly is a red test
 		// somewhere rather than a green one everywhere.
@@ -157,6 +159,7 @@ type wiredServices struct {
 	states     *projection.Service
 	grants     *instancegrant.Service
 	setup      *setup.Service
+	settings   *instancesettings.Service
 }
 
 func newServices(
@@ -215,9 +218,17 @@ func newServices(
 	})
 	require.NoError(t, err)
 
+	// The real settings service over the real tables, for the reason the ledger beside it is real:
+	// what these routes answer depends on rows, and the hash chain is one of the things under test.
+	settings, err := instancesettings.New(instancesettings.Config{
+		Store: db, Clock: clk, IDs: ids, Log: log,
+	})
+	require.NoError(t, err)
+
 	return wiredServices{
 		circles: circles, invites: invites, members: members, identities: identities,
 		catalogue: catalogues, tods: tods, states: states, grants: grants, setup: first,
+		settings: settings,
 	}
 }
 
@@ -246,6 +257,7 @@ func newHarnessWithConsole(t *testing.T) *harness {
 		Invites:             svc.invites,
 		Identities:          svc.identities,
 		Catalogue:           svc.catalogue,
+		InstanceSettings:    svc.settings,
 		Tods:                svc.tods,
 		States:              svc.states,
 		Invalidator:         h.invalidator,
@@ -284,6 +296,7 @@ func newHarnessWithoutMetrics(t *testing.T) *harness {
 		Invites:             svc.invites,
 		Identities:          svc.identities,
 		Catalogue:           svc.catalogue,
+		InstanceSettings:    svc.settings,
 		Tods:                svc.tods,
 		States:              svc.states,
 		Invalidator:         h.invalidator,
@@ -314,22 +327,23 @@ func newHarnessWithoutSetupToken(t *testing.T) *harness {
 	require.NoError(t, err)
 
 	server, err := api.New(api.Config{
-		Version:     "0.0.0-test",
-		Store:       h.store,
-		Auth:        authn,
-		Sessions:    h.codec,
-		Circles:     svc.circles,
-		Members:     svc.members,
-		Invites:     svc.invites,
-		Identities:  svc.identities,
-		Catalogue:   svc.catalogue,
-		Tods:        svc.tods,
-		States:      svc.states,
-		Invalidator: h.invalidator,
-		Clock:       h.clock,
-		Log:         log,
-		IDs:         h.ids,
-		Setup:       svc.setup,
+		Version:          "0.0.0-test",
+		Store:            h.store,
+		Auth:             authn,
+		Sessions:         h.codec,
+		Circles:          svc.circles,
+		Members:          svc.members,
+		Invites:          svc.invites,
+		Identities:       svc.identities,
+		Catalogue:        svc.catalogue,
+		InstanceSettings: svc.settings,
+		Tods:             svc.tods,
+		States:           svc.states,
+		Invalidator:      h.invalidator,
+		Clock:            h.clock,
+		Log:              log,
+		IDs:              h.ids,
+		Setup:            svc.setup,
 		// No SetupToken. The zero value is the whole point: an operator who never armed setup, or
 		// who removed the variable afterwards, has an instance where the routes refuse everybody.
 		OnResponseViolation: func(v api.Violation) { t.Errorf("response contract: %s", v) },

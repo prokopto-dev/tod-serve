@@ -370,8 +370,48 @@ immutable (`422 field_immutable`) because `kind` decides `verifiable_subject`, a
 refused (`409 conflict`) once anybody has joined through the provider — **disabling** it is the
 operation that stops new joins.
 
+`/admin/instance` is the instance's own policy: its name, its timezone, and its stated answer to
+**who may create a circle here**. That last one is what `/meta` publishes and what a client reads to
+decide whether to offer the option — it is **published, not yet enforced**, because `createCircle`
+declares `instance.circle.create` in the route registry unconditionally and the middleware checks it
+before any handler runs. A route whose permission depends on a row is something the registry cannot
+express today, which is the whole of law 1.
+`TestCreateCircle_SelfServiceOn_StillRequiresTheInstanceGrant` pins the gap, so it is a stated fact
+rather than an inference from a field name.
+
+The two operations carry `instance.security.manage` rather than `instance.owner` deliberately.
+`instance.owner` expands to the whole instance realm
+([ADR-0015](../adr/0015-instance-owner-implies-the-instance-realm.md)), so requiring it would make
+the only way to delegate this one switch a grant that also hands over the identity providers, the
+catalogue and the ops dashboard — a narrower route reachable only through a wider grant. Every
+owner holds `instance.security.manage` through that same expansion, so nothing an owner could do is
+lost.
+
+**Every change is recorded in `instance_setting_change`**, which is append-only and hash-chained.
+`audit_log.circle_id` is `NOT NULL` and an instance-wide policy belongs to no circle, so the ledger
+is its own audit record — the same answer
+[ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md) gave for `instance_grant`,
+rather than a reason to skip the audit — see
+[ADR-0018](../adr/0018-instance-settings-are-mutable-with-a-change-ledger.md).
+`getInstanceSettings` returns the whole ledger beside the settings; `updateInstanceSettings`
+returns the rows it just wrote.
+
+**`public_url` is read-only here and is refused with `422 field_immutable`.** It must match the
+redirect URI registered with every identity provider character for character; a mismatch is a
+sign-in that completes at the provider and lands somewhere else, leaving no evidence on the instance
+it was meant to reach. It is resolved at startup from `$TOD_PUBLIC_URL` before the row is consulted,
+so a change here would take effect at some later restart. Changing it means changing that variable,
+re-registering the redirect URI, and restarting — three steps `tod-serve doctor` checks together.
+`instance_setting_change.setting` cannot hold `public_url`, so there is no second way in.
+
+Neither operation requires `Idempotency-Key`: nothing is appended to the domain, and `If-Match` is
+what makes a retry safe — the second attempt carries the tag of the state the first one replaced
+and is refused with `412`.
+
 | Method | Path | OperationID | Permission | Scope |
 |---|---|---|---|---|
+| GET | `/admin/instance` | `getInstanceSettings` | `instance.security.manage` | — step-up |
+| PATCH | `/admin/instance` | `updateInstanceSettings` | `instance.security.manage` | — step-up |
 | GET | `/admin/identity-providers` | `listAdminIdentityProviders` | `instance.security.manage` | — step-up |
 | POST | `/admin/identity-providers` | `createIdentityProvider` | `instance.security.manage` | — step-up |
 | PATCH | `/admin/identity-providers/{provider_id}` | `updateIdentityProvider` | `instance.security.manage` | — step-up |

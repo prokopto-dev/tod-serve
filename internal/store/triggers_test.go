@@ -341,6 +341,16 @@ func seedAppendOnlyRows(t *testing.T, ctx context.Context, db *DB, f fixture) {
 		VALUES (?, ?, ?, ?, NULL, NULL, '', NULL, ?, ?)`,
 		id.next(t), f.IdentityID, string(authz.PermissionInstanceOwner),
 		schemaenum.InstanceGrantDecisionGranted, []byte("hash-0002"), int64(now))
+
+	// One instance policy change. changed_by_identity_id NULL reads as the operator at the
+	// console, the same convention instance_grant uses, and old_value <> new_value is a CHECK: a
+	// row where nothing moved is a row a reader has to filter before the ledger means anything.
+	mustExec(t, ctx, db, `
+		INSERT INTO instance_setting_change (id, setting, old_value, new_value,
+			changed_by_identity_id, reason, prev_hash, hash, changed_at)
+		VALUES (?, ?, '0', '1', NULL, '', NULL, ?, ?)`,
+		id.next(t), schemaenum.InstanceSettingSelfServiceCircleCreation,
+		[]byte("hash-0003"), int64(now))
 }
 
 func count(t *testing.T, ctx context.Context, db *DB, table string) int {

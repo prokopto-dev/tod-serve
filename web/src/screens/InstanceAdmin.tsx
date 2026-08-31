@@ -1,6 +1,8 @@
-// Instance administration — the instance's identity providers.
+// Instance administration — the instance's own policy, and its identity providers.
 //
-// This is the screen that makes an instance's identity providers configurable without a terminal.
+// This is the screen that makes an instance's policy and its identity providers configurable
+// without a terminal.
+//
 // Everything here needs `instance.security.manage`, which is INSTANCE-REALM: no circle role grants
 // it, no personal access token reaches it at any scope, and what does grant it is an
 // `instance_grant` written by `tod-serve instance grant` at the console. That is deliberate — a
@@ -18,20 +20,37 @@
 // and an instance operator does not, so an editor sitting on this screen was one no circle owner
 // could ever reach. It lives on Circle settings, once, and this screen links to it rather than
 // carrying a second copy.
+//
+// The instance policy card is the SAME permission as the providers below it and a different kind of
+// decision, which is why it sits here rather than on a screen of its own. Every change to it is
+// recorded in `instance_setting_change` — append-only and hash-chained, because
+// `audit_log.circle_id` is NOT NULL and an instance policy belongs to no circle. The ledger is
+// rendered under the form rather than hidden behind a second screen: an audit record nobody can
+// read is one nobody checks.
+//
+// `public_url` is shown and cannot be edited here. It has to match the redirect URI registered with
+// every identity provider character for character, and it is read at startup from `$TOD_PUBLIC_URL`
+// before the row — so a field that accepted a new one would break sign-in at some later restart,
+// with nothing on this instance to show for it.
 
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
-import { api, type AdminIdentityProvider, toError } from '../api'
-import { useResource } from '../app/useResource'
+import { api, type AdminIdentityProvider, type InstanceSettingsResponse, toError } from '../api'
+import { useResource, type Resource } from '../app/useResource'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { DiscordMark } from '../components/ProviderButton'
+import { instant } from '../lib/format'
 import { Banner, Button, Card, Empty, Field, Input, Mono, Select, Spinner, Td, Th } from '../components/ui'
 
 export function InstanceAdmin() {
   const [error, setError] = useState<Error | null>(null)
   const [adding, setAdding] = useState(false)
 
+  const settings = useResource(
+    (signal) => api.getInstanceSettings({}, { signal }).then((r) => r.data),
+    [],
+  )
   const providers = useResource(
     (signal) => api.listAdminIdentityProviders({}, { signal }).then((r) => r.data),
     [],
@@ -42,6 +61,8 @@ export function InstanceAdmin() {
   return (
     <div className="space-y-3">
       {error && <ProblemNotice error={error} />}
+
+      <InstancePolicyCard resource={settings} onError={setError} />
 
       <Card
         title="Identity providers"
@@ -109,6 +130,209 @@ export function InstanceAdmin() {
       </Banner>
     </div>
   )
+}
+
+/**
+ * InstancePolicyCard is the instance's own settings, and the ledger of every change to them.
+ *
+ * The switch that matters is `self_service_circle_creation`: this instance's stated answer to who
+ * may create a circle here. It was answered once by the first-run wizard and could not be changed
+ * afterwards, which is the worst moment to be stuck with a policy decision — the operator has the
+ * least information about how their instance will actually be used.
+ *
+ * **It is published, not yet enforced, and the form says so rather than implying otherwise.**
+ * `createCircle` declares `instance.circle.create` in the route registry unconditionally, so
+ * turning this on moves what `/meta` publishes and does not widen who the API accepts a circle
+ * from. A checkbox that reads as a permission change while changing no permission is exactly the
+ * confident mistake this codebase is built against.
+ *
+ * **The ledger is rendered, not just written.** Every change is a row in `instance_setting_change`,
+ * append-only and hash-chained; showing it here is what makes "who turned this on, and when" a
+ * question somebody can answer without a database.
+ *
+ * The save reads first and writes with the entity tag that read returned. `*` would be accepted and
+ * would mean "whatever is there now" — this console overwriting another administrator's change
+ * having read nothing, which is exactly what the precondition exists to prevent.
+ */
+function InstancePolicyCard({
+  resource,
+  onError,
+}: {
+  resource: Resource<InstanceSettingsResponse>
+  onError: (error: Error | null) => void
+}) {
+  const current = resource.data
+  const [draft, setDraft] = useState<Draft | null>(null)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  // The form is seeded from the server's answer on first render and never re-seeded behind
+  // somebody's typing: a reload that overwrote a half-edited name would lose their work silently.
+  const form = draft ?? {
+    name: current?.name ?? '',
+    timezone: current?.timezone ?? '',
+    selfService: current?.self_service_circle_creation ?? false,
+  }
+  const edit = (patch: Partial<Draft>) => setDraft({ ...form, ...patch })
+
+  const dirty =
+    current !== null &&
+    (form.name !== current.name ||
+      form.timezone !== current.timezone ||
+      form.selfService !== current.self_service_circle_creation)
+
+  const save = () => {
+    setBusy(true)
+    onError(null)
+    api
+      .getInstanceSettings({})
+      .then((read) =>
+        api.updateInstanceSettings(
+          {
+            body: {
+              name: form.name,
+              timezone: form.timezone,
+              self_service_circle_creation: form.selfService,
+              ...(reason.trim() ? { reason: reason.trim() } : {}),
+            },
+          },
+          read.etag ? { ifMatch: read.etag } : {},
+        ),
+      )
+      .then(() => {
+        setDraft(null)
+        setReason('')
+        resource.reload()
+      })
+      .catch((err: unknown) => onError(toError(err)))
+      .finally(() => setBusy(false))
+  }
+
+  const changes = current?.changes ?? []
+
+  return (
+    <Card
+      title="Instance policy"
+      subtitle="Instance-wide, and every change is recorded in an append-only, hash-chained ledger."
+      actions={
+        <Button variant="primary" onClick={save} disabled={busy || !dirty}>
+          {busy ? 'Saving…' : 'Save'}
+        </Button>
+      }
+    >
+      <StaleNotice resource={resource} />
+      {resource.error && (
+        <div className="p-4">
+          <ProblemNotice error={resource.error} onRetry={resource.reload} />
+        </div>
+      )}
+      {resource.loading && !current && <Spinner label="Reading the instance settings" />}
+      {current && (
+        <div className="space-y-3 p-4">
+          <label className="flex items-start gap-2 text-xs text-ink-100">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={form.selfService}
+              onChange={(e) => edit({ selfService: e.target.checked })}
+            />
+            <span>
+              <span className="font-semibold">Self-service circle creation</span>
+              <span className="mt-0.5 block text-ink-400">
+                This instance's stated policy on who may create a circle, published on{' '}
+                <Mono>/meta</Mono> so a client knows whether to offer the option.
+              </span>
+              <span className="mt-0.5 block text-amber-400">
+                Published, not yet enforced: <Mono>createCircle</Mono> still requires a grant of{' '}
+                <Mono>instance.circle.create</Mono> whichever way this is set.
+              </span>
+            </span>
+          </label>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="Instance name" hint="What /meta calls this instance.">
+              <Input
+                value={form.name}
+                maxLength={80}
+                onChange={(e) => edit({ name: e.target.value })}
+              />
+            </Field>
+            <Field label="Timezone" hint="IANA name. Display only — every countdown is server time.">
+              <Input value={form.timezone} onChange={(e) => edit({ timezone: e.target.value })} />
+            </Field>
+            <Field
+              label="Public URL"
+              hint="Read-only here: it must keep matching the redirect URI registered with every provider. Change $TOD_PUBLIC_URL, re-register the URI, restart."
+            >
+              <Input value={current.public_url} readOnly disabled />
+            </Field>
+            <Field label="Reason" hint="Recorded in the ledger and shown in every listing.">
+              <Input
+                value={reason}
+                maxLength={280}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="why this changed"
+              />
+            </Field>
+          </div>
+
+          <div>
+            <h3 className="mb-1 text-[11px] tracking-wide text-ink-500 uppercase">
+              Recorded changes
+            </h3>
+            {changes.length === 0 ? (
+              <Empty title="Nothing has changed since first-run setup." />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-xs">
+                  <thead>
+                    <tr>
+                      <Th>When</Th>
+                      <Th>Setting</Th>
+                      <Th>From</Th>
+                      <Th>To</Th>
+                      <Th>By</Th>
+                      <Th>Reason</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {changes.map((change) => (
+                      <tr key={change.id}>
+                        <Td className="tnum text-ink-400">{instant(change.changed_at)}</Td>
+                        <Td className="text-ink-100">
+                          <Mono>{change.setting}</Mono>
+                        </Td>
+                        <Td className="text-ink-400">{change.old_value || '—'}</Td>
+                        <Td className="text-ink-100">{change.new_value || '—'}</Td>
+                        <Td className="text-ink-400">
+                          {/* A change with no identity was written by an operator holding the
+                              database, which is a different fact from a person having decided it
+                              — so it is named rather than rendered as a blank. */}
+                          {change.by_console ? (
+                            'the console'
+                          ) : (
+                            <Mono>{change.changed_by_identity_id}</Mono>
+                          )}
+                        </Td>
+                        <Td className="text-ink-400">{change.reason || '—'}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+/** Draft is the policy form's own state, held separately so a reload cannot overwrite typing. */
+interface Draft {
+  name: string
+  timezone: string
+  selfService: boolean
 }
 
 function ProviderRow({

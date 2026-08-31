@@ -17,6 +17,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
+	"github.com/prokopto-dev/tod-serve/internal/instancesettings"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
 	"github.com/prokopto-dev/tod-serve/internal/projection"
@@ -98,6 +99,11 @@ type Config struct {
 	Members    *membership.Service
 	Invites    *invite.Service
 	Identities *identity.Service
+	// InstanceSettings reads and changes the instance-wide policy switches, and is the only
+	// writer of the ledger that records those changes. Required, like every other service here:
+	// an API that started without it would answer `getInstanceSettings` with a 500 on an instance
+	// whose administrator is trying to find out what their own instance is configured to do.
+	InstanceSettings *instancesettings.Service
 	// Catalogue owns raid-target identity, the per-server timers and the per-circle overrides.
 	Catalogue *catalogue.Service
 	// Tods appends to the report log; States derives and caches the board over it. They are two
@@ -164,6 +170,8 @@ func (c Config) validate() error {
 		return errors.New("api config: invite service is nil")
 	case c.Identities == nil:
 		return errors.New("api config: identity service is nil")
+	case c.InstanceSettings == nil:
+		return errors.New("api config: instance settings service is nil")
 	case c.Catalogue == nil:
 		return errors.New("api config: catalogue service is nil")
 	case c.Tods == nil:
@@ -391,6 +399,7 @@ func (s *Server) registerAll() error {
 		s.registerMembers(),
 		s.registerInvites(),
 		s.registerCatalogue(),
+		s.registerInstance(),
 		s.registerAdmin(),
 		s.registerAuth(),
 		s.registerJoin(),

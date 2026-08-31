@@ -312,6 +312,34 @@ export type Field = {
   message: string
 }
 
+export type InstanceSettingChange = {
+  by_console: boolean
+  /** RFC 3339 with microsecond precision, always UTC. */
+  changed_at: string
+  changed_by_identity_id: string
+  id: string
+  new_value: string
+  old_value: string
+  reason: string
+  /** Which instance setting a ledger row is about. */
+  setting: 'self_service_circle_creation' | 'name' | 'timezone'
+}
+
+export type InstanceSettingsResponse = {
+  /** RFC 3339 with microsecond precision, always UTC. */
+  as_of: string
+  /** Every recorded change, newest first */
+  changes: Array<InstanceSettingChange> | null
+  name: string
+  /** Read-only: it must keep matching every registered redirect URI. Sending it is 422 field_immutable */
+  public_url: string
+  /** The instance's stated policy on who may create a circle. Published, not yet enforced: createCircle still requires instance.circle.create */
+  self_service_circle_creation: boolean
+  timezone: string
+  /** RFC 3339 with microsecond precision, always UTC. */
+  updated_at: string
+}
+
 export type Invite = {
   /** A ULID: 26 characters of Crockford base32, lexicographically time-ordered. */
   circle_id: string
@@ -1235,6 +1263,18 @@ export type UpdateIdentityProviderInputBody = {
   token_endpoint?: string
 }
 
+export type UpdateInstanceSettingsInputBody = {
+  name?: string
+  /** Rejected with 422 field_immutable: it must keep matching every registered redirect URI */
+  public_url?: string
+  /** Why, recorded in the hash-chained ledger and shown in every listing */
+  reason?: string
+  /** Let any authenticated principal create a circle */
+  self_service_circle_creation?: boolean
+  /** IANA timezone, display only */
+  timezone?: string
+}
+
 export type UpdateMemberInputBody = {
   display_name?: string
   role?: 'owner' | 'officer' | 'member' | 'observer'
@@ -1279,6 +1319,7 @@ export type OperationId =
   | 'deleteIdentityProvider'
   | 'getCircle'
   | 'getCurrentPrincipal'
+  | 'getInstanceSettings'
   | 'getMember'
   | 'getRaidTarget'
   | 'getServerMeta'
@@ -1313,6 +1354,7 @@ export type OperationId =
   | 'signOut'
   | 'updateCircle'
   | 'updateIdentityProvider'
+  | 'updateInstanceSettings'
   | 'updateMember'
   | 'updateRaidTarget'
 
@@ -1525,6 +1567,20 @@ export const OPERATIONS = {
     circleScoped: false,
     idempotency: '',
     etag: false,
+    ifMatch: false,
+  },
+  getInstanceSettings: {
+    id: 'getInstanceSettings',
+    method: 'GET',
+    path: '/api/v1/admin/instance',
+    pathParams: [],
+    queryParams: [],
+    scopes: [],
+    sessionOnly: true,
+    stepUp: true,
+    circleScoped: false,
+    idempotency: '',
+    etag: true,
     ifMatch: false,
   },
   getMember: {
@@ -2003,6 +2059,20 @@ export const OPERATIONS = {
     etag: true,
     ifMatch: true,
   },
+  updateInstanceSettings: {
+    id: 'updateInstanceSettings',
+    method: 'PATCH',
+    path: '/api/v1/admin/instance',
+    pathParams: [],
+    queryParams: [],
+    scopes: [],
+    sessionOnly: true,
+    stepUp: true,
+    circleScoped: false,
+    idempotency: '',
+    etag: true,
+    ifMatch: true,
+  },
   updateMember: {
     id: 'updateMember',
     method: 'PATCH',
@@ -2120,6 +2190,10 @@ export type GetCircleResult = CircleResponse
 /** The calling principal: membership, circle, role, effective permissions, token prefix, scopes, expiry */
 export type GetCurrentPrincipalInput = EmptyInput
 export type GetCurrentPrincipalResult = PrincipalView
+
+/** The instance-wide settings, and the hash-chained ledger of every change to them */
+export type GetInstanceSettingsInput = EmptyInput
+export type GetInstanceSettingsResult = InstanceSettingsResponse
 
 /** Read one member */
 export interface GetMemberInput {
@@ -2420,6 +2494,12 @@ export interface UpdateIdentityProviderInput {
 }
 export type UpdateIdentityProviderResult = AdminIdentityProviderResponse
 
+/** Change the instance-wide settings, recording each change in the ledger */
+export interface UpdateInstanceSettingsInput {
+  body: UpdateInstanceSettingsInputBody
+}
+export type UpdateInstanceSettingsResult = InstanceSettingsResponse
+
 /** Change a member's role or display name */
 export interface UpdateMemberInput {
   /** The circle */
@@ -2472,6 +2552,8 @@ export const api = {
     send(OPERATIONS.getCircle, input, opts),
   getCurrentPrincipal: (input: GetCurrentPrincipalInput, opts?: CallOptions): Promise<Result<GetCurrentPrincipalResult>> =>
     send(OPERATIONS.getCurrentPrincipal, input, opts),
+  getInstanceSettings: (input: GetInstanceSettingsInput, opts?: CallOptions): Promise<Result<GetInstanceSettingsResult>> =>
+    send(OPERATIONS.getInstanceSettings, input, opts),
   getMember: (input: GetMemberInput, opts?: CallOptions): Promise<Result<GetMemberResult>> =>
     send(OPERATIONS.getMember, input, opts),
   getRaidTarget: (input: GetRaidTargetInput, opts?: CallOptions): Promise<Result<GetRaidTargetResult>> =>
@@ -2540,6 +2622,8 @@ export const api = {
     send(OPERATIONS.updateCircle, input, opts),
   updateIdentityProvider: (input: UpdateIdentityProviderInput, opts?: CallOptions): Promise<Result<UpdateIdentityProviderResult>> =>
     send(OPERATIONS.updateIdentityProvider, input, opts),
+  updateInstanceSettings: (input: UpdateInstanceSettingsInput, opts?: CallOptions): Promise<Result<UpdateInstanceSettingsResult>> =>
+    send(OPERATIONS.updateInstanceSettings, input, opts),
   updateMember: (input: UpdateMemberInput, opts?: CallOptions): Promise<Result<UpdateMemberResult>> =>
     send(OPERATIONS.updateMember, input, opts),
   updateRaidTarget: (input: UpdateRaidTargetInput, opts?: CallOptions): Promise<Result<UpdateRaidTargetResult>> =>

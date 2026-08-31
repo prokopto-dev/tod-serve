@@ -112,8 +112,10 @@ func newServeCommand() *cobra.Command {
 				Invites:    svc.invites,
 				Identities: svc.identity,
 				Catalogue:  svc.catalogue,
-				Tods:       svc.tods,
-				States:     svc.states,
+				// Instance-wide policy, and the ledger that records every change to it.
+				InstanceSettings: svc.settings,
+				Tods:             svc.tods,
+				States:           svc.states,
 				// The projection IS the invalidator: it is the only thing that holds derived
 				// state, so it is the only thing a moved window can make stale.
 				Invalidator: svc.states,

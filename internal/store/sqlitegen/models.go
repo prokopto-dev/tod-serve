@@ -191,6 +191,18 @@ type InstanceGrant struct {
 	DecidedAt           int64
 }
 
+type InstanceSettingChange struct {
+	ID                  string
+	Setting             string
+	OldValue            string
+	NewValue            string
+	ChangedByIdentityID *string
+	Reason              string
+	PrevHash            []byte
+	Hash                []byte
+	ChangedAt           int64
+}
+
 type Invite struct {
 	ID                    string
 	CircleID              string

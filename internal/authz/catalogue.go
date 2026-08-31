@@ -182,8 +182,15 @@ func Permissions() []PermissionDef {
 
 		{PermissionInstanceCircleCreate, RealmInstance, true, "Create a circle on this instance"},
 		{
+			// The summary widened when `/admin/instance` landed, because this key had already
+			// reached further than it said: whoever may add a `local` identity provider can
+			// already let anybody in, so gating a policy switch behind it takes nothing new.
+			// The alternative — `instance.owner` — would have been the wider grant, not the
+			// narrower one: it expands to the whole instance realm (ADR-0015), so delegating one
+			// switch would mean handing over the providers, the catalogue and the ops dashboard.
 			PermissionInstanceSecurityManage, RealmInstance, true,
-			"Add, change or remove the instance's identity providers",
+			"Configure how this instance admits and authorises people: its identity providers, " +
+				"and the instance-wide policy switches such as self-service circle creation",
 		},
 		{
 			PermissionInstanceOwner, RealmInstance, true,

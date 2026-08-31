@@ -13,6 +13,7 @@ locals {
   check_identity_provider_kind            = "kind IN ('discord', 'oidc', 'local')"
   check_instance_grant_decision           = "decision IN ('granted', 'revoked')"
   check_instance_grant_permission         = "permission IN ('catalogue.manage', 'ops.read', 'instance.circle.create', 'instance.security.manage', 'instance.owner')"
+  check_instance_setting_change_setting   = "setting IN ('self_service_circle_creation', 'name', 'timezone')"
   check_invite_minted_by_kind             = "minted_by_kind IN ('session', 'pat')"
   check_invite_role                       = "role IN ('owner', 'officer', 'member', 'observer')"
   check_membership_kind                   = "kind IN ('human', 'service')"
