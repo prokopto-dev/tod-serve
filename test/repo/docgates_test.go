@@ -447,3 +447,71 @@ func TestDOC003_AGateNamedOnlyInAString_IsStillAPhantom(t *testing.T) {
 		})
 	}
 }
+
+// The third and narrowest way a mention reads as a definition, and the one stripping quotes does not
+// reach: an UNQUOTED argument. `echo report NOPE999 was removed` is the same prose as the quoted
+// case with the quotes taken off, and there `report` is an argument to `echo` — not a command at
+// all. A scan matching bare words anywhere on a line cannot tell it from a call.
+//
+// So a call is recognised only where a command can BEGIN: start of line, after `; & | ( ) { }`
+// — which covers `&&`, `||`, a case arm's `)` and a `{ … }` group — or after `then`, `else`, `do`,
+// `elif`. Every command position that appears in this repository is driven below beside the
+// mentions, because the failure mode of this fix is a pattern narrowed until real calls stop
+// matching: that would turn every gate in the repository into a phantom, and the mention cases
+// alone would still pass.
+func TestDOC003_AGateNamedAsAnArgument_IsStillAPhantom(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		line    string
+		wantErr bool
+	}{
+		{
+			name:    "an unquoted argument to echo is a mention",
+			line:    `echo report NOPE999 was removed`,
+			wantErr: true,
+		},
+		{
+			name:    "an unquoted argument to any command is a mention",
+			line:    `printf '%s' vacant NOPE999`,
+			wantErr: true,
+		},
+		{name: "a plain call", line: `report NOPE999 "plain"`, wantErr: false},
+		{name: "a call after &&", line: `[ -n "$x" ] && report NOPE999 "after &&"`, wantErr: false},
+		{name: "a call after || {", line: `[ -f x ] || { report NOPE999 "grouped"; }`, wantErr: false},
+		{
+			name:    "a call in a case arm",
+			line:    `case "$m" in missing) report NOPE999 "arm" ;; esac`,
+			wantErr: false,
+		},
+		{
+			name:    "a call after then and after else",
+			line:    `if [ -n "$y" ]; then report NOPE999 "t"; else report NOPE999 "e"; fi`,
+			wantErr: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(root, "scripts"), 0o750))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "scripts", "gate.sh"),
+				[]byte("#!/usr/bin/env bash\n"+tc.line+"\nreport REAL001 \"keeps the scan non-empty\"\n"),
+				0o600))
+
+			page := filepath.Join(t.TempDir(), "invariants.md")
+			require.NoError(t, os.WriteFile(page, []byte(
+				"| `NOPE999` | the gate under test |\n"+
+					"| `REAL001` | present so the scan is never empty |\n"), 0o600))
+
+			out, err := runDocsCheck(t, page, "TOD_GATE_ROOT="+root)
+			if tc.wantErr {
+				require.Error(t, err, "DOC003 certified a gate that is only an argument:\n%s", out)
+				require.Contains(t, out, "NOPE999")
+				return
+			}
+			require.NoError(t, err, "DOC003 called a defined gate a phantom:\n%s", out)
+		})
+	}
+}

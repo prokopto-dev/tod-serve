@@ -101,14 +101,22 @@ if [ -f docs/concepts/invariants.md ]; then
 # they were both written to catch, in the gates that catch it.
 gate_definitions() {
   root="$1"
-  { # Quoted text and comments are REMOVED before anything looks for a call, because
-    # `echo "report NOPE999 was removed"` is prose ABOUT a gate, not a call to one — and excluding
-    # comments alone let exactly that certify a phantom. A real call survives the strip with its id
-    # intact (`report LIC001 "..."` becomes `report LIC001 `); a mention does not (`echo "..."`
-    # becomes `echo `). Stripping strings first also makes the comment rule exact rather than
-    # approximate: a `#` inside a string is no longer mistaken for the start of a comment.
+  { # Quoted text and comments are REMOVED first, and what survives is then matched only where a
+    # COMMAND can begin. Both halves are needed, and each was found by a phantom slipping past the
+    # other: `echo "report NOPE999 was removed"` is prose in quotes, and `echo report NOPE999 was
+    # removed` is the same prose with the quotes taken off — there `report` is an ARGUMENT to echo
+    # and not a command at all. Matching bare words anywhere on a line cannot tell those apart, and
+    # a gate that certifies a phantom is the one failure this gate exists to prevent.
+    #
+    # A command begins at the start of a line, after one of `; & | ( ) { }` — which covers `&&`,
+    # `||`, a `case` arm's `)` and a `{ ... }` group — or after `then`, `else`, `do` or `elif`.
+    # Every call in this repository sits in one of those positions and none is preceded by another
+    # word, which is exactly what separates `report FOO001` from `echo report FOO001`.
+    #
+    # Stripping strings before comments also makes the comment rule exact rather than approximate:
+    # a `#` inside a string is no longer mistaken for the start of a comment.
     sed -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$root"/scripts/*.sh 2>/dev/null \
-      | grep -oE '(^|[^[:alnum:]_])(report|pass|vacant) [A-Z]+[0-9]{3}'
+      | grep -oE '(^|[;&|(){}]|[[:space:]](then|else|do|elif))[[:space:]]*(report|pass|vacant)[[:space:]]+[A-Z]+[0-9]{3}'
     grep -hoE '^func Test[A-Z]+[0-9]{3}_' "$root"/test/repo/*.go 2>/dev/null
     find "$root/internal/repogate" -maxdepth 1 -name '*.go' ! -name '*_test.go' -exec \
       grep -hoE '^[^/]*(ID:[[:space:]]*|=[[:space:]]*)"[A-Z]+[0-9]{3}"' {} + 2>/dev/null
