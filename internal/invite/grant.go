@@ -89,7 +89,17 @@ func MintGrant(
 
 // ReadGrant returns the grant a code names, or [store.ErrNoRows] wrapped when there is none.
 func ReadGrant(ctx context.Context, q *sqlitegen.Queries, code Code) (Grant, error) {
-	row, err := q.GetMeta(ctx, grantKey(Hash(code)))
+	return ReadGrantByHash(ctx, q, Hash(code))
+}
+
+// ReadGrantByHash is [ReadGrant] for a caller that already holds the hash and not the code.
+//
+// The browser OAuth flow is that caller: `auth_flow.invite_code_hash` is what a callback has,
+// minutes after the code itself went out of scope. Both spellings go through one [grantKey] here,
+// because a second derivation of that key elsewhere would be a second lookup path — which is
+// exactly the defect this function was added to close.
+func ReadGrantByHash(ctx context.Context, q *sqlitegen.Queries, hash []byte) (Grant, error) {
+	row, err := q.GetMeta(ctx, grantKey(hash))
 	if err != nil {
 		if store.IsNotFound(err) {
 			return Grant{}, fmt.Errorf("owner grant: %w", store.ErrNoRows)
@@ -101,6 +111,34 @@ func ReadGrant(ctx context.Context, q *sqlitegen.Queries, code Code) (Grant, err
 		return Grant{}, fmt.Errorf("read owner grant: %w", err)
 	}
 	return grant, nil
+}
+
+// GrantByCodeHash is the owner-grant lookup `identitysql.New` is handed.
+//
+// It is injected for the reason [HashCode] is, and against the same failure. `tod_meta`'s
+// `owner_grant/` key is THIS package's, as the hash is, and a second spelling of it in the
+// persistence half would let one path resolve a code and another refuse it. That is not
+// hypothetical: until this existed, `createAuthorizationURL` resolved the `invite` table and
+// nothing else, so every first-run owner code was answered `invite_invalid` after a perfectly
+// successful Discord sign-in, while `previewInvite` — which falls back to [ReadGrant] — showed
+// the same code as valid on the page the browser came from.
+//
+// It returns values rather than a [Grant] so that neither package has to import the other's
+// types, and it returns `expires_at` and `consumed_at` rather than a verdict because the caller
+// holds the clock — the same division `identitysql.InviteByCodeHash` already makes for an invite
+// row. `consumed_at` is zero when the grant has not been redeemed.
+//
+// A hash naming no grant answers [store.ErrNoRows] wrapped, which is what an unissued invite
+// answers. That must stay true: an owner grant a guesser can tell apart from an ordinary invite
+// is the circle-existence oracle [Resolve] closes.
+func GrantByCodeHash(
+	ctx context.Context, q *sqlitegen.Queries, hash []byte,
+) (circleID string, expiresAt, consumedAt core.Micros, err error) {
+	grant, err := ReadGrantByHash(ctx, q, hash)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	return grant.CircleID, grant.ExpiresAt, grant.ConsumedAt, nil
 }
 
 // ConsumeGrant marks a grant redeemed, and refuses a second redemption.

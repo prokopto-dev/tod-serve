@@ -46,7 +46,16 @@ type fixture struct {
 	grants   *instancegrant.Service
 }
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T) *fixture { return newFixtureWithClients(t, nil) }
+
+// newFixtureWithClients is [newFixture] with the provider transport swapped.
+//
+// A nil `clients` gets the guarded ones, which is what every test wants: the join path under test
+// reaches no network, so a fake would only weaken it. The one exception is the `bearer_token`
+// credential, which is a Discord access token this instance has to go and check — the only join
+// shape that cannot be driven without a transport, and therefore the one that had no end-to-end
+// test until now.
+func newFixtureWithClients(t *testing.T, clients identity.Clients) *fixture {
 	t.Helper()
 	ctx := t.Context()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -60,10 +69,13 @@ func newFixture(t *testing.T) *fixture {
 	minter, err := auth.NewMinter(core.Secret("membership-test-pepper"), rand.Reader)
 	require.NoError(t, err)
 
-	identityStore, err := identitysql.New(db.Queries(), clk, invite.HashCode)
+	identityStore, err := identitysql.New(db.Queries(), clk, invite.HashCode, invite.GrantByCodeHash)
 	require.NoError(t, err)
-	clients, err := identity.NewGuardedClients(clk)
-	require.NoError(t, err)
+	if clients == nil {
+		guarded, err := identity.NewGuardedClients(clk)
+		require.NoError(t, err)
+		clients = guarded
+	}
 	identities, err := identity.New(identity.Config{
 		Store: identityStore, Clients: clients, Clock: clk, IDs: ids,
 		Entropy: rand.Reader, SPAJoinURL: "https://tod.example.com/join",
@@ -114,9 +126,13 @@ func (f *fixture) provider(key, kind string) string {
 	if kind == schemaenum.IdentityProviderKindDiscord {
 		// The instance is a confidential OAuth client of the operator's own application, so a
 		// discord row without a secret is one Provider.Validate refuses: it cannot perform the
-		// token exchange, and every sign-in through it would fail.
+		// token exchange, and every sign-in through it would fail. The redirect URI is refused
+		// for the same reason and was missing until a `bearer_token` join went looking for it —
+		// a row this fixture writes should be a row an operator could have.
 		secret := key + "-client-secret"
+		redirect := "https://tod.example.com/api/v1/auth/callback/" + key
 		params.ClientSecret = &secret
+		params.RedirectUri = &redirect
 	}
 	if kind == schemaenum.IdentityProviderKindOIDC {
 		issuer := "https://" + key + ".example.com"

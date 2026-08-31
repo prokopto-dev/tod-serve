@@ -11,6 +11,7 @@ package identitysql
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/prokopto-dev/tod-serve/internal/clock"
@@ -29,16 +30,35 @@ import (
 // which is why its port takes both the code and the hash.
 type HashCode func(code string) []byte
 
+// GrantByCodeHash reads the one-time owner grant a code hash names.
+//
+// It is INJECTED for the reason [HashCode] is, and against the same failure. A code the caller
+// pastes can name an `invite` row OR the first-run owner grant, which is not an invite at all —
+// it is a `tod_meta` entry under a key internal/invite owns. Spelling that key here would be a
+// second lookup path, and a second lookup path is precisely how this port came to exist: with
+// only the `invite` table, `createAuthorizationURL` refused every first-run owner code with
+// `invite_invalid`, on the same instance where `previewInvite` had just shown it as valid.
+//
+// It returns `expires_at` and `consumed_at` rather than a verdict because the clock is here, which
+// is the division [Store.InviteByCodeHash] already makes for an invite row. A hash naming no grant
+// answers a wrapped [store.ErrNoRows], the same answer an unissued code gets.
+type GrantByCodeHash func(
+	ctx context.Context, q *sqlitegen.Queries, hash []byte,
+) (circleID string, expiresAt, consumedAt core.Micros, err error)
+
 // Store implements identity.Store.
 type Store struct {
 	q     *sqlitegen.Queries
 	clock clock.Clock
 	hash  HashCode
+	grant GrantByCodeHash
 }
 
-// New returns a store. Every argument is required; there is no default hash, because a default
-// hash is a second hash nobody remembers overriding.
-func New(q *sqlitegen.Queries, clk clock.Clock, hash HashCode) (*Store, error) {
+// New returns a store. Every argument is required; there is no default hash and no default grant
+// lookup, because a default is a second spelling nobody remembers overriding.
+func New(
+	q *sqlitegen.Queries, clk clock.Clock, hash HashCode, grant GrantByCodeHash,
+) (*Store, error) {
 	switch {
 	case q == nil:
 		return nil, fmt.Errorf("identity store: no query set")
@@ -46,8 +66,13 @@ func New(q *sqlitegen.Queries, clk clock.Clock, hash HashCode) (*Store, error) {
 		return nil, fmt.Errorf("identity store: no clock")
 	case hash == nil:
 		return nil, fmt.Errorf("identity store: no invite code hash")
+	case grant == nil:
+		// Refused rather than treated as "this instance has no owner grants": a nil lookup would
+		// make every first-run code resolve to nothing, which is the bug this port closes wearing
+		// the costume of a configuration choice.
+		return nil, fmt.Errorf("identity store: no owner grant lookup")
 	}
-	return &Store{q: q, clock: clk, hash: hash}, nil
+	return &Store{q: q, clock: clk, hash: hash, grant: grant}, nil
 }
 
 // --- providers ---------------------------------------------------------------------------------
@@ -322,10 +347,18 @@ func (s *Store) InviteByCode(ctx context.Context, code string) (identity.Invite,
 	return s.InviteByCodeHash(ctx, s.hash(code))
 }
 
+// InviteByCodeHash resolves whatever a code names — an `invite` row, or the one-time owner grant
+// that gives a circle its first owner.
+//
+// The fallback is not a convenience. A first-run owner code is the ONLY credential a fresh
+// instance has, it is not an `invite` row, and without the second rung every browser sign-in that
+// carried one ended at `#error=invite_invalid` — after the operator had signed in at Discord
+// successfully, which is why nothing in the logs looked like a refusal. internal/invite's Resolve
+// has had both rungs since it was written; this is the path that did not.
 func (s *Store) InviteByCodeHash(ctx context.Context, hash []byte) (identity.Invite, error) {
 	row, err := s.q.GetInviteByCodeHash(ctx, hash)
 	if store.IsNotFound(err) {
-		return identity.Invite{}, fmt.Errorf("invite: %w", identity.ErrNotFound)
+		return s.ownerGrantByCodeHash(ctx, hash)
 	}
 	if err != nil {
 		return identity.Invite{}, fmt.Errorf("read invite: %w", err)
@@ -358,6 +391,50 @@ func (s *Store) InviteByCodeHash(ctx context.Context, hash []byte) (identity.Inv
 		out.Live, out.DeadCode = false, identity.CodeInviteExpired
 	case row.Uses >= row.MaxUses:
 		out.Live, out.DeadCode = false, identity.CodeInviteExhausted
+	}
+	return out, nil
+}
+
+// ownerGrantByCodeHash answers the invite lookup from the owner-grant ledger.
+//
+// The answer is deliberately the SAME SHAPE an invite gets, down to which code a dead one carries:
+// [identity.ErrNotFound] for a hash nobody was issued and for one whose circle is gone, and
+// otherwise a live-or-dead [identity.Invite]. An owner grant a guesser could tell apart from an
+// ordinary invite would be the circle-existence oracle internal/invite closes deliberately, so
+// widening this is not a small change.
+//
+// `ID` stays empty, because a grant has no `invite` row to name. Nothing in internal/identity
+// reads it — the flow uses `CircleID` for the guild gate and `CodeHash` for the `auth_flow` row —
+// and `TestOwnerGrant_ResolvesWithNoInviteID` is what says so out loud rather than leaving the
+// next caller to discover it.
+func (s *Store) ownerGrantByCodeHash(ctx context.Context, hash []byte) (identity.Invite, error) {
+	circleID, expiresAt, consumedAt, err := s.grant(ctx, s.q, hash)
+	if errors.Is(err, store.ErrNoRows) {
+		return identity.Invite{}, fmt.Errorf("invite: %w", identity.ErrNotFound)
+	}
+	if err != nil {
+		return identity.Invite{}, fmt.Errorf("read owner grant: %w", err)
+	}
+
+	// The same check, and for the same reason, as the invite branch above: a code naming a
+	// tombstoned circle is a code that names nothing.
+	if _, err := s.q.GetCircle(ctx, circleID); err != nil {
+		if store.IsNotFound(err) {
+			return identity.Invite{}, fmt.Errorf("invite circle: %w", identity.ErrNotFound)
+		}
+		return identity.Invite{}, fmt.Errorf("read owner grant circle: %w", err)
+	}
+
+	out := identity.Invite{CircleID: circleID, CodeHash: hash, Live: true}
+	// Ordered as internal/invite's resolvedGrant orders it, and the two must agree or the OAuth
+	// flow and `/join` would give one code holder two different stories. A grant is single-use by
+	// construction, so a spent one is EXHAUSTED — the same fact `invite.uses >= max_uses` records
+	// — and only an unspent one can be reported expired.
+	switch now := s.clock.Now(); {
+	case !consumedAt.IsZero():
+		out.Live, out.DeadCode = false, identity.CodeInviteExhausted
+	case expiresAt <= now:
+		out.Live, out.DeadCode = false, identity.CodeInviteExpired
 	}
 	return out, nil
 }

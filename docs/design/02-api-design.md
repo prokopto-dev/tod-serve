@@ -65,7 +65,9 @@ reasoned about. It creates an `auth_flow` row only for a request that passes the
 rejected probe costs the instance nothing to store.
 
 **Enforced by:** `TestInviteOracle_PreviewAndAuthorizationURL_ShareOneBucket` and
-`TestCreateAuthorizationURL_AnUnissuedCode_RevealsNoMoreThanPreviewInvite`. The "no `auth_flow` row
+`TestCreateAuthorizationURL_RevealsNoMoreThanPreviewInvite` — which drives a live first-run owner
+grant as well as an unissued code, because an unissued code is the one shape both routes already
+agreed on. The "no `auth_flow` row
 for a rejected probe" half **holds by composition rather than by its own assertion**: the limiter
 runs ahead of the handler that would write the row, which
 `TestInviteOracle_ARateLimitedCaller_ReachesNoHandler` proves. This paragraph named

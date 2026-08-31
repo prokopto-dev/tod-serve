@@ -113,12 +113,11 @@ func discordProvider() identity.Provider {
 	}
 }
 
-// newHarness wires the real service to a fake store and a stub Discord transport whose happy path
-// answers every call the flow makes.
-func newHarness(t *testing.T) *harness {
+// happyDiscordAnswers is the transport table for a sign-in that goes right, in one spelling.
+// A second copy of it would let a test pass against answers the real flow never sees.
+func happyDiscordAnswers(t *testing.T) map[string]*outbound.Response {
 	t.Helper()
-
-	doer := &discordDoer{answers: map[string]*outbound.Response{
+	return map[string]*outbound.Response{
 		"/oauth2/token": jsonResponse(t, http.StatusOK, map[string]any{"access_token": theAccessToken}),
 		"/oauth2/@me": jsonResponse(t, http.StatusOK, map[string]any{
 			"application": map[string]any{"id": discordAppID},
@@ -126,12 +125,27 @@ func newHarness(t *testing.T) *harness {
 		}),
 		"/users/@me": jsonResponse(t, http.StatusOK, map[string]any{"id": discordSubject, "username": "tankguy"}),
 		"/member":    jsonResponse(t, http.StatusOK, map[string]any{"roles": []string{"raider"}}),
-	}}
-	client, err := discord.New(doer, discord.Config{
+	}
+}
+
+// newDiscordClient builds the real client over a stub transport, with the credentials
+// [discordProvider] declares. The redirect URI is spelled out for the reason that fixture spells
+// its own out: a helper that derived it would agree with a broken implementation.
+func newDiscordClient(doer *discordDoer) (*discord.Client, error) {
+	return discord.New(doer, discord.Config{
 		ClientID:     discordAppID,
 		ClientSecret: core.Secret("operator-client-secret"),
 		RedirectURI:  "https://tod.example.com/api/v1/auth/callback/discord",
 	})
+}
+
+// newHarness wires the real service to a fake store and a stub Discord transport whose happy path
+// answers every call the flow makes.
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+
+	doer := &discordDoer{answers: happyDiscordAnswers(t)}
+	client, err := newDiscordClient(doer)
 	require.NoError(t, err)
 
 	store := newFakeStore()
