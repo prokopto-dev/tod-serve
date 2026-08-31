@@ -101,7 +101,14 @@ if [ -f docs/concepts/invariants.md ]; then
 # they were both written to catch, in the gates that catch it.
 gate_definitions() {
   root="$1"
-  { grep -hoE '^[^#]*\b(report|pass|vacant) [A-Z]+[0-9]{3}' "$root"/scripts/*.sh 2>/dev/null
+  { # Quoted text and comments are REMOVED before anything looks for a call, because
+    # `echo "report NOPE999 was removed"` is prose ABOUT a gate, not a call to one — and excluding
+    # comments alone let exactly that certify a phantom. A real call survives the strip with its id
+    # intact (`report LIC001 "..."` becomes `report LIC001 `); a mention does not (`echo "..."`
+    # becomes `echo `). Stripping strings first also makes the comment rule exact rather than
+    # approximate: a `#` inside a string is no longer mistaken for the start of a comment.
+    sed -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$root"/scripts/*.sh 2>/dev/null \
+      | grep -oE '(^|[^[:alnum:]_])(report|pass|vacant) [A-Z]+[0-9]{3}'
     grep -hoE '^func Test[A-Z]+[0-9]{3}_' "$root"/test/repo/*.go 2>/dev/null
     find "$root/internal/repogate" -maxdepth 1 -name '*.go' ! -name '*_test.go' -exec \
       grep -hoE '^[^/]*(ID:[[:space:]]*|=[[:space:]]*)"[A-Z]+[0-9]{3}"' {} + 2>/dev/null

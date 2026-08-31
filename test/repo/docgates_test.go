@@ -383,3 +383,67 @@ func TestDOC003_APathTheRepositoryMustNotContain_IsNotAPhantom(t *testing.T) {
 		})
 	}
 }
+
+// The other half of "a mention is not a definition", and the one excluding comments does not reach:
+// quoted TEXT. `echo "report NOPE999 was removed"` is prose about a gate, not a call to one, and it
+// certified NOPE999 as implemented — the scan saw a line with no `#` on it and a `report FOO001`
+// in the middle, which is exactly what a real call looks like once you stop reading shell as shell.
+//
+// The two real calls are driven in the same table so the strip cannot be widened until it matches
+// nothing: a `sed` that ate the whole line would satisfy the phantom cases and silently turn every
+// gate in the repository into a phantom of its own.
+func TestDOC003_AGateNamedOnlyInAString_IsStillAPhantom(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		line    string
+		wantErr bool
+	}{
+		{
+			name:    "a double-quoted string is a mention",
+			line:    `echo "report NOPE999 was removed in 2026"`,
+			wantErr: true,
+		},
+		{
+			name:    "a single-quoted string is a mention",
+			line:    `echo 'pass NOPE999 also went'`,
+			wantErr: true,
+		},
+		{
+			// A real call keeps its id through the strip: only the message is quoted.
+			name:    "a call with a quoted message is a definition",
+			line:    `report NOPE999 "a gate that exists"`,
+			wantErr: false,
+		},
+		{
+			// And the strip must not eat a guarded call, whose condition carries quotes of its own.
+			name:    "a guarded call with quotes in its condition is a definition",
+			line:    `[ -n "$x" ] && report NOPE999 "still a call"`,
+			wantErr: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(root, "scripts"), 0o750))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "scripts", "gate.sh"),
+				[]byte("#!/usr/bin/env bash\n"+tc.line+"\nreport REAL001 \"keeps the scan non-empty\"\n"),
+				0o600))
+
+			page := filepath.Join(t.TempDir(), "invariants.md")
+			require.NoError(t, os.WriteFile(page, []byte(
+				"| `NOPE999` | the gate under test |\n"+
+					"| `REAL001` | present so the scan is never empty |\n"), 0o600))
+
+			out, err := runDocsCheck(t, page, "TOD_GATE_ROOT="+root)
+			if tc.wantErr {
+				require.Error(t, err, "DOC003 certified a gate that only a string names:\n%s", out)
+				require.Contains(t, out, "NOPE999")
+				return
+			}
+			require.NoError(t, err, "DOC003 called a defined gate a phantom:\n%s", out)
+		})
+	}
+}
