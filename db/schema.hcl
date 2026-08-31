@@ -500,7 +500,7 @@ table "instance_grant" {
 }
 
 // instance_setting_change - the record of who moved an instance-wide policy switch, and when.
-// ADR-0019.
+// ADR-0020.
 //
 // Instance-scoped by construction, for exactly instance_grant's reason: the row is about the
 // singleton `instance` row and the whole instance, so a `circle_id` would be a false statement

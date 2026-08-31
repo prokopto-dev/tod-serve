@@ -193,7 +193,7 @@ func (s *Service) Describe(ctx context.Context) (Settings, []Change, error) {
 	)
 	err := s.db.InReadSnapshot(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
 		var err error
-		if settings, err = read(ctx, q); err != nil {
+		if settings, _, err = read(ctx, q); err != nil {
 			return err
 		}
 		changes, err = history(ctx, q)
@@ -215,7 +215,7 @@ func (s *Service) Current(ctx context.Context) (Settings, error) {
 	var out Settings
 	err := s.db.InReadSnapshot(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
 		var err error
-		out, err = read(ctx, q)
+		out, _, err = read(ctx, q)
 		return err
 	})
 	if err != nil {
@@ -224,19 +224,24 @@ func (s *Service) Current(ctx context.Context) (Settings, error) {
 	return out, nil
 }
 
-// read returns the settings through the query set it is given, so the caller decides what instant
-// they are read at. Inside [Service.Apply]'s transaction that is the row about to be replaced;
-// inside a snapshot it is one consistent instant.
-func read(ctx context.Context, q *sqlitegen.Queries) (Settings, error) {
+// read returns the settings and the ledger's chain head through the query set it is given, so the
+// caller decides what instant they are read at. Inside [Service.Apply]'s transaction that is the
+// row about to be replaced; inside a snapshot it is one consistent instant.
+//
+// The head is returned alongside rather than left to be re-read, and rather than decoded back out
+// of [Settings.Revision]: [Service.Apply] needs the raw bytes to chain its first append onto, and
+// a second `chainTail` in the same transaction would be one more query for an answer this already
+// holds — and a second place for "which head" to be answered.
+func read(ctx context.Context, q *sqlitegen.Queries) (Settings, []byte, error) {
 	row, err := q.GetInstance(ctx)
 	if err != nil {
-		return Settings{}, readInstance(err)
+		return Settings{}, nil, readInstance(err)
 	}
 	head, err := chainTail(ctx, q)
 	if err != nil {
-		return Settings{}, err
+		return Settings{}, nil, err
 	}
-	return settingsOf(row, head), nil
+	return settingsOf(row, head), head, nil
 }
 
 // history returns every change ever recorded, NEWEST first, through the query set it is given.
@@ -284,11 +289,7 @@ func (s *Service) Apply(
 		// the row and the chain head together, because the entity tag covers both. Here they are
 		// read inside the writing transaction, which is what makes the precondition below a check
 		// against the version this UPDATE replaces.
-		current, err := read(ctx, q)
-		if err != nil {
-			return err
-		}
-		prevHash, err := chainTail(ctx, q)
+		current, prevHash, err := read(ctx, q)
 		if err != nil {
 			return err
 		}

@@ -392,7 +392,7 @@ lost.
 is its own audit record — the same answer
 [ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md) gave for `instance_grant`,
 rather than a reason to skip the audit — see
-[ADR-0019](../adr/0019-instance-settings-are-mutable-with-a-change-ledger.md).
+[ADR-0020](../adr/0020-instance-settings-are-mutable-with-a-change-ledger.md).
 `getInstanceSettings` returns the whole ledger beside the settings; `updateInstanceSettings`
 returns the rows it just wrote.
 

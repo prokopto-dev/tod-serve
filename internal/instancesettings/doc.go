@@ -10,7 +10,7 @@
 //     it got that way is a separate append-only, hash-chained table. Folding the two — deriving
 //     the flag from the log — would put a fold over an unbounded list on the hot path, and
 //     dropping the log would make an instance-wide policy change the one decision here nobody
-//     could attribute. ADR-0019 is the argument.
+//     could attribute. ADR-0020 is the argument.
 //   - **It is its own audit record, because `audit_log.circle_id` is NOT NULL.** Turning
 //     self-service circle creation on decides whether any authenticated stranger may create a
 //     circle, which is exactly the event an audit log exists for, and an instance policy belongs

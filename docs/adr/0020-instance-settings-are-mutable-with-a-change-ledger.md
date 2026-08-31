@@ -1,4 +1,4 @@
-# ADR-0019 — Instance settings stay mutable, and their changes are their own ledger
+# ADR-0020 — Instance settings stay mutable, and their changes are their own ledger
 
 **Status:** proposed · **Date:** 2026-08-31 · **Deciders:** owner
 
