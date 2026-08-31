@@ -14,6 +14,7 @@ import { Button, Spinner } from '../components/ui'
 import { classes } from '../lib/format'
 import { rememberCircle } from '../lib/storage'
 import { usePrincipalState } from './principal'
+import { signedOutState } from './signedOut'
 import { useResource } from './useResource'
 
 interface Section {
@@ -121,21 +122,22 @@ export function Shell() {
  * It sits under the principal because that is where somebody looks to answer "who am I signed in
  * as", and the answer they most often want to act on is "not this person, on this machine".
  *
- * Two things are stated rather than assumed. It says the session it ends is THIS one, because the
- * identity may hold others and a control that silently ended them all would be the destructive
- * reading of the same button. And when the server answers, it says how many personal access tokens
- * are still live: signing out of the console revokes none of them, and somebody whose raid depends
- * on a plugin token should be able to see that rather than take it on faith.
+ * It says the session it ends is THIS one, because the identity may hold others and a control that
+ * silently ended them all would be the destructive reading of the same button.
  *
- * A failure is rendered rather than swallowed. The one thing this control must never do is look
+ * What it does NOT do is render the confirmation. Success navigates away, so this component
+ * unmounts in the same commit that would have drawn it — `tokens_kept` therefore travels WITH the
+ * navigation and [SignIn] shows it. See [signedOutState]: holding it in state here is exactly the
+ * bug that shape exists to make unwritable.
+ *
+ * A failure IS rendered here, and stays here. The one thing this control must never do is look
  * like it worked: somebody walking away from a shared machine believing they are signed out, when
- * the server never heard the request, is the exact harm sign-out exists to prevent — so the error
- * stays on screen and the navigation does not happen.
+ * the server never heard the request, is the exact harm sign-out exists to prevent — so on an
+ * error the notice stays on screen and the navigation does not happen.
  */
 function SignOut() {
   const [error, setError] = useState<Error | null>(null)
   const [busy, setBusy] = useState(false)
-  const [kept, setKept] = useState<number | null>(null)
   const navigate = useNavigate()
   const { reload } = usePrincipalState()
 
@@ -144,11 +146,10 @@ function SignOut() {
     setError(null)
     try {
       const result = body(await api.signOut({}))
-      setKept(result.tokens_kept)
-      // The principal is re-read before navigating, so the router acts on what the server says
-      // rather than on this component's belief about what just happened.
+      // The principal is re-read as well as navigated away from, so anything still holding one —
+      // the provider outlives this route — asks the server rather than believing what it had.
       reload()
-      navigate('/signin', { replace: true })
+      navigate('/signin', { replace: true, state: signedOutState(result.tokens_kept) })
     } catch (e) {
       setError(toError(e))
     } finally {
@@ -159,11 +160,6 @@ function SignOut() {
   return (
     <div className="space-y-1.5">
       {error && <ProblemNotice error={error} />}
-      {kept !== null && !error && (
-        <p className="text-[11px] text-ink-500">
-          Signed out. {kept === 1 ? '1 API token is' : `${kept} API tokens are`} untouched.
-        </p>
-      )}
       <Button
         className="w-full justify-center"
         disabled={busy}
