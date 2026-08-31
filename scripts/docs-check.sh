@@ -264,6 +264,11 @@ if [ -f "$INVARIANTS_PAGE" ]; then
     for rpath in $named_paths; do
       case "$rpath" in *'*'*) continue ;; esac
       case "$(basename "$rpath")" in *.*) ;; *) continue ;; esac
+      # A path git is told to ignore is one the repository is REQUIRED not to contain, so its
+      # absence is the invariant rather than a broken claim: `deploy/.env` is named by the rule
+      # that it must never be committed, and demanding it exist would invert that rule. A phantom
+      # `scripts/nope-gate.sh` is not ignored, so this exempts nothing the check is for.
+      if git check-ignore -q "$rpath" 2>/dev/null; then continue; fi
       pn=$((pn + 1))
       [ -e "$rpath" ] || missing_paths="$missing_paths  $rpath\n"
     done

@@ -335,3 +335,51 @@ func TestDOC003_WhenItCanReadNoGates_ItBlamesItselfNotThePage(t *testing.T) {
 	require.NotContains(t, out, "is defined in no script",
 		"a gate that cannot read the definitions must not accuse the page of naming absent ones")
 }
+
+// A path git is told to ignore is one the repository is REQUIRED not to contain, so its absence is
+// the invariant rather than a broken claim. `deploy/.env` is named by the rule that it must never be
+// committed; demanding it exist would invert that rule and make the page unable to state it.
+//
+// The second case is what keeps the exemption honest: a file that is merely missing, and not
+// ignored, is still a finding. Without it the escape could widen to every path and this test would
+// keep passing.
+func TestDOC003_APathTheRepositoryMustNotContain_IsNotAPhantom(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{
+			// Gitignored, absent on purpose, and named by the invariant about its absence.
+			name:    "a gitignored path is exempt",
+			path:    "deploy/.env",
+			wantErr: false,
+		},
+		{
+			// Not ignored, simply absent. This is the phantom shape.
+			name:    "a merely missing path is still a finding",
+			path:    "deploy/nope.env",
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			page := filepath.Join(t.TempDir(), "invariants.md")
+			require.NoError(t, os.WriteFile(page, []byte(
+				"| `DOC003` | a real gate |\n"+
+					"| the rule about it | `"+tc.path+"` |\n"), 0o600))
+
+			out, err := runDocsCheck(t, page)
+			if tc.wantErr {
+				require.Error(t, err, "DOC003 accepted a path that is simply missing:\n%s", out)
+				require.Contains(t, out, tc.path)
+				return
+			}
+			require.NoError(t, err,
+				"DOC003 demanded a path the repository is required NOT to contain:\n%s", out)
+		})
+	}
+}
