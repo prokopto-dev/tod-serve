@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 
 import { AuditLog } from '../screens/AuditLog'
 import { Board } from '../screens/Board'
+import { CircleSettings } from '../screens/CircleSettings'
 import { Devices } from '../screens/Devices'
 import { InstanceAdmin } from '../screens/InstanceAdmin'
 import { Invites } from '../screens/Invites'
@@ -39,6 +40,7 @@ export function App() {
             <Route path="/timers" element={<TimerOverrides />} />
             <Route path="/audit" element={<AuditLog />} />
             <Route path="/devices" element={<Devices />} />
+            <Route path="/settings" element={<CircleSettings />} />
             <Route path="/admin/providers" element={<InstanceAdmin />} />
           </Route>
 

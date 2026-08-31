@@ -19,18 +19,32 @@ import { useResource } from './useResource'
 interface Section {
   to: string
   label: string
-  /** permission is the catalogue key that reveals the section. Absent means everybody sees it. */
-  permission?: string
+  /**
+   * permissions are catalogue keys, and holding ANY ONE of them reveals the section. Absent means
+   * everybody sees it.
+   *
+   * Any-one rather than all, because a screen whose controls are each gated on the permission its
+   * OWN route requires is reachable by anybody holding one of them. Circle settings is the case
+   * that made it a list: renaming is `circle.manage`, the identity gate is
+   * `circle.security.manage` and deleting is `circle.delete`, and hanging the whole section off
+   * one of the three would hide the other two from somebody who holds them.
+   */
+  permissions?: string[]
 }
 
 const SECTIONS: Section[] = [
-  { to: '/board', label: 'Board', permission: 'tod.read' },
-  { to: '/members', label: 'Members', permission: 'member.read' },
-  { to: '/invites', label: 'Invites', permission: 'invite.read' },
-  { to: '/timers', label: 'Timers', permission: 'circle.manage' },
-  { to: '/audit', label: 'Audit', permission: 'audit.read' },
+  { to: '/board', label: 'Board', permissions: ['tod.read'] },
+  { to: '/members', label: 'Members', permissions: ['member.read'] },
+  { to: '/invites', label: 'Invites', permissions: ['invite.read'] },
+  { to: '/timers', label: 'Timers', permissions: ['circle.manage'] },
+  { to: '/audit', label: 'Audit', permissions: ['audit.read'] },
   { to: '/devices', label: 'Devices' },
-  { to: '/admin/providers', label: 'Instance', permission: 'instance.security.manage' },
+  {
+    to: '/settings',
+    label: 'Settings',
+    permissions: ['circle.manage', 'circle.security.manage', 'circle.delete'],
+  },
+  { to: '/admin/providers', label: 'Instance', permissions: ['instance.security.manage'] },
 ]
 
 export function Shell() {
@@ -59,7 +73,9 @@ export function Shell() {
           <p className="text-[11px] text-ink-500">time of death</p>
         </div>
         <ul className="flex-1 space-y-0.5 p-2">
-          {SECTIONS.filter((s) => !s.permission || principal.can(s.permission)).map((section) => (
+          {SECTIONS.filter(
+            (s) => !s.permissions || s.permissions.some((p) => principal.can(p)),
+          ).map((section) => (
             <li key={section.to}>
               <NavLink
                 to={section.to}
