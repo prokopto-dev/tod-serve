@@ -86,11 +86,30 @@ if ! command -v go >/dev/null 2>&1; then
   exit 1
 fi
 
-mods=$(go list -deps -f '{{with .Module}}{{.Path}}|{{.Dir}}{{end}}' ./... 2>/dev/null \
-       | grep -v '^$' | sort -u)
+# The walk's exit status IS the gate. `go list` prints the packages it managed to resolve and exits
+# non-zero when any part of the graph failed to load, so a discarded status means a green LIC001 over
+# whatever subset survived — a pass this gate did not earn, which is the one outcome it exists to
+# refuse. The status is therefore taken before the output is used, and stderr is kept rather than
+# sent to /dev/null so the finding can say WHY the walk failed; discarding it is what made this
+# invisible. Watched failing: with a `go` that prints one module line and exits 1, the gate used to
+# report a pass.
+list_out=$(mktemp) || { echo "LIC001: cannot create a temporary file" >&2; exit 2; }
+list_err=$(mktemp) || { rm -f "$list_out"; echo "LIC001: cannot create a temporary file" >&2; exit 2; }
+trap 'rm -f "$list_out" "$list_err"' EXIT
+
+go list -deps -f '{{with .Module}}{{.Path}}|{{.Dir}}{{end}}' ./... >"$list_out" 2>"$list_err"
+status=$?
+
+if [ "$status" -ne 0 ]; then
+  report LIC001 "\`go list -deps ./...\` exited $status; the module graph is incomplete, and a pass over part of it is not a pass"
+  sed -n '1,5p' "$list_err" | sed 's/^/           /'
+  exit 1
+fi
+
+mods=$(grep -v '^$' "$list_out" | sort -u)
 
 if [ -z "$mods" ]; then
-  report LIC001 "no modules were listed; \`go list -deps ./...\` failed or the module graph is empty"
+  report LIC001 "no modules were listed; \`go list -deps ./...\` reported success over an empty module graph"
   exit 1
 fi
 
@@ -104,17 +123,17 @@ while IFS='|' read -r path dir; do
     continue
   fi
 
-  # Some modules ship the licence one level up (a /v2 or a sub-module), so walk toward the cache
-  # root until the tree changes owner. Bounded, because an unbounded walk finds SOMEBODY's licence.
-  lic=""
-  probe="$dir"
-  for _ in 1 2 3; do
-    lic=$(find "$probe" -maxdepth 1 -type f \
-            \( -iname 'LICENSE*' -o -iname 'LICENCE*' -o -iname 'COPYING*' \) 2>/dev/null \
-          | sort | head -n 1)
-    [ -n "$lic" ] && break
-    probe=$(dirname "$probe")
-  done
+  # The module's OWN directory, and no ancestor of it. There was a bounded walk toward the cache
+  # root here, for modules said to ship their licence one level up — but every ancestor of a module
+  # directory belongs to somebody else, so what it finds is another module's licence attributed to
+  # this one, and a permissive ancestor over an unlicensed dependency is a green build. That is the
+  # same fail-open the classifier's UNKNOWN arm exists to prevent, reached by a different route.
+  # It bought nothing either: all 19 runtime modules carry their own LICENSE, so the walk never ran
+  # except in the case where it would be wrong. A module that genuinely has none is now a finding
+  # somebody reads, which is what "fail closed" means here.
+  lic=$(find "$dir" -maxdepth 1 -type f \
+          \( -iname 'LICENSE*' -o -iname 'LICENCE*' -o -iname 'COPYING*' \) 2>/dev/null \
+        | sort | head -n 1)
 
   if [ -z "$lic" ]; then
     report LIC001 "$path ships no LICENSE file this gate can find — classify it by hand"

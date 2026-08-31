@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -188,3 +189,103 @@ func permittedLine(t *testing.T, src string) string {
 	require.GreaterOrEqual(t, end, 0, "permitted() is not terminated")
 	return rest[:end]
 }
+
+// The two halves above drive the CLASSIFIER. These drive the WALK, which is the half that decides
+// which licence file the classifier is even handed — and where both of this gate's fail-open routes
+// were: a green result is only worth something if it covers the whole module graph, and if each
+// licence belongs to the module it is credited to.
+//
+// Both are driven through a `go` shim on PATH. The walk's inputs are a status and a set of module
+// directories, so a fake `go` is the honest seam: pointing the real one at a broken tree would test
+// the Go toolchain's error reporting rather than this gate's reaction to it.
+func TestLIC001_AFailedModuleWalk_IsReported(t *testing.T) {
+	t.Parallel()
+
+	// What a partial graph load actually looks like: real module lines on stdout, a diagnostic on
+	// stderr, and a non-zero status. `go list` prints what it resolved before it gave up, so the
+	// output alone looks like a healthy walk — the status is the only thing that says otherwise,
+	// and ignoring it reported a pass over whatever subset survived.
+	bin := goShim(t, "example.com/dep|"+permissiveModule(t), "cannot load example.com/broken", 1)
+
+	out, err := runLicenceGate(t, bin)
+	require.Error(t, err, "LIC001 passed over a module walk that failed:\n%s", out)
+	require.Contains(t, out, "LIC001")
+	require.Contains(t, out, "module graph is incomplete")
+	require.Contains(t, out, "cannot load example.com/broken",
+		"the finding must carry go list's own reason; discarding stderr is what hid this")
+}
+
+// The false-positive half of the same seam. A status check that fired on a healthy walk would be
+// reverted within a day, and without this the test above passes for a gate hard-wired to fail.
+func TestLIC001_AWalkThatSucceeds_StillPasses(t *testing.T) {
+	t.Parallel()
+
+	bin := goShim(t, "example.com/dep|"+permissiveModule(t), "", 0)
+
+	out, err := runLicenceGate(t, bin)
+	require.NoError(t, err, "LIC001 reported a finding over a clean walk:\n%s", out)
+	require.Contains(t, out, "1 runtime module(s)")
+}
+
+// A dependency whose own directory holds no licence must be a finding, NOT a pass borrowed from
+// whatever sits above it in the module cache. Every ancestor of a module directory belongs to some
+// other module, so a licence found there is credited to the wrong one — and since the ancestor is
+// usually permissive, the effect was to wave through exactly the unlicensed dependency the gate
+// exists to stop. It fails on the licence it can see, rather than passing on one it cannot.
+func TestLIC001_ALicenceOnlyInAnAncestor_IsReported(t *testing.T) {
+	t.Parallel()
+
+	// parent/ holds an MIT LICENSE; parent/dep@v1.0.0/ — the module itself — holds none.
+	parent := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "LICENSE"),
+		[]byte("Permission is hereby granted, free of charge, to any person obtaining a copy"), 0o600))
+	dep := filepath.Join(parent, "dep@v1.0.0")
+	require.NoError(t, os.Mkdir(dep, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dep, "dep.go"), []byte("package dep\n"), 0o600))
+
+	bin := goShim(t, "example.com/dep|"+dep, "", 0)
+
+	out, err := runLicenceGate(t, bin)
+	require.Error(t, err, "LIC001 credited an ancestor's licence to the module below it:\n%s", out)
+	require.Contains(t, out, "ships no LICENSE file this gate can find")
+}
+
+// permissiveModule returns a module directory carrying its own MIT licence, which is what a healthy
+// dependency looks like to the walk.
+func permissiveModule(t *testing.T) string {
+	t.Helper()
+	d := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(d, "LICENSE"),
+		[]byte("Permission is hereby granted, free of charge, to any person obtaining a copy"), 0o600))
+	return d
+}
+
+// goShim writes a `go` that answers the one call the gate makes, and returns the directory to put
+// at the front of PATH.
+func goShim(t *testing.T, stdout, stderr string, status int) string {
+	t.Helper()
+	bin := t.TempDir()
+	script := "#!/bin/sh\n"
+	if stdout != "" {
+		script += "printf '%s\\n' " + shellQuote(stdout) + "\n"
+	}
+	if stderr != "" {
+		script += "printf '%s\\n' " + shellQuote(stderr) + " >&2\n"
+	}
+	script += fmt.Sprintf("exit %d\n", status)
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o700))
+	return bin
+}
+
+// runLicenceGate runs the whole gate with `bin` ahead of the system directories, so the shim above
+// is the `go` it finds. The real directories stay on PATH because the gate needs find, sort, tr and
+// mktemp to do its job at all.
+func runLicenceGate(t *testing.T, bin string) (string, error) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "bash", gateScript(t))
+	cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
