@@ -22,6 +22,49 @@ step-up).
 | `issuer`, `authorization_endpoint`, `jwks_uri`, `subject_claim` | OIDC only; `NULL` otherwise |
 | `client_id`, `client_secret`, `redirect_uri`, `token_endpoint` | The operator's **own** OAuth application — see [ADR-0011](../adr/0011-operator-registered-discord-application.md). `CHECK ((kind = 'local') = (client_id IS NULL))` |
 
+**A `discord` row also needs its `client_secret`**, and that is checked rather than left to fail
+later. The instance is a confidential client, so it performs the token exchange itself and
+`discord.New` refuses to build a client without one — meaning a secretless `discord` row saved
+cleanly, reported as enabled, and produced a `500` on every sign-in. It is `discord` only: an
+`oidc` provider serving non-browser `id_token` clients legitimately has none, because the secret is
+used only on the browser path's exchange. **Enforced by:**
+`TestAddProvider_DiscordWithNoClientSecret_IsRefusedAtConfigurationTime` and
+`TestAddProvider_OIDCWithNoClientSecret_IsStillAccepted`, which is the half that stops the check
+growing into a false positive.
+
+**`redirect_uri` is not free text: it must be this instance's own callback URL.** There is exactly
+one string that works — `<public url>` + the path the route registry serves `completeAuthorization`
+at + the provider `key` — and the server derives it rather than accepting one. Writing a row that
+names anything else is refused at configuration time (`422 validation_failed` on
+`body.redirect_uri`, carrying the string that would have worked), and `createAuthorizationURL`
+refuses to start a flow with one before the browser leaves.
+
+**Why this is a check and not a note in the operations guide.** The two ways of getting it wrong
+fail in two places, and neither of them is here:
+
+- The row disagrees with what is registered at the provider. The user reaches Discord and is shown
+  `invalid_request` on Discord's own error page — a message about our configuration, rendered by
+  somebody else.
+- The row *agrees* with what is registered, and both name a host this instance is no longer at,
+  which is what moving a deployment to a new domain does. Discord is satisfied, the user signs in
+  and consents, and the browser is redirected to a dead origin. **No request reaches this server,
+  so nothing on this server logs a failure** — the operator's only symptom is that sign-in does
+  nothing. That is the silent one, and it is the reason the check exists at all.
+
+Comparison folds what RFC 3986 folds and nothing more: scheme and host are case-insensitive and a
+default port is dropped, so `https://TOD.EXAMPLE.COM:443/…` is not a finding; the path is
+case-sensitive and a trailing slash is part of it, because Discord compares one literally. Folding
+more would pass a configuration the provider then rejects; folding less would report a correct one
+as broken, and a check with false positives is one somebody switches off.
+
+**Enforced by:**
+`TestCreateAuthorizationURL_ARedirectURIForAnotherDeployment_IsRefusedBeforeARedirectExists`,
+`TestAddProvider_ARedirectURIForAnotherDeployment_IsRefusedWithTheOneThatWorks`,
+`TestCanonicalRedirectURI_FoldsWhatTheSpecificationFolds_AndNothingElse`, and
+`TestCallbackBaseURL_IsDerivedFromTheRouteRegistry`, which asserts the expected string is derived
+from the route registry rather than written down a second time. `tod-serve doctor` reports a
+mismatch before anybody tries to sign in.
+
 **`verifiable_subject` cannot be lied about.** It is a CHECK against `kind`, not an operator toggle.
 Everything downstream about revocation strength hangs off it, so it must not be settable.
 
@@ -165,6 +208,9 @@ server-side and the browser never touches a provider token:
 ```
 POST /api/v1/auth/authorization-url          createAuthorizationURL   public
   { provider, invite_code? }  ->  { authorization_url, expires_at }
+  0. REFUSE unless the provider's redirect_uri is this instance's own callback URL. [section 1]
+     Before any row is written and before the browser leaves: a flow that cannot come back
+     is one whose failure this instance never sees.
   NOTE: no circle_id. This route never takes a circle identifier. [see below]
   Writes auth_flow(state, pkce_verifier, provider_id, invite_code_hash?, circle_id?, expires_at)
   -- circle_id populated ONLY by resolving invite_code, never from caller input.
@@ -469,6 +515,12 @@ Four costs, stated rather than discovered:
   and pastes a client id, a client secret and a redirect URI. That is real work on the most common
   way in, and some operators will reach for `local` instead — which is the *weak* provider. The
   mitigation is documentation and a `tod-serve doctor` check, and neither makes the step go away.
+  What has been removed is the part of that friction that used to fail *silently*: the redirect URI
+  is derived and checked (§1), so the commonest setup mistake is now a sentence naming the string
+  to paste rather than a sign-in that lands nowhere.
+  [docs/operations/discord-app.md](../operations/discord-app.md) is written for the operator who is
+  part-way through registering an application rather than starting one, because that is the state
+  somebody stuck is actually in.
 - **A `client_secret` at rest.** The instance now holds one, which the shared-app design did not
   require. A database read is now a Discord-application compromise, not merely an identity
   disclosure. Mitigated by `core.Secret`, by `instance.security.manage` being step-up and

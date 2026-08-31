@@ -129,6 +129,12 @@ func (s *Service) AddProvider(ctx context.Context, req AddProviderRequest) (Prov
 	if err := validateProvider(candidate); err != nil {
 		return Provider{}, err
 	}
+	// After the shape check and before the acknowledgement, for the same reason the
+	// acknowledgement is last: a redirect URI that cannot work is a row that was never going to
+	// work, and hearing about the weak-revocation flag first would be a word typed for nothing.
+	if err := s.checkRedirectURI(candidate); err != nil {
+		return Provider{}, redirectURIValidationError(err, s.ExpectedRedirectURI(candidate.Key))
+	}
 	if err := checkWeakAcknowledgement(candidate, req.AcknowledgeWeakRevocation); err != nil {
 		return Provider{}, err
 	}
@@ -207,6 +213,9 @@ func (s *Service) ChangeProvider(
 
 	if err := validateProvider(next); err != nil {
 		return Provider{}, err
+	}
+	if err := s.checkRedirectURI(next); err != nil {
+		return Provider{}, redirectURIValidationError(err, s.ExpectedRedirectURI(next.Key))
 	}
 	// Only when the change turns it ON. Re-acknowledging a `local` provider that was already
 	// enabled on every unrelated edit would train an operator to pass the flag by reflex, which is
@@ -309,8 +318,10 @@ func validateProvider(p Provider) error {
 func providerMessage(p Provider) string {
 	switch p.Kind {
 	case KindDiscord:
-		return "a discord provider needs a client id: the instance is a confidential OAuth " +
-			"client of the operator's own Discord application (ADR-0011)"
+		return "a discord provider needs a client id AND a client secret: the instance is a " +
+			"confidential OAuth client of the operator's own Discord application (ADR-0011), so " +
+			"it performs the token exchange itself. Both are on the application's OAuth2 page; " +
+			"the secret is shown once, and resetting it invalidates the previous one"
 	case KindOIDC:
 		return "an oidc provider needs an issuer, a jwks uri and a client id, each an absolute " +
 			"https url where it is a url: with no audience to check, an id token minted for a " +

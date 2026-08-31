@@ -6,6 +6,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
 
+	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 )
 
@@ -133,7 +134,13 @@ func TestProviderValidate_RowsInconsistentWithTheirKind_AreRefused(t *testing.T)
 	}{
 		{"a well-formed discord row", identity.Provider{
 			Key: "discord", Kind: identity.KindDiscord, VerifiableSubject: true, ClientID: "app-1",
+			ClientSecret: core.Secret("app-secret-1"),
 		}, true},
+		// The instance performs the token exchange itself, so a discord row without a secret
+		// cannot complete a sign-in — and it used to save cleanly and fail at the click.
+		{"a discord row with no client secret", identity.Provider{
+			Key: "discord", Kind: identity.KindDiscord, VerifiableSubject: true, ClientID: "app-1",
+		}, false},
 		{"a local provider claiming a verifiable subject", identity.Provider{
 			Key: "local", Kind: identity.KindLocal, VerifiableSubject: true,
 		}, false},

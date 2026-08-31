@@ -87,8 +87,9 @@ func newServeCommand() *cobra.Command {
 				return fmt.Errorf("%w: run `tod-serve migrate` first", err)
 			}
 
-			// The empty join URL means "resolve it": $TOD_SPA_JOIN_URL, then $TOD_PUBLIC_URL,
-			// then the instance row, and an error naming all three rather than a guess.
+			// The empty public URL means "resolve it": $TOD_PUBLIC_URL, then the instance
+			// row, and an error naming them rather than a guess. Both the join redirect and
+			// the OAuth callback URL are derived from it.
 			svc, err := wire(ctx, db, log, pepper, sessionKey, "")
 			if err != nil {
 				return err

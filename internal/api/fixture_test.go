@@ -177,7 +177,8 @@ func newServices(
 	require.NoError(t, err)
 	identities, err := identity.New(identity.Config{
 		Store: identityStore, Clients: clients, Clock: clk, IDs: ids,
-		Entropy: rand.Reader, SPAJoinURL: "https://tod.example.com/join", Logger: log,
+		Entropy: rand.Reader, SPAJoinURL: "https://tod.example.com/join",
+		CallbackBaseURL: "https://tod.example.com/api/v1/auth/callback", Logger: log,
 	})
 	require.NoError(t, err)
 
@@ -841,4 +842,22 @@ func (h *harness) timerFingerprint(t *testing.T, subject timerSubject) string {
 		render("audit", row)
 	}
 	return strings.Join(out, "\n")
+}
+
+// sweepAuthFlows deletes every `auth_flow` row and returns how many there were.
+//
+// It counts by sweeping rather than by SELECT because `*sql.DB` is held only by internal/store
+// (law 2) and `db/queries` carries no count — nothing in the product needs one, and adding a
+// statement to the shipped surface for a test's benefit is how that surface grows. The sweep is
+// the operation the product DOES have, `:execrows` already reports what it removed, and these
+// rows are litter, so destroying them to count them costs a test nothing.
+//
+// The cutoff is far in the future on the injected clock, which is what makes it "every row"
+// rather than "the expired ones".
+func (h *harness) sweepAuthFlows() int {
+	h.t.Helper()
+	n, err := h.store.Queries().DeleteExpiredAuthFlows(
+		h.t.Context(), int64(h.clock.Now().Add(365*24*time.Hour)))
+	require.NoError(h.t, err)
+	return int(n)
 }

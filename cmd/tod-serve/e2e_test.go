@@ -183,7 +183,7 @@ func newE2EServerWith(
 	// every deployment does before `serve` starts, and `t.Setenv` cannot be used in a package
 	// whose tests are all parallel. This is the value that file would have supplied.
 	svc, err := wire(ctx, db, log,
-		core.Secret(e2ePepper), core.Secret(e2eSessionKey), e2ePublicURL+"/join")
+		core.Secret(e2ePepper), core.Secret(e2eSessionKey), e2ePublicURL)
 	require.NoError(t, err)
 	server, err := api.New(api.Config{
 		Version: "0.0.0-e2e", Store: db, Auth: svc.authn, Sessions: svc.codec,

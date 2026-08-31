@@ -76,6 +76,18 @@ func (p Provider) Validate() error {
 	if (p.Kind == KindLocal) != (p.ClientID == "") {
 		return fmt.Errorf("kind %q with client_id %q: %w", p.Kind, p.ClientID, ErrProviderInconsistent)
 	}
+	// A `discord` row with no secret is broken in every direction and saves cleanly, which is the
+	// worst combination: `discord.New` refuses to build a client without one, so EVERY sign-in
+	// fails with a 500 — at the moment somebody clicks the button, not at the moment somebody
+	// configured it. Checking here makes it a sentence at configuration time instead.
+	//
+	// `discord` only, deliberately. An `oidc` provider legitimately has no secret when it serves
+	// non-browser `id_token` clients, which need none — the secret is used only on the browser
+	// path's token exchange. Requiring one there would refuse a configuration that works, and a
+	// check with false positives is one somebody switches off.
+	if p.Kind == KindDiscord && p.ClientSecret.IsZero() {
+		return fmt.Errorf("discord provider %q has no client_secret: %w", p.Key, ErrProviderInconsistent)
+	}
 	if p.Kind == KindOIDC {
 		if p.Issuer == "" || p.JWKSURI == "" {
 			return fmt.Errorf("oidc provider %q names no issuer or no jwks uri: %w", p.Key, ErrProviderInconsistent)

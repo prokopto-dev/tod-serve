@@ -294,7 +294,6 @@ func wire() int { return 1 }`,
 // that is not true.
 func staleTestReferences() map[string]string {
 	return map[string]string{
-		"TestAuthFlow_RateLimitedCaller_CreatesNoRows":                     "internal/api",
 		"TestCodeForStatus_EveryStatusHumaProduces_IsMapped":               "internal/apierr",
 		"TestDenyReason_EveryDeniedRange_IsRefused":                        "internal/identity/outbound",
 		"TestEnumColumns_AppliedSchema_MatchesTheCatalogue":                "internal/dbschema",
@@ -320,7 +319,7 @@ func staleTestReferences() map[string]string {
 // It was found the hard way. `internal/store/store.go` named
 // `TestSQL001_DatabaseSQL_IsImportedOnlyByTheStore` twice, as "the mechanism" behind law 2 — the
 // rule that keeps `*sql.DB` out of every package but the store — and no such function had ever
-// existed. Twelve more are listed above.
+// existed. Eleven more are listed above.
 //
 // Only `Test…_…` names are checked, which is the convention AGENTS.md fixes
 // (`TestThing_Condition_Expectation`). A bare `TestFilesOnly` is a struct field, not a citation.

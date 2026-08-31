@@ -31,6 +31,13 @@ const (
 	inviteCode        = "TODI-4KQ7M-9XPB2"
 	spaJoinURL        = "https://tod.example.com/join"
 
+	// callbackBaseURL is the API's own origin plus the callback path. Appending a provider key
+	// to it is the one string `identity_provider.redirect_uri` may hold, and the one string the
+	// operator must have registered with the provider — which is why the fixtures below spell
+	// their redirect URIs out rather than deriving them: a fixture that built the value the same
+	// way the code does would agree with a broken implementation.
+	callbackBaseURL = "https://tod.example.com/api/v1/auth/callback"
+
 	// theAccessToken is the string the whole no-persistence invariant is about. It is a constant
 	// so one assertion can search every recorded store call for it.
 	theAccessToken = "discord-access-token-that-must-never-be-written-down"
@@ -133,13 +140,14 @@ func newHarness(t *testing.T) *harness {
 	clients := &stubClients{discord: client}
 	testClock := clock.NewTest(at)
 	service, err := identity.New(identity.Config{
-		Store:      store,
-		Clients:    clients,
-		Clock:      testClock,
-		IDs:        core.NewGenerator(&countingEntropy{}),
-		Entropy:    &countingEntropy{},
-		SPAJoinURL: spaJoinURL,
-		Logger:     slog.New(slog.DiscardHandler),
+		Store:           store,
+		Clients:         clients,
+		Clock:           testClock,
+		IDs:             core.NewGenerator(&countingEntropy{}),
+		Entropy:         &countingEntropy{},
+		SPAJoinURL:      spaJoinURL,
+		CallbackBaseURL: callbackBaseURL,
+		Logger:          slog.New(slog.DiscardHandler),
 	})
 	require.NoError(t, err)
 
@@ -697,7 +705,8 @@ func TestCompleteAuthorization_State_IsUnguessableSingleUseAndOpaqueInFailure(t 
 		_, err = identity.New(identity.Config{
 			Store: h.store, Clients: h.clients, Clock: h.clock,
 			IDs: core.NewGenerator(&countingEntropy{}), Entropy: nil,
-			SPAJoinURL: spaJoinURL, Logger: slog.New(slog.DiscardHandler),
+			SPAJoinURL: spaJoinURL, CallbackBaseURL: callbackBaseURL,
+			Logger: slog.New(slog.DiscardHandler),
 		})
 		require.Error(t, err)
 	})
@@ -768,5 +777,125 @@ func TestCompleteAuthorization_State_IsUnguessableSingleUseAndOpaqueInFailure(t 
 		_, err = h.service.CompleteAuthorization(t.Context(), req)
 		require.Error(t, err)
 		require.Len(t, h.store.tickets, 1, "one authorization, one ticket, one PAT")
+	})
+}
+
+// ADR-0011's named mechanism, at the level the ADR actually names.
+//
+// The unit test in internal/identity/discord asserts that `discord.Client` refuses a foreign
+// application's token. This asserts the thing the ADR is about: that a token minted for ANOTHER
+// instance's Discord application is refused **on both completion paths**, with the `401` code the
+// design specifies — the callback, where it is redundant because we just minted the token
+// ourselves, and `bearer_token`, where it is the whole defence.
+//
+// A rule with a carve-out is a rule somebody implements on the wrong side, and the carve-out this
+// would grow is precisely the one that looks harmless: "the callback already knows the token is
+// ours, so skip the call". That is why both halves are one test.
+func TestDiscord_ForeignApplicationToken_Refused(t *testing.T) {
+	t.Parallel()
+
+	// A second operator's instance, registered as a different Discord application. Everything
+	// about the token is valid; the only thing wrong with it is who it was minted for.
+	const anotherInstancesApp = "999999999999999999"
+
+	foreignAudience := func(h *harness) {
+		h.doer.answers["/oauth2/@me"] = jsonResponse(t, http.StatusOK, map[string]any{
+			"application": map[string]any{"id": anotherInstancesApp},
+			"scopes":      []string{discord.ScopeIdentify, discord.ScopeGuildsMembersRead},
+		})
+	}
+
+	t.Run("the browser callback", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.withLiveInvite(identity.GuildGate{})
+		foreignAudience(h)
+
+		callback, err := h.authorizeThenCallbackAllowingFailure(t, identity.AuthorizationRequest{
+			ProviderKey: "discord", InviteCode: inviteCode,
+		})
+
+		require.Error(t, err)
+		require.Equal(t, identity.CodeCredentialAudienceMismatch, callback.Code)
+		require.Equal(t, http.StatusUnauthorized, callback.Code.Status())
+		require.Equal(t, "error=credential_audience_mismatch", mustFragment(t, callback.Location))
+		require.Empty(t, h.store.tickets, "no credential is minted for a token that is not ours")
+	})
+
+	t.Run("the bearer_token path", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		foreignAudience(h)
+
+		_, err := h.service.Verify(t.Context(), identity.VerifyRequest{
+			Provider: discordProvider(),
+			Credential: identity.Credential{
+				Kind: identity.CredentialBearerToken, Token: core.Secret("someone-elses-token"),
+			},
+		})
+
+		code, ok := identity.CodeOf(err)
+		require.True(t, ok, "an audience mismatch is a coded failure, not a 500")
+		require.Equal(t, identity.CodeCredentialAudienceMismatch, code)
+		require.Equal(t, http.StatusUnauthorized, code.Status())
+	})
+
+	// The subject is never read. A verifier that checked the audience AFTER identifying the user
+	// has already told the holder of a stolen token which account it belongs to, which is the
+	// disclosure the check exists to prevent — and it would pass a test that only asserted the
+	// final error.
+	t.Run("nothing is learned about the subject", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		foreignAudience(h)
+
+		_, err := h.service.Verify(t.Context(), identity.VerifyRequest{
+			Provider: discordProvider(),
+			Credential: identity.Credential{
+				Kind: identity.CredentialBearerToken, Token: core.Secret("someone-elses-token"),
+			},
+		})
+		require.Error(t, err)
+
+		require.Equal(t, 1, len(h.doer.seen), "one call: the audience check, and then nothing")
+		require.Contains(t, h.doer.seen[0], "/oauth2/@me")
+		for _, call := range h.store.recorded() {
+			require.NotContains(t, call, discordSubject,
+				"the subject of a foreign token reached the store: %s", call)
+		}
+	})
+
+	// And the other direction, so none of the above passes because the harness cannot verify a
+	// Discord token at all.
+	t.Run("this instance's own application is accepted", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+
+		got, err := h.service.Verify(t.Context(), identity.VerifyRequest{
+			Provider: discordProvider(),
+			Credential: identity.Credential{
+				Kind: identity.CredentialBearerToken, Token: core.Secret("a-token-we-minted"),
+			},
+		})
+
+		require.NoError(t, err)
+		require.Equal(t, discordSubject, got.Subject)
+	})
+}
+
+// authorizeThenCallbackAllowingFailure is [harness.authorizeThenCallback] for the cases whose
+// point is that the callback FAILS. The happy-path helper requires no error, which would report
+// the failure under test as a broken fixture.
+func (h *harness) authorizeThenCallbackAllowingFailure(
+	t *testing.T, req identity.AuthorizationRequest,
+) (identity.Callback, error) {
+	t.Helper()
+	authorization, err := h.service.CreateAuthorizationURL(t.Context(), req)
+	require.NoError(t, err)
+
+	return h.service.CompleteAuthorization(t.Context(), identity.CallbackRequest{
+		ProviderKey: req.ProviderKey,
+		State:       authorization.State,
+		Code:        "authorization-code",
 	})
 }

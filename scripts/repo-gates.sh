@@ -269,15 +269,35 @@ fi
 # Test files are outside both halves by construction (go_files excludes them): a provider's tests
 # inject a stub transport, and the guard itself is tested directly by the deny-list unit test that
 # docs/concepts/invariants.md names.
+#
+# The two allowances are matched on a PATH SEPARATOR rather than on a leading `./`, so that
+# test/repo can point the gate at a fixture tree and require it to fire. `find` reports the paths
+# it was given, so an anchored `^./` allowance stops excluding anything the moment the roots are
+# spelled differently — which made the gate REPORT its own permitted files. Noisy and fail-closed
+# rather than dangerous, but it made the rule untestable, and an untested gate is a wish.
+#
+# `checked` is the other half, and it is not optional. Once the allowances actually exclude, a
+# search space consisting only of allowed directories leaves NOTHING to grep — and a bare
+# `xargs grep` with no file arguments reads stdin, matches nothing, and the gate goes green over
+# zero files. That is this script's opening rule violated by the gate itself: a pass over an empty
+# search space is how a rule quietly stops being enforced. So an empty scan is a FINDING.
+checked() { # gate, description, files
+  [ -n "$3" ] && return 0
+  report "$1" "checked NOTHING while looking for $2: the search space is empty, so this gate
+           proves nothing. A pass over no files is how a rule stops being enforced silently."
+  return 1
+}
 if has_go; then
-  scanned=$(go_files | grep -v '^./internal/identity/outbound/' | grep -v '^./internal/probe/')
+  scanned=$(go_files | grep -v '/internal/identity/outbound/' | grep -v '/internal/probe/')
   bad=$(echo "$scanned" | xargs grep -ln 'http\.Get(\|http\.Post(\|http\.Head(\|http\.Client{\|http\.Transport{\|http\.DefaultClient\|http\.DefaultTransport\|net\.Dial' 2>/dev/null || true)
-  if [ -n "$bad" ]; then report NET001 "an HTTP client, transport or dialer outside internal/identity/outbound:"; echo "$bad"; \
+  if ! checked NET001 "an unguarded HTTP client" "$scanned"; then :; \
+  elif [ -n "$bad" ]; then report NET001 "an HTTP client, transport or dialer outside internal/identity/outbound:"; echo "$bad"; \
   else pass NET001 "the only HTTP client, transport and dialer are internal/identity/outbound's, plus internal/probe's loopback health check ($(count "$scanned") files)"; fi
 
-  scanned=$(go_files | grep -v '^./internal/identity/' | grep -v '^./internal/probe/')
+  scanned=$(go_files | grep -v '/internal/identity/' | grep -v '/internal/probe/')
   bad=$(echo "$scanned" | xargs grep -ln 'http\.NewRequest' 2>/dev/null || true)
-  if [ -n "$bad" ]; then report NET001 "an outbound request outside internal/identity:"; echo "$bad"; \
+  if ! checked NET001 "an outbound request" "$scanned"; then :; \
+  elif [ -n "$bad" ]; then report NET001 "an outbound request outside internal/identity:"; echo "$bad"; \
   else pass NET001 "outbound requests are issued only from internal/identity and internal/probe ($(count "$scanned") files)"; fi
 else
   vacant NET001 "outbound HTTP only from internal/identity, through the guarded client"

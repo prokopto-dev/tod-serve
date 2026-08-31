@@ -27,7 +27,8 @@ import (
 // source text, which is what survives somebody refactoring this function away.
 func TestWiring_IdentityService_IsGivenCryptoRandReader(t *testing.T) {
 	t.Parallel()
-	cfg := identityConfig(nil, nil, clock.System{}, nil, "https://tod.example.com/join", nil)
+	cfg := identityConfig(nil, nil, clock.System{}, nil,
+		"https://tod.example.com/join", "https://tod.example.com/api/v1/auth/callback", nil)
 
 	require.NotNil(t, cfg.Entropy)
 	// Compared with `==` on the interface values, which is identity: `crypto/rand.Reader` holds a
@@ -74,7 +75,8 @@ func TestWiring_EveryEntropySink_IsGivenCryptoRandReader(t *testing.T) {
 // place the decision is made, so it is pinned here rather than assumed.
 func TestWiring_IdentityService_WithNoEntropy_RefusesToStart(t *testing.T) {
 	t.Parallel()
-	cfg := identityConfig(nil, nil, clock.System{}, nil, "https://tod.example.com/join", nil)
+	cfg := identityConfig(nil, nil, clock.System{}, nil,
+		"https://tod.example.com/join", "https://tod.example.com/api/v1/auth/callback", nil)
 	cfg.Entropy = nil
 
 	_, err := identity.New(cfg)

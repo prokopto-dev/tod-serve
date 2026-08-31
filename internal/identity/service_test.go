@@ -163,6 +163,10 @@ func TestEvaluateGuildGate_NotInTheGuild_ReportsMembershipRatherThanRole(t *test
 
 // The audience check is what closes cross-instance replay, and the bearer_token path is where it
 // is load-bearing rather than redundant.
+// The `bearer_token` half on its own. ADR-0011's named mechanism,
+// TestDiscord_ForeignApplicationToken_Refused in flow_test.go, covers this path AND the callback
+// in one test, because the rule the ADR states is that there is no carve-out between them. This
+// stays as the narrower statement of the same fact.
 func TestVerify_BearerTokenFromAnotherApplication_IsRefused(t *testing.T) {
 	t.Parallel()
 
@@ -262,7 +266,8 @@ func TestNew_IncompleteConfiguration_IsRefused(t *testing.T) {
 		return identity.Config{
 			Store: h.store, Clients: &stubClients{}, Clock: h.clock,
 			IDs: core.NewGenerator(&countingEntropy{}), Entropy: &countingEntropy{},
-			SPAJoinURL: spaJoinURL, Logger: slog.New(slog.DiscardHandler),
+			SPAJoinURL: spaJoinURL, CallbackBaseURL: callbackBaseURL,
+			Logger: slog.New(slog.DiscardHandler),
 		}
 	}
 

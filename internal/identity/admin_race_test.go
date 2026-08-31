@@ -61,11 +61,12 @@ func TestAddProvider_LosingAUniquenessRace_IsAConflictAndNotAnInternalError(t *t
 	oidc := identity.AddProviderRequest{
 		Key: "corp", Kind: identity.KindOIDC, DisplayName: "Corp SSO",
 		Issuer: "https://sso.example.com", JWKSURI: "https://sso.example.com/jwks",
-		ClientID: "tod-serve",
+		ClientID: "tod-serve", RedirectURI: callbackBaseURL + "/corp",
 	}
 	discordReq := identity.AddProviderRequest{
 		Key: "discord", Kind: identity.KindDiscord, DisplayName: "Discord",
-		ClientID: "1234567890", RedirectURI: "https://tod.example.com/cb",
+		ClientID: "1234567890", ClientSecret: core.Secret("discord-client-secret"),
+		RedirectURI: callbackBaseURL + "/discord",
 	}
 
 	tests := []struct {
@@ -122,7 +123,7 @@ func TestAddProvider_WithNoRace_Succeeds(t *testing.T) {
 	created, err := svc.AddProvider(t.Context(), identity.AddProviderRequest{
 		Key: "corp", Kind: identity.KindOIDC, DisplayName: "Corp SSO",
 		Issuer: "https://sso.example.com", JWKSURI: "https://sso.example.com/jwks",
-		ClientID: "tod-serve",
+		ClientID: "tod-serve", RedirectURI: callbackBaseURL + "/corp",
 	})
 	require.NoError(t, err)
 	require.Equal(t, "corp", created.Key)
@@ -154,7 +155,7 @@ func newRacingService(t *testing.T) (*identity.Service, *racingStore) {
 	svc, err := identity.New(identity.Config{
 		Store: racing, Clients: &stubClients{}, Clock: clk,
 		IDs: core.NewGenerator(rand.Reader), Entropy: rand.Reader,
-		SPAJoinURL: "https://tod.example.com/join", Logger: log,
+		SPAJoinURL: "https://tod.example.com/join", CallbackBaseURL: callbackBaseURL, Logger: log,
 	})
 	require.NoError(t, err)
 	return svc, racing

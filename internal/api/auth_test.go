@@ -86,8 +86,12 @@ func TestListIdentityProviders_TheClientSecret_NeverReachesTheWire(t *testing.T)
 
 // `createAuthorizationURL` is the second oracle for invite-code validity, and it is held to
 // `previewInvite`'s disclosure as a CEILING rather than reasoned about separately. An unissued
-// code gets the same answer from both.
-func TestCreateAuthorizationURL_AnUnissuedCode_RevealsNoMoreThanPreviewInvite(t *testing.T) {
+// code gets the same answer from both — status and code — so a guesser learns nothing from the
+// newer route that the metered one did not already tell them.
+//
+// This is the name docs/design/04-identity-and-revocation.md §5,
+// docs/design/02-api-design.md and docs/concepts/invariants.md all cite it by.
+func TestCreateAuthorizationURL_RevealsNoMoreThanPreviewInvite(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.seedOIDCProvider(true)
@@ -272,4 +276,145 @@ func (h *harness) seedProviderWithSecret(secret string) {
 		TokenEndpoint:         "https://issuer.example.com/token",
 	})
 	require.NoError(h.t, err)
+}
+
+// The redirect URI an operator pastes into Discord's developer portal has to be the URL this
+// binary actually serves the callback at, character for character. Deriving it from the route
+// registry is what makes that true; this asserts the derivation rather than re-spelling its
+// result, so moving the route moves the string an operator is told to register.
+func TestCallbackBaseURL_IsDerivedFromTheRouteRegistry(t *testing.T) {
+	t.Parallel()
+
+	route, ok := api.Lookup(api.OpCompleteAuthorization)
+	require.True(t, ok)
+	require.True(t, strings.HasSuffix(route.FullPath(), api.CallbackPathParam),
+		"CallbackBaseURL derives its path by removing %q; the route no longer ends in it",
+		api.CallbackPathParam)
+
+	got, err := api.CallbackBaseURL("https://tod.example.com")
+	require.NoError(t, err)
+
+	// The whole round trip: base + key must reproduce the path the router serves, with the
+	// parameter filled in. Comparing against a literal here would be a second copy of the fact.
+	require.Equal(t,
+		"https://tod.example.com"+strings.Replace(route.FullPath(), api.CallbackPathParam, "/discord", 1),
+		got+"/discord")
+}
+
+// Every spelling of a public URL an operator might put in `.env`, and the one answer each must
+// produce. A trailing slash is the common one, and `…/callback//discord` is a different URI to
+// every party that compares one.
+func TestCallbackBaseURL_NormalisesThePublicURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		public string
+		want   string
+	}{
+		{"the plain case", "https://tod.example.com", "https://tod.example.com/api/v1/auth/callback"},
+		{"a trailing slash", "https://tod.example.com/", "https://tod.example.com/api/v1/auth/callback"},
+		{"surrounding space, as a .env file produces", "  https://tod.example.com  ", "https://tod.example.com/api/v1/auth/callback"},
+		{"a non-default port", "https://tod.example.com:8443", "https://tod.example.com:8443/api/v1/auth/callback"},
+		{"a path prefix, behind a shared front", "https://example.com/tod", "https://example.com/tod/api/v1/auth/callback"},
+		{"plaintext, which local development is", "http://localhost:8080", "http://localhost:8080/api/v1/auth/callback"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := api.CallbackBaseURL(tt.public)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
+	}
+
+	for _, bad := range []string{"", "tod.example.com", "/api/v1", "https://"} {
+		_, err := api.CallbackBaseURL(bad)
+		require.Error(t, err, "a public URL of %q is not something to guess an origin from", bad)
+	}
+}
+
+// A public URL is an ORIGIN, and one carrying a query, a fragment or userinfo is refused rather
+// than repaired.
+//
+// This is not tidiness. `ExpectedRedirectURI` appends "/" + the provider key to whatever this
+// returns, so anything sitting after the path SWALLOWS the key:
+//
+//	https://tod.example.com?tenant=one  ->  …/callback?tenant=one/discord
+//
+// That URI addresses `/api/v1/auth/callback` with no provider key, which is not a route this
+// server has — the registry entry is `/auth/callback/{provider_key}`. The fragment case is worse
+// still: no browser transmits anything after `#` to a server, so the callback would arrive
+// carrying no key at all and the flow could never complete. Both would be STORED as a valid
+// redirect URI and fail only when somebody tried to sign in.
+//
+// Refused rather than silently stripped, because a stripped value is a working URL that is not
+// the one the operator configured — the same quiet surprise the redirect-URI check exists to
+// remove.
+func TestCallbackBaseURL_APublicURLThatIsNotAnOrigin_IsRefused(t *testing.T) {
+	t.Parallel()
+
+	notOrigins := map[string]string{
+		"a query string":              "https://tod.example.com?tenant=one",
+		"a query on a trailing slash": "https://tod.example.com/?a=b",
+		"a bare question mark":        "https://tod.example.com/?",
+		"a fragment":                  "https://tod.example.com#frag",
+		"a query and a fragment":      "https://tod.example.com/tod?a=b#c",
+		"userinfo":                    "https://user:pass@tod.example.com",
+	}
+	for name, raw := range notOrigins {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := api.CallbackBaseURL(raw)
+			require.ErrorIs(t, err, api.ErrPublicURLNotAnOrigin)
+			require.Empty(t, got)
+		})
+	}
+
+	// The positive control, and the specific thing that must keep working: a path prefix is NOT a
+	// query, and an instance behind a shared front legitimately has one.
+	got, err := api.CallbackBaseURL("https://example.com/tod")
+	require.NoError(t, err)
+	require.Equal(t, "https://example.com/tod/api/v1/auth/callback", got)
+	require.Equal(t, "https://example.com/tod/api/v1/auth/callback/discord", got+"/discord")
+}
+
+// The second half of the invite-oracle defence, at the end the documents actually claim.
+//
+// `TestInviteOracle_ARateLimitedCaller_ReachesNoHandler` proves the limiter runs before the
+// handler, against a stub. That is the mechanism; this is the CONSEQUENCE, and the consequence is
+// what the design writes down: "it writes an `auth_flow` row only for a request that passes the
+// limit, so a rejected probe stores nothing."
+//
+// Asserting it against the real table rather than inferring it from the stub matters because the
+// inference has a hidden premise — that nothing else on the request path writes one. That premise
+// is true today and is exactly the kind of thing a future middleware breaks silently: an
+// unauthenticated flood that grows a table is a denial of service with no principal to rate-limit
+// afterwards.
+func TestAuthFlow_RateLimitedCaller_CreatesNoRows(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedOIDCProvider(true)
+
+	body := `{"provider":"oidc-test"}`
+	accepted := 0
+	for range api.DefaultInviteBurst {
+		if h.do(request{Method: http.MethodPost, Path: authURLPath, Body: body}).Status == http.StatusOK {
+			accepted++
+		}
+	}
+	require.Positive(t, accepted, "the bucket refused everything, so nothing below is a limit test")
+
+	// Well past the burst, so the bucket cannot refill into a pass on the injected clock.
+	refused := 0
+	for range api.DefaultInviteBurst {
+		got := h.do(request{Method: http.MethodPost, Path: authURLPath, Body: body})
+		require.Equal(t, http.StatusTooManyRequests, got.Status, got.Body)
+		refused++
+	}
+	require.Positive(t, refused)
+
+	require.Equal(t, accepted, h.sweepAuthFlows(),
+		"one row per ACCEPTED request and none per refused one; %d requests were rate-limited and "+
+			"an unauthenticated flood must not be able to grow the table", refused)
 }

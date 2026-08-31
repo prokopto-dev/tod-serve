@@ -66,7 +66,8 @@ func newFixture(t *testing.T) *fixture {
 	require.NoError(t, err)
 	identities, err := identity.New(identity.Config{
 		Store: identityStore, Clients: clients, Clock: clk, IDs: ids,
-		Entropy: rand.Reader, SPAJoinURL: "https://tod.example.com/join", Logger: log,
+		Entropy: rand.Reader, SPAJoinURL: "https://tod.example.com/join",
+		CallbackBaseURL: "https://tod.example.com/api/v1/auth/callback", Logger: log,
 	})
 	require.NoError(t, err)
 
@@ -109,6 +110,13 @@ func (f *fixture) provider(key, kind string) string {
 	} else {
 		clientID := key + "-client-id"
 		params.ClientID = &clientID
+	}
+	if kind == schemaenum.IdentityProviderKindDiscord {
+		// The instance is a confidential OAuth client of the operator's own application, so a
+		// discord row without a secret is one Provider.Validate refuses: it cannot perform the
+		// token exchange, and every sign-in through it would fail.
+		secret := key + "-client-secret"
+		params.ClientSecret = &secret
 	}
 	if kind == schemaenum.IdentityProviderKindOIDC {
 		issuer := "https://" + key + ".example.com"
