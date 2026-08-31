@@ -39,41 +39,43 @@ so better evidence wins.
 
 **The quake is excluded, and there is no scope to include.** `OpReportQuake` carries
 `PermissionTodQuakeReport` and declares **no scopes at all**, so no PAT reaches it and the catalogue
-has no quake scope to name. A quake is game data and fits the remit, but its summary reads "a false
-one wipes the whole board"; minting `tod:quake` for a log parser is a bigger decision than this. It
-stays session-only.
+has no quake scope to name. A quake is game data, but its summary reads "a false one wipes the whole
+board"; minting `tod:quake` for a log parser is a bigger decision than this. It stays
+session-only.
 
 **`events:subscribe` belongs later, not now.** It grants only `tod.read`, which a device already
 holds, so adding it once Phase 6 ships a handler widens the transport, not the rows. Today it would
 put a scope on live tokens that grants nothing yet must be reviewed as if it did.
 
-**What an approval yields is [ADR-0019](0019-a-device-grant-is-identity-scoped.md)'s question.**
-This ADR decides how a device is authorized. What it then holds — an identity-scoped grant that
-exchanges for per-membership tokens — is decided there, together with the long-lived cross-circle
-token this one no longer weighs and the ceiling that one Discord login cannot span instances.
+**What an approval yields is [ADR-0019](0019-a-device-grant-is-identity-scoped.md)'s question** —
+an identity-scoped grant exchanging for per-membership tokens, the cross-circle token this one no
+longer weighs, and the ceiling that one Discord login cannot span instances.
 
 **The new public surface.** `/device/authorize` and `/device/token` are `AuthPublic` and join the
 invite-oracle bucket via `Route.InviteOracle`, whose comment already says a third code-taking route
-joins this bucket rather than minting another — two buckets hand a guesser twice the budget.
+joins this bucket rather than minting another: two buckets hand a guesser twice the budget.
 `TestInviteOracle_TheMeteredSet_IsEveryPublicRouteThatTakesACode` pins that set and stays red until
 it names them. The user code uses `internal/invite`'s Crockford alphabet at no less than
 `invite.CodeBits`, single-use, expiring in minutes.
 
-**Law 5 needs no new rule.** A device holds memberships and nothing else, so its token 404s on
-circle B by the path `TestTenancy_CrossCircle_EveryOperationDenies` already drives.
+**Law 5 needs no new rule.** What reaches a route is a membership-bound token, so it 404s on circle
+B by the path `TestTenancy_CrossCircle_EveryOperationDenies` already drives.
 
-**Approval is a grant and is audited.** One `audit_log` row per approved membership, appended in the
-writing transaction via `internal/audit`, naming the approver and the client — so ADR-0011's
-guarantee that an audit names a responsible person holds. Circle-scoped, it satisfies
-`audit_log.circle_id` and needs no `instance_grant`.
+**Approval is a grant, and `audit_log.circle_id` is `NOT NULL`.** An approval is on an identity and
+may precede every membership ([ADR-0019](0019-a-device-grant-is-identity-scoped.md)), so
+`internal/audit` cannot hold it — the wall `instance_grant` already hit. `device_grant` is its own
+append-only, hash-chained record on `audit.ChainHash`, so a memberless approval is one row there
+rather than none anywhere. The circle-scoped `audit_log` row belongs to the exchange that mints into
+a circle, where a `circle_id` exists. ADR-0011's guarantee that an audit names a responsible person
+holds on both.
 
-**Device rows are litter, not history.** `device_authorization` carries `expires_at` and is swept by
-`tod-serve sweep` past `sweep.Grace`, beside `auth_flow` and `credential_ticket`. Not append-only,
-so `LOG001` does not reach its `DELETE`.
+**The device code is litter; the grant is history.** `device_authorization` carries `expires_at`
+and is swept by `tod-serve sweep` past `sweep.Grace`, beside `auth_flow` and `credential_ticket`.
+`device_grant` is append-only and never swept.
 
-**This becomes the answer to "I lost my token" for humans too** — intended, not incidental. The
-console gets the same screen, so a member re-approves a device rather than asking an officer for an
-invite. Invites keep one job: first entry into a circle.
+**This becomes the answer to "I lost my token" for humans too** — intended, not incidental. A
+member re-approves a device in the console rather than asking an officer for an invite. Invites keep
+one job: first entry into a circle.
 
 ### Consequences
 

@@ -34,11 +34,14 @@ revocation are untouched, and no `admin:*`-shaped scope appears anywhere.
 `device_grant` is keyed on an **identity**, not a membership: `identity` is unique on
 `(provider_id, subject)`, and `instance_grant.identity_id`
 ([ADR-0012](0012-instance-grants-are-a-capability-ledger.md)) is the precedent — what a grant
-answers outlives any one circle. Exchange mints one token per current, non-revoked membership,
-carrying ADR-0018's approved scope set and never widening it. `api_token.expires_at` already exists,
-so short TTLs need no schema change, and expired rows are litter that joins `internal/sweep` beside
-`device_authorization`. The grant is a `core.Secret`, hashed like a PAT, never compared by value
-(`SECRET001`), revocable on its own and listed beside tokens.
+answers outlives any one circle. **A row there is a decision, not a state:** approval and revocation
+are both rows, the table is append-only, and it is its own hash-chained audit record on
+`audit.ChainHash` — which is what makes an approval auditable *before* any membership exists, when
+`audit_log.circle_id` has nothing to hold. Exchange mints one token per current, non-revoked
+membership, carrying ADR-0018's approved scope set and never widening it. `api_token.expires_at`
+already exists, so short TTLs need no schema change, and expired rows are litter that joins
+`internal/sweep` beside `device_authorization`. The grant is a `core.Secret`, hashed like a PAT,
+never compared by value (`SECRET001`), revocable on its own and listed beside tokens.
 
 **One Discord login cannot span instances, and that is by design rather than a gap.** An identity is
 `(provider_id, subject)` where `provider_id` is *that instance's* `identity_provider` row, because
@@ -61,14 +64,14 @@ is a change, and it is written here rather than left to be discovered.
 
 - Good, because it is one login per instance, and a circle joined later needs no second one.
 - Good, because what reaches a route is still an ADR-0005 PAT: authz, tenancy and revocation are
-  unchanged, and nothing in the request path learns a new credential kind.
+  unchanged.
 - **Bad, because the grant is identity-wide and long-lived.** Blast radius is per-circle on the
   tokens and whole-identity on the grant, so the thing worth stealing got more valuable, not less.
 - **Bad, because two instances means two logins, forever,** and every user will read that as a bug
   before they read it as replay protection.
 - **Bad, because anyone who can sign in with Discord may now hold a grant row on a public instance**
   before an officer approved anything. It reaches no route until an invite is redeemed; it is still
-  rows a stranger can create.
+  an append-only row a stranger can create, and append-only means permanent.
 - **Bad, because short-lived tokens mean re-exchanging mid-raid,** and a client that mishandles
   expiry fails at the worst possible moment.
 - **Bad, because exchange writes rows:** three circles refreshed hourly is seventy-two `api_token`
@@ -76,6 +79,6 @@ is a change, and it is written here rather than left to be discovered.
 
 ### Reversal cost
 
-A release and a migration dropping `device_grant`. Clients fall back to option (a) — ADR-0018's
-approval minting per-membership tokens directly — so it is a real change to every client and no
-change at all to the server's authorization path.
+A release and a migration dropping `device_grant`. Clients fall back to option (a) — approval
+minting per-membership tokens directly — so it is a real change to every client and none to the
+server's authorization path.
