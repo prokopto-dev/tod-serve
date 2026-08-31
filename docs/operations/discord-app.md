@@ -87,11 +87,15 @@ Then, in order:
    instance rather than after.
 4. Go to [§4](#4-configure-the-provider-on-the-instance).
 
-**You do not need a bot.** Everything this flow reads — including guild membership and roles —
-comes from *user* OAuth scopes on the person signing in. There is no bot token, no gateway
-intent, no "Add to Server", and no privileged intent to request. If a half-finished application
-has a bot on it, that bot is unused and harmless; you do not have to remove it, and adding one
-will not fix a sign-in problem.
+**You do not need a bot for sign-in.** Everything this flow reads — including guild membership
+and roles — comes from *user* OAuth scopes on the person signing in. There is no bot token, no
+gateway intent, no "Add to Server", and no privileged intent to request. If a half-finished
+application has a bot on it, that bot is unused here and harmless; you do not have to remove it,
+and adding one will not fix a sign-in problem.
+
+The Discord **bot** is a separate feature with its own credential on this same application, and
+its own decisions about what a channel discloses:
+[discord-bot.md](discord-bot.md). Nothing on this page depends on it.
 
 ## 2. An application that was never finished
 
@@ -137,8 +141,9 @@ broken by it.
 ### 2.4 Bot, installation and gateway intents
 
 If a previous attempt created a bot, added an installation context, or asked for privileged
-intents: **none of that is used**, and none of it needs to be undone. See the note at the end of
-[§1](#1-no-application-yet-register-one).
+intents: **none of that is used by sign-in**, and none of it needs to be undone. See the note at
+the end of [§1](#1-no-application-yet-register-one), and
+[discord-bot.md](discord-bot.md) if what you actually want is the bot.
 
 The one thing worth checking is that you did not put the **bot's** token somewhere expecting it to
 be the client secret. They are different values from different sections; a bot token in

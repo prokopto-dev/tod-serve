@@ -151,6 +151,7 @@ For a real deployment — a droplet, Traefik, GHCR and an approved deploy —
 | [Backups](docs/operations/backup.md) | Taking one, checking it, and restoring — the only undo there is |
 | [Maintenance](docs/operations/maintenance.md) | The two scheduled jobs, and why only one of them is an alert |
 | [Discord app](docs/operations/discord-app.md) | Registering your own, and what a removed role does not do |
+| [Discord bot](docs/operations/discord-bot.md) | Installing it on the same application, and what a bound channel discloses |
 
 ## Contributing
 

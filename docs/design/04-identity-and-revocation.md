@@ -605,7 +605,59 @@ including one whose officers have never heard of them. Per-circle revocation sta
 the block is the operator's. **Enforced by:** `TestJoin_BlockedIdentity_Refused` —
 `403 identity_blocked`.
 
-## 9. SSRF
+## 9. Discord interactions: what is disclosed, and where
+
+**Normative.** These five rules bind the Interactions route, the command surface and every reply the
+bot writes. [ADR-0017](../adr/0017-discord-interactions-in-the-binary.md) is the argument; this is
+the list an implementation is held to.
+
+Discord POSTs an interaction and this server verifies an Ed25519 signature over the raw body. That
+signature proves **who sent the payload**, not that anything inside it is true — every field below
+is treated as an assertion by a party we do not trust with tenancy.
+
+**1. The circle is derived from context, never accepted as a parameter.** An interaction body is
+user-controlled, so a member of guild B passing circle A's id is the cross-circle-ids-in-bodies
+class [#29](https://github.com/prokopto-dev/tod-serve/pull/29) closed. The resolve is
+`channel_id → circle_discord_channel → circle`, and the interaction's `guild_id` must equal the
+binding's `discord_guild_id` or the resolve fails. **In an unbound channel there is no resolve**:
+the bot offers the invoker the circles they are actually a member of and refuses to pick one.
+
+**2. The bot acts as the invoking user, and holds nothing of its own.** Resolve the Discord user's
+subject to an `identity`, that identity to a `membership` in the resolved circle, and evaluate *that
+principal's* permissions. A bot that carried its own broad access and spoke it into a channel is a
+confused deputy, and one with a lot to say. A Discord user with no membership in the bound circle is
+answered exactly as a stranger is — see rule 5.
+
+**3. Ephemeral by default.** Discord has **no channel-membership API** (§8), so this server cannot
+enumerate who will read a visible message; it must not make that disclosure decision on an officer's
+behalf. Every reply is ephemeral unless *both* the binding has `allow_visible = 1` **and** the
+invoker asked for a visible one. `circle_discord_channel.allow_visible` therefore defaults to `0` in
+the DDL rather than in a handler, so a binding written by any path is silent until somebody says
+otherwise.
+
+**4. A channel is not a circle.** Guild membership is not circle membership, and a non-ephemeral
+post discloses circle data to whoever can read the channel — including people the circle has never
+admitted, and people it has **revoked**, whose Discord role nothing takes away (§8). So a visible
+reply requires the explicit, stored, per-channel opt-in above — and it is composed with the
+**invoker's** permissions, so an officer holding `tod.read.attribution` who asks for a visible
+answer publishes attribution to everyone who can read the channel. Binding is a disclosure decision:
+it takes `circle.security.manage`, it is audited, and a bind naming a channel already bound to a
+**live** circle is refused rather than silently redirected. The refusal names no circle, for the
+reason rule 5 gives. A binding whose circle is tombstoned may be replaced.
+
+**5. Law 5 holds, in Discord's words.** An interaction that references another circle's target,
+report or member answers as though it does not exist — the `404` shape, never a `403`. A `403`
+confirms the row was found and the caller merely lacks rights, and a circle's *existence* is part of
+what it hides. The reply is ephemeral, so the refusal itself discloses nothing to the channel.
+
+**Mechanism.** The Interactions endpoint is a route, so it is declared in the registry (law 1) and
+`TestTenancy_CrossCircle_EveryOperationDenies` — derived from that registry — covers rule 5 the
+moment the route exists, without anyone adding it to a list. **Rules 1 to 4 have no mechanism until
+the implementation lands**, and saying otherwise here would be the confident mistake this project is
+built against; they are named in
+[invariants.md](../concepts/invariants.md) with what will hold them.
+
+## 10. SSRF
 
 Discord's URL is fixed and fine. OIDC discovery and JWKS URLs are **operator-supplied**, the classic
 pivot. Mitigated by [canonical §14](00-canonical-conventions.md#14-outbound-requests) plus

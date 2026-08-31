@@ -27,6 +27,7 @@ directions linked.
 | [0014](0014-a-deferred-read-pool-for-multi-read-renders.md) | A second, deferred pool for multi-read renders | accepted |
 | [0015](0015-instance-owner-implies-the-instance-realm.md) | `instance.owner` implies the instance realm | accepted |
 | [0016](0016-first-run-setup-is-an-env-token-and-a-derived-window.md) | First-run setup is an env token, open only while no administrator exists | accepted |
+| [0017](0017-discord-interactions-in-the-binary.md) | Discord interactions in the binary, disambiguated by a channel binding | proposed |
 
 ## Where this project diverges from Dragon Kill Party
 
