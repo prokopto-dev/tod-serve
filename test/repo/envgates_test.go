@@ -1,6 +1,8 @@
 package repo
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -444,10 +446,24 @@ func shellHalfFinds(t *testing.T, greps []string, body string) bool {
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 
 	for _, pattern := range greps {
-		out, err := exec.CommandContext(t.Context(), "grep", "-InE", pattern, path).Output()
-		// grep exits 1 for "no match", which is not an error here; anything else with output is.
-		require.False(t, err != nil && len(out) > 0, "grep failed: %s", out)
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		var stdout, stderr bytes.Buffer
+		cmd := exec.CommandContext(t.Context(), "grep", "-InE", pattern, path)
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+
+		// grep exits 0 for a match and 1 for none. Anything else is a broken pattern, and it MUST
+		// fail loudly: an unusable regex produces no matches, which is indistinguishable from a
+		// narrowed one at this boundary and would report every positive case as a narrowing.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			require.Equal(t, 1, exit.ExitCode(),
+				"grep could not use the pattern read out of scripts/repo-gates.sh\npattern: %s\nstderr: %s",
+				pattern, stderr.String())
+		} else {
+			require.NoError(t, err, "grep did not run: %s", stderr.String())
+		}
+
+		for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
 			if line != "" && !strings.Contains(line, "CHANGE_ME") {
 				return true
 			}
