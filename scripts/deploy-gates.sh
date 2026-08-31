@@ -59,9 +59,17 @@ case "$mode" in
     # name — around twenty-five processes for a repository with ten constants. A fork that fails
     # under load (EAGAIN, the per-user process limit) makes grep exit non-zero, and a non-zero grep
     # is INDISTINGUISHABLE from "no match": the gate then reports a variable as undocumented, or as
-    # named-but-not-a-constant, with total confidence. Measured over 3000 parallel runs a side:
-    # 11 findings that NAMED A VARIABLE before this was hoisted, 0 after, and 29 processes a run
-    # down to 8 — the per-name forks are gone, so the count no longer grows with the const block.
+    # named-but-not-a-constant, with total confidence. Two balanced runs of 3000 parallel
+    # invocations a side measured 10 and 11 findings that NAMED A VARIABLE before this was
+    # hoisted, and none after; the gate went from 2N+9 processes to a flat 8, so the exposure no
+    # longer grows with the const block.
+    #
+    # It is NOT fork-proof, and do not read it as though it were. `consts=$(grep | grep | sort)`
+    # above is still a fork, and still says "the pattern is wrong" when what actually went wrong
+    # was the fork. What changed is that every remaining failure names THIS GATE — "parsed no
+    # TOD_ constants", "listed no files", "found no TOD_ names" — and none of them can any longer
+    # invent a finding against a variable. Removing the last four would mean reimplementing find,
+    # grep -r and sort in bash, and `sort`'s locale collation is not reproducible in a shell.
     #
     # It surfaced far from here. test/repo's TEN001 tests shell out to the whole of
     # repo-gates.sh, so the failure arrived as a bare `exit status 1` attributed to whichever test
