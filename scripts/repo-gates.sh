@@ -113,7 +113,8 @@ fi
 # "the container is not up yet".
 if [ -d deploy ]; then
   if out=$(bash scripts/deploy-gates.sh env deploy cmd/tod-serve/root.go 2>&1); then
-    pass ENV001 "$out TOD_* variables, documented in deploy/env.example and named nowhere else"
+    set -- $out
+    pass ENV001 "${1} TOD_* variables, documented in deploy/env.example and named nowhere else (${2} deployment files read, ${3} distinct TOD_ names inspected)"
   else
     report ENV001 "${out%%$'\n'*}"
     printf '%s\n' "${out#*$'\n'}"
@@ -121,14 +122,15 @@ if [ -d deploy ]; then
 
   if out=$(bash scripts/deploy-gates.sh images deploy 2>&1); then
     set -- $out
-    pass IMG001 "${1} image reference(s) pinned to a digest (${2} interpolate \$TOD_DEPLOY_IMAGE, which the deploy pins)"
+    pass IMG001 "${1} image reference(s) pinned to a digest across ${3} file(s) (${2} interpolate \$TOD_DEPLOY_IMAGE, which the deploy pins)"
   else
     report IMG001 "${out%%$'\n'*}"
     printf '%s\n' "${out#*$'\n'}"
   fi
 
   if out=$(bash scripts/deploy-gates.sh traefik deploy 2>&1); then
-    pass LBL001 "$out Traefik reference(s), each naming something a label defines"
+    set -- $out
+    pass LBL001 "${1} Traefik reference(s) across ${2} compose file(s), each naming something a label defines"
   else
     report LBL001 "${out%%$'\n'*}"
     printf '%s\n' "${out#*$'\n'}"

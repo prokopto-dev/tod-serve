@@ -212,7 +212,14 @@ case "$mode" in
     # repo-gates.sh renders as a finding whose entire headline is `0`.
     count=0
     while IFS= read -r _; do count=$((count + 1)); done <<< "$consts"
-    printf '%d\n' "$count"
+    # The counts are REPORTED, not just asserted, so a silent drop is visible in the CI log without
+    # anyone having to reproduce it: a run that reads eleven deployment files today and nine
+    # tomorrow says so in the pass line. WEB001 and WEB002 print theirs for the same reason.
+    file_count=0
+    while IFS= read -r _; do file_count=$((file_count + 1)); done <<< "$scanned"
+    name_count=0
+    while IFS= read -r _; do name_count=$((name_count + 1)); done <<< "$deploy_names"
+    printf '%d %d %d\n' "$count" "$file_count" "$name_count"
     ;;
 
   images)
@@ -226,7 +233,31 @@ case "$mode" in
     checked=0
     waived=0
 
-    refs=$(grep -hnE '^[[:space:]]*FROM[[:space:]]' "$dir"/Dockerfile* 2>/dev/null || true)
+    # THE SAME CLASS AS ENV001's SCANS, and the reason this file now states it once: a shell
+    # pipeline whose status nobody reads. `|| true` here swallowed a grep that exited 2 having
+    # printed only part of what it was asked for, and `checked` would still be non-zero, so the
+    # is-anything-there guard below passed while an unread Dockerfile kept its unpinned FROM. The
+    # property needed is not "non-empty", it is NON-EMPTY AND COMPLETE.
+    #
+    # The inputs are resolved with nullglob rather than handed to grep as a glob, so "no Dockerfile
+    # in this directory" is a list of length zero — a legitimate answer — and not a grep that
+    # exited 2 on a filename that never existed. That is what makes the status check meaningful:
+    # every non-zero status left is a real read failure. `traefik` below already did it this way.
+    shopt -s nullglob
+    dockerfiles=("$dir"/Dockerfile*)
+    compose_files=("$dir"/*.yaml "$dir"/*.yml)
+    shopt -u nullglob
+    files_read=$((${#dockerfiles[@]} + ${#compose_files[@]}))
+
+    refs=""
+    if [ ${#dockerfiles[@]} -gt 0 ]; then
+      refs=$(grep -hnE '^[[:space:]]*FROM[[:space:]]' "${dockerfiles[@]}" 2>/dev/null)
+      refs_status=$?
+      if [ "$refs_status" -gt 1 ]; then
+        printf 'IMG001 could not read every Dockerfile in %s (grep exited %d); a partial read drops the FROM it would have caught\n' "$dir" "$refs_status"
+        exit 1
+      fi
+    fi
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       # Drop the line number, the FROM, and any --platform flag; take the reference.
@@ -241,7 +272,15 @@ case "$mode" in
       esac
     done <<< "$refs"
 
-    images=$(grep -hE '^[[:space:]]*image:[[:space:]]' "$dir"/*.yaml "$dir"/*.yml 2>/dev/null || true)
+    images=""
+    if [ ${#compose_files[@]} -gt 0 ]; then
+      images=$(grep -hE '^[[:space:]]*image:[[:space:]]' "${compose_files[@]}" 2>/dev/null)
+      images_status=$?
+      if [ "$images_status" -gt 1 ]; then
+        printf 'IMG001 could not read every compose file in %s (grep exited %d); a partial read drops the image it would have caught\n' "$dir" "$images_status"
+        exit 1
+      fi
+    fi
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       value=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*image:[[:space:]]*//')
@@ -294,7 +333,7 @@ case "$mode" in
       printf '  A tag is mutable. Pin as name:tag@sha256:<digest>, keeping the tag readable.\n'
       exit 1
     fi
-    printf '%d %d\n' "$checked" "$waived"
+    printf '%d %d %d\n' "$checked" "$waived" "$files_read"
     ;;
 
   traefik)
@@ -360,6 +399,14 @@ case "$mode" in
         printf "CHECKED %d\n", n
       }
     ' "${label_files[@]}")
+    awk_status=$?
+    # Same class again. awk prints what it managed to read and exits non-zero on the file it could
+    # not open, and a partial read here drops a LABEL — which is the definition, not the reference,
+    # so the gate would then report a router pointing at nothing as a finding, or miss one.
+    if [ "$awk_status" -ne 0 ]; then
+      printf 'LBL001 could not read every compose file in %s (awk exited %d); a partial read drops the label that defines the name\n' "$dir" "$awk_status"
+      exit 1
+    fi
 
     case "$findings" in
       VACANT | "")
@@ -376,6 +423,6 @@ case "$mode" in
       printf '  the host answers 404 — the same 404 as a host with no router at all.\n'
       exit 1
     fi
-    printf '%s\n' "$count"
+    printf '%s %d\n' "$count" "${#label_files[@]}"
     ;;
 esac
