@@ -42,10 +42,10 @@ exists.
 and calls `EvaluateGuildGate` before minting, because — `internal/identity/gate.go` — "a gate on
 join alone would let `/sessions` mint a fresh PAT for somebody who has left the guild". Exchange
 does that same re-read. Where `Gate.IsZero()` it mints for every current, non-revoked membership,
-carrying ADR-0018's scope set and never widening it. Where the circle gates, it evaluates the live
-gate against the facts the grant captured, and mints only while those facts are younger than
-`GateFactsTTL`; past that the membership is **skipped and counted in the response**, never dropped
-silently, and one re-approval refreshes the facts for every gated circle at once.
+carrying ADR-0018's scope set and never widening it. Where the circle gates it needs facts, which no
+approval can capture for a circle joined later —
+[ADR-0020](0020-guild-facts-come-from-browser-flows.md) is where they come from and how they age. A
+membership it cannot prove is **skipped and counted in the response**, never dropped silently.
 `api_token.expires_at` already exists, so short TTLs need no schema change.
 
 **Approval consumes a `provider_ticket`, not a session, so a memberless identity can approve.**
@@ -72,8 +72,9 @@ an affordance somebody must build.
 - Good, because what reaches a route is still an ADR-0005 PAT: authz and tenancy are unchanged, and
   a revoked membership mints nothing.
 - **Bad, because a guild-gate change is no longer caught within 120 seconds.** `/sessions` evaluates
-  facts that fresh; a grant's are as old as `GateFactsTTL` allows, so somebody who left the guild
-  keeps refreshing until then. That window is the security this design spends.
+  facts that fresh; the exchange reads stored ones up to `GateFactsTTL` old
+  ([ADR-0020](0020-guild-facts-come-from-browser-flows.md)), so somebody who left the guild keeps
+  refreshing until then. That window is the security this design spends.
 - **Bad, because the grant is identity-wide and long-lived** — blast radius is per-circle on the
   tokens and whole-identity on the grant.
 - **Bad, because two instances means two logins, forever,** which every user reads as a bug before

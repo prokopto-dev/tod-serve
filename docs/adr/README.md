@@ -33,6 +33,7 @@ directions linked.
 | [0020](0020-instance-settings-are-mutable-with-a-change-ledger.md) | Instance settings stay mutable, and their changes are their own ledger | proposed |
 | [0018](0018-a-device-authorization-grant-against-this-instance.md) | A device authorization grant against this instance, not against Discord | proposed |
 | [0019](0019-a-device-grant-is-identity-scoped.md) | A device grant is identity-scoped and exchanges for per-membership tokens | proposed |
+| [0020](0020-guild-facts-come-from-browser-flows.md) | Guild facts come from browser flows, bounded by an age | proposed |
 
 ## Where this project diverges from Dragon Kill Party
 
