@@ -508,3 +508,106 @@ func TestHealthyInstance_IsActuallyHealthy(t *testing.T) {
 	require.Equal(t, "https://tod.example.com", row.PublicUrl)
 	require.False(t, store.IsNotFound(err))
 }
+
+// TestDoctor_AnEnabledDiscordProviderWithNoClientSecret_IsAProblem is the gate on the gap between
+// what `identity.Provider.Validate` refuses and what `doctor` reports.
+//
+// `Validate` rejects a `discord` row with no client secret, and the browser flow validates the
+// provider BEFORE it redirects — so such a row fails every sign-in. The CHECK constraint ties only
+// `client_id` to `kind`, so the row saves cleanly; a legacy row, or one repaired directly in SQL,
+// reaches this state. `doctor` reported `ok` on it and exited 0, which is the confident mistake:
+// the operator is told the instance is healthy and finds out when somebody clicks the button.
+//
+// The `oidc` rows are the other half, and they are why this is scoped rather than general. An
+// `oidc` provider serving non-browser `id_token` clients legitimately has no secret — reporting it
+// would be a false positive on a working configuration, and a check with false positives is one
+// somebody switches off.
+func TestDoctor_AnEnabledDiscordProviderWithNoClientSecret_IsAProblem(t *testing.T) {
+	t.Parallel()
+
+	const host = "https://tod.example.com"
+
+	tests := []struct {
+		name        string
+		kind        string
+		secret      *string
+		wantProblem bool
+		why         string
+	}{
+		{
+			name:        "discord with a client secret",
+			kind:        "discord",
+			secret:      ptr("shhh"),
+			wantProblem: false,
+			why: "the vacuity guard: a check that fires on every discord row proves nothing " +
+				"about the one that is broken",
+		},
+		{
+			name:        "discord with no client secret at all",
+			kind:        "discord",
+			secret:      nil,
+			wantProblem: true,
+			why:         "discord.New refuses to build a client, so every sign-in is a 500",
+		},
+		{
+			name:        "discord with an empty client secret",
+			kind:        "discord",
+			secret:      ptr(""),
+			wantProblem: true,
+			why: "core.Secret treats an empty string as absent, so this row is the NULL case " +
+				"wearing a different spelling",
+		},
+		{
+			name:        "oidc with no client secret",
+			kind:        "oidc",
+			secret:      nil,
+			wantProblem: false,
+			why: "an oidc provider serving non-browser id_token clients needs no secret; " +
+				"reporting it would refuse a configuration that works",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A key of its own: healthyInstance already wrote one called "oidc", and the
+			// redirect URI checkRedirectURIs expects is derived from the key.
+			key := tt.kind + "2"
+			path := healthyInstance(t, host, host+"/api/v1/auth/callback/oidc")
+			addProvider(t, path, key, tt.kind, tt.secret, host+"/api/v1/auth/callback/"+key)
+
+			out, err := captureCLI(t, "doctor", "--db", path)
+			if tt.wantProblem {
+				require.Error(t, err, "doctor exited 0: %s\n%s", tt.why, out)
+				require.Contains(t, out, "has no client secret",
+					"doctor found a problem but not this one, so the test would pass on an "+
+						"unrelated failure:\n%s", out)
+				return
+			}
+			require.NoError(t, err, "doctor found a problem it should not have: %s\n%s", tt.why, out)
+		})
+	}
+}
+
+// addProvider writes a second enabled provider beside the one [healthyInstance] created.
+//
+// The redirect URI is passed in and correct, so that [checkRedirectURIs] stays quiet and the only
+// thing the caller can make wrong is the secret.
+func addProvider(t *testing.T, path, key, kind string, secret *string, redirectURI string) {
+	t.Helper()
+	db := openCopy(t, path)
+	clientID := "1234567890"
+	issuer := "https://issuer.example.com"
+	_, err := db.Queries().CreateIdentityProvider(t.Context(),
+		sqlitegen.CreateIdentityProviderParams{
+			ID: "01M0000000000000000000000B", Key: key, Kind: kind,
+			DisplayName: key, Enabled: 1, VerifiableSubject: 1,
+			Issuer: &issuer, ClientID: &clientID, ClientSecret: secret,
+			RedirectUri: &redirectURI, CreatedAt: 1, UpdatedAt: 1,
+		})
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+}
+
+func ptr(s string) *string { return &s }

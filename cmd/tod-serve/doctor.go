@@ -157,6 +157,18 @@ func checkProviders(ctx context.Context, db *store.DB, ok, warn, bad func(string
 			bad("provider \"" + row.Key + "\" has no client id: it cannot verify an audience")
 			continue
 		}
+		// Mirrors the `discord` arm of [identity.Provider.Validate], and mirrors its scoping too:
+		// an `oidc` row legitimately has no secret when it serves non-browser `id_token` clients.
+		// The browser flow validates the provider before it redirects, so a row that reached this
+		// state — a legacy row, or one repaired directly in SQL — fails EVERY sign-in. Saying `ok`
+		// here is the confident mistake this repository is written against: doctor exits 0 while
+		// the button nobody has pressed yet is already broken.
+		if row.Kind == string(identity.KindDiscord) &&
+			(row.ClientSecret == nil || *row.ClientSecret == "") {
+			bad("provider \"" + row.Key + "\" has no client secret: every sign-in through it " +
+				"fails, because the browser flow validates the provider before redirecting")
+			continue
+		}
 		ok("provider \"" + row.Key + "\" (" + row.Kind + ") is enabled")
 	}
 	if enabled == 0 {
