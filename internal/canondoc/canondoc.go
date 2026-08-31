@@ -123,6 +123,14 @@ func LoadCanonical() (*Doc, error) { return loadFromRoot(CanonicalPath) }
 // LoadDomainModel parses the domain model document.
 func LoadDomainModel() (*Doc, error) { return loadFromRoot(DomainModelPath) }
 
+// TenancyADRPath is ADR-0002, which repeats canonical §9's instance-scoped allowlist in its own
+// prose. It is loadable here so a test can diff the two rather than trusting that whoever last
+// added a table remembered there were two copies — which, for three tables, nobody did.
+const TenancyADRPath = "docs/adr/0002-circle-is-the-tenant.md"
+
+// LoadTenancyADR reads ADR-0002.
+func LoadTenancyADR() (*Doc, error) { return loadFromRoot(TenancyADRPath) }
+
 func loadFromRoot(rel string) (*Doc, error) {
 	root, err := RepoRoot()
 	if err != nil {

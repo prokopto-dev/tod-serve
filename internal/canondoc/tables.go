@@ -140,6 +140,20 @@ func InstanceScopedTables() ([]string, error) {
 	return doc.BacktickedListAfter(instanceScopedPrefix)
 }
 
+// InstanceScopedTablesInTenancyADR returns the same allowlist as written in ADR-0002.
+//
+// The ADR is a SECOND hand-maintained copy of a load-bearing list, which is the shape this
+// repository gates everywhere else. It reuses instanceScopedPrefix deliberately: both documents
+// introduce the list with the identical sentence, so there is one parser and one thing to keep
+// true rather than two spellings that can drift apart quietly.
+func InstanceScopedTablesInTenancyADR() ([]string, error) {
+	doc, err := LoadTenancyADR()
+	if err != nil {
+		return nil, err
+	}
+	return doc.BacktickedListAfter(instanceScopedPrefix)
+}
+
 // parseTables walks the already-split lines of a document and collects its pipe tables. It is
 // called from [Load] with the heading tracking already done, so a table knows the section it is in.
 //

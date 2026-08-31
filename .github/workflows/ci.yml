@@ -69,6 +69,12 @@ jobs:
       # verb like `seed targets` that does not exist.
       - name: Every command the docs name resolves
         run: make verify-commands
+      # Also here rather than in `lint / repo`, and for the same reason: it resolves the module
+      # graph with `go list -deps`, which needs a toolchain that job does not have. It fails closed
+      # on a licence it cannot classify, so a new dependency with an unusual LICENSE file is a red
+      # build until somebody reads it.
+      - name: No copyleft or source-available runtime dependency
+        run: make licence-check
 
   web:
     name: lint / web
