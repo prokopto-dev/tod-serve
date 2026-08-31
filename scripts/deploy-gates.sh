@@ -59,8 +59,9 @@ case "$mode" in
     # name — around twenty-five processes for a repository with ten constants. A fork that fails
     # under load (EAGAIN, the per-user process limit) makes grep exit non-zero, and a non-zero grep
     # is INDISTINGUISHABLE from "no match": the gate then reports a variable as undocumented, or as
-    # named-but-not-a-constant, with total confidence. Measured at 16 false findings per 300
-    # parallel runs on a laptop before this was hoisted, 0 after.
+    # named-but-not-a-constant, with total confidence. Measured over 3000 parallel runs a side:
+    # 11 findings that NAMED A VARIABLE before this was hoisted, 0 after, and 29 processes a run
+    # down to 8 — the per-name forks are gone, so the count no longer grows with the const block.
     #
     # It surfaced far from here. test/repo's TEN001 tests shell out to the whole of
     # repo-gates.sh, so the failure arrived as a bare `exit status 1` attributed to whichever test
@@ -124,8 +125,19 @@ case "$mode" in
     #    metacharacters to `case`; quoting them inside the pattern keeps that true regardless.
     #    An empty `$consts` degenerates to `\n\n`, which matches no name — the same answer
     #    `grep -qx` gives against a single empty line, though the guard above already exited.
+    #
+    #    The scan is hoisted for a second reason: an empty result USED TO PASS. A failed fork left
+    #    the `for` list empty, direction 2 then examined nothing, and the gate exited 0 — a silent
+    #    false negative, which is worse than the red one above. env.example lives inside "$dir" and
+    #    documents every constant, so a run that finds no TOD_ name there did not scan.
+    deploy_names=$(grep -rhoE 'TOD_[A-Z0-9_]+' $scanned 2>/dev/null | sort -u)
+    if [ -z "$deploy_names" ]; then
+      printf 'ENV001 found no TOD_ names in %s; it must never pass on a scan that read nothing\n' "$dir"
+      exit 1
+    fi
+
     consts_set=$'\n'"$consts"$'\n'
-    for name in $(grep -rhoE 'TOD_[A-Z0-9_]+' $scanned 2>/dev/null | sort -u); do
+    for name in $deploy_names; do
       case "$name" in
         "${deploy_prefix}"*) continue ;;
       esac
