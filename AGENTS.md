@@ -34,7 +34,7 @@ than writing it down as though it were enforced.
 | `internal/clock/` | The only `time.Now` |
 | `internal/probe/` | The loopback liveness probe the image's `HEALTHCHECK` calls. **The one exception to law 6**, and the only package outside `internal/identity` that reaches the network at all |
 | `internal/apierr/` | The closed error-code enum and the RFC 9457 problem the edge renders |
-| `internal/repogate/` | The gates that need an AST rather than a grep: `CLOCK001`, `SLEEP001`, `ROUTE001`, `RAND001` |
+| `internal/repogate/` | The gates that need an AST rather than a grep: `CLOCK001`, `SLEEP001`, `ROUTE001`, `RAND001`, `SQL002` |
 | `internal/ui/` | The embedded admin console. `//go:embed all:dist`, staged from `web/dist` by `make build-web`. Declares no route — it returns a handler and `internal/api` decides where it sits |
 | `web/` | The console: React + Vite + TypeScript + Tailwind. **Not part of the Go module** — `web/go.mod` is what says so, and what stops `./...` compiling whatever Go code the JavaScript dependency tree ships. `web/src/api/generated.ts` is generated from `openapi/openapi.json` and never hand-edited |
 | `internal/canondoc/` | Reads fenced blocks out of the normative documents, so a gate compares code against the document rather than against a copy of it |
@@ -51,13 +51,21 @@ Each has a mechanism. The mechanism is authoritative; this list is a description
    registry: `api.Register` takes an `OperationID`, not a method and a path. `ROUTE001` is an AST
    analyser confining the framework's registration calls to `internal/api/register.go`, so a route
    that carries no permission, no scopes and no tenancy flag cannot be attached at all.
-2. **`*sql.DB` is held only by `internal/store`.** `SQL001` — a grep in `scripts/repo-gates.sh`
-   for `database/sql` outside that package. **One mechanism, not two:** there is no import-graph
-   test and no `SQL002`, and this line claimed both until somebody went looking. Keep the
-   distinction the rest of this file runs on: a can-fail test in `test/repo` proves a gate
-   **fires**, and is not a second **mechanism**. A real second mechanism here would have to catch
-   what a grep cannot — a build tag, or a vendored re-export of `database/sql` under another
-   import path. Law 7 is the only place two really are independent, and it says why.
+2. **`*sql.DB` is held only by `internal/store`,** and no handle leaves it. **Two mechanisms, and
+   they are genuinely independent.** `SQL001` is a grep in `scripts/repo-gates.sh` for
+   `database/sql` outside that package, which answers *who imports it*. `SQL002` is an AST analyser
+   in `internal/repogate` for the half a grep cannot see: whether a handle can be **obtained**
+   without importing anything, which `db := store.Raw()` would. Keep the distinction the rest of
+   this file runs on: a can-fail test in `test/repo` proves a gate **fires** and is not a second
+   **mechanism**, so `TestSQL001_DatabaseSQLOutsideTheStore_IsReported` and
+   `TestSQL002_TheStore_HandsOutNoHandle` are those proofs rather than a third and fourth
+   mechanism.
+
+   This line spent a while denying `SQL002` existed. It was written to survive either merge order,
+   correctly predicted that a real second mechanism would have to catch what a grep cannot — and
+   then asserted the wrong side of the race when exactly that landed beside it. Nothing gates this
+   file, which is why it stayed wrong: `DOC002` reads
+   [`docs/concepts/invariants.md`](docs/concepts/invariants.md), not this one.
 3. **`internal/consensus` is pure** — no store, no `time.Now`, no `math/rand`, **no floats**.
    `PURE001`, `PURE002`, `CLOCK001`, `NOFLOAT001`. The float ban is a reproducibility rule, not a
    money rule: the nightly verify job diffs exact values and a cross-platform float discrepancy would
