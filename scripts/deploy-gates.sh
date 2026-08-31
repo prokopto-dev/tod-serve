@@ -52,24 +52,87 @@ case "$mode" in
     fi
 
     findings=""
+
+    # NOTHING BELOW THIS LINE MAY FORK A PROCESS PER VARIABLE NAME.
+    #
+    # Both membership tests used to be a `grep` inside the loop, so the gate forked once per TOD_
+    # name — around twenty-five processes for a repository with ten constants. A fork that fails
+    # under load (EAGAIN, the per-user process limit) makes grep exit non-zero, and a non-zero grep
+    # is INDISTINGUISHABLE from "no match": the gate then reports a variable as undocumented, or as
+    # named-but-not-a-constant, with total confidence. Measured at 16 false findings per 300
+    # parallel runs on a laptop before this was hoisted, 0 after.
+    #
+    # It surfaced far from here. test/repo's TEN001 tests shell out to the whole of
+    # repo-gates.sh, so the failure arrived as a bare `exit status 1` attributed to whichever test
+    # happened to fork the script — MIG001 wore the blame on 2026-08-28, ENV001 on 2026-08-29, and
+    # the TEN001 tests both times. THE TEST NAME IN SUCH A FAILURE IS MEANINGLESS.
+    #
+    # THE DISCRIMINATOR, when this gate goes red and you need to know which kind of red it is:
+    # a real defect names THE SAME variable on every run. A fork failure names a DIFFERENT one
+    # each time, because which name loses the race is which name happened to be in hand when the
+    # limit was hit. Run it a dozen times before you go looking at deploy/env.example.
+    #
+    # So: read each input ONCE, outside the loop, and do the per-name test with shell builtins.
+
     # 1. Every variable the binary reads is written down where an operator will look for it.
     #    Anchored to the start of a line, optionally commented: a name has to be an ENTRY in that
     #    file, not a word somewhere in a paragraph.
+    #
+    #    `^#? ?NAME\b` per name, done without grep. Each line is reduced ONCE to the entry name it
+    #    declares, and the names are then compared as whole strings:
+    #      - `^#? ?` — strip at most one leading `#`, then at most one leading space. Stripping
+    #        greedily is safe because a TOD_ name can begin with neither, so no shorter prefix the
+    #        regex would have tried can match where the greedy one does not.
+    #      - `\b` — take the leading run of word characters. `${line%%[!A-Za-z0-9_]*}` cuts at the
+    #        first character grep would call a word boundary, so `TOD_ADDR` does NOT match an entry
+    #        `TOD_ADDRESS=x`: the run is the longer name, and the two are unequal.
+    #    `|| [ -n "$line" ]` because grep reads a last line with no trailing newline and `read`
+    #    reports failure on it.
+    entries=$'\n'
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line#\#}"
+      line="${line# }"
+      entries="${entries}${line%%[!A-Za-z0-9_]*}"$'\n'
+    done < "$example"
+
     for name in $consts; do
-      grep -qE "^#? ?${name}\b" "$example" \
-        || findings="${findings}  ${name} is read by the binary and is not an entry in ${example}"$'\n'
+      case "$entries" in
+        *$'\n'"$name"$'\n'*) ;;
+        *) findings="${findings}  ${name} is read by the binary and is not an entry in ${example}"$'\n' ;;
+      esac
     done
 
     # 2. And nothing in the deployment files names a variable the binary does not read. This is the
     #    direction that catches a typo: `TOD_TOKEN_PEPER` in a compose file interpolates to empty
     #    and the server refuses to start with a message about a variable that IS set.
     scanned=$(find "$dir" -type f 2>/dev/null | sort)
+    if [ -z "$scanned" ]; then
+      # A checker that checked nothing must never look like a checker that found nothing — and here
+      # it is worse than that. `grep -r PATTERN` with no file operand reads the CURRENT DIRECTORY,
+      # so an empty list does not scan nothing, it scans the whole repository: the run that put
+      # this guard here reported TOD_NEW_THING and TOD_TOKEN_PEPER, which are fixtures inside
+      # test/repo/deploygates_test.go, as findings against deploy/.
+      printf 'ENV001 listed no files under %s; it must never fall back to scanning the tree\n' "$dir"
+      exit 1
+    fi
+
+    #    `grep -qx` per name, done without grep. `$consts` is one name per line, so wrapping it in
+    #    newlines at both ends puts a `\n` on both sides of EVERY line; a pattern of the name
+    #    likewise bounded then matches only a whole line, which is what `-x` means. `TOD_ADDR` does
+    #    not match a `TOD_ADDRESS` line, because what follows the name there is `E` and not `\n`.
+    #    The names hold `[A-Z0-9_]` only, so they are neither BRE metacharacters to grep nor glob
+    #    metacharacters to `case`; quoting them inside the pattern keeps that true regardless.
+    #    An empty `$consts` degenerates to `\n\n`, which matches no name — the same answer
+    #    `grep -qx` gives against a single empty line, though the guard above already exited.
+    consts_set=$'\n'"$consts"$'\n'
     for name in $(grep -rhoE 'TOD_[A-Z0-9_]+' $scanned 2>/dev/null | sort -u); do
       case "$name" in
         "${deploy_prefix}"*) continue ;;
       esac
-      echo "$consts" | grep -qx "$name" \
-        || findings="${findings}  ${name} appears in ${dir} and is not a constant in ${rootgo}"$'\n'
+      case "$consts_set" in
+        *$'\n'"$name"$'\n'*) ;;
+        *) findings="${findings}  ${name} appears in ${dir} and is not a constant in ${rootgo}"$'\n' ;;
+      esac
     done
 
     # 3. The prefix means what it says. A TOD_DEPLOY_ name reaching Go source would be a variable
@@ -87,7 +150,12 @@ case "$mode" in
       printf '  Names beginning with %s are read by docker compose and by the binary never.\n' "$deploy_prefix"
       exit 1
     fi
-    printf '%d\n' "$(echo "$consts" | grep -c .)"
+    # Counted in the shell for the same reason: this is the LAST command of a clean run, so its
+    # status is the gate's. A failed fork here made `printf '%d' ''` print 0 and return 1, which
+    # repo-gates.sh renders as a finding whose entire headline is `0`.
+    count=0
+    while IFS= read -r _; do count=$((count + 1)); done <<< "$consts"
+    printf '%d\n' "$count"
     ;;
 
   images)
