@@ -634,9 +634,15 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   # the value must also LOOK generated — base64 or hex, whole token — because `NAME: words` is how
   # English writes a label: docs/operations/getting-started.md quotes an error message reading
   # `…environment.TOD_TOKEN_PEPPER: required variable`, and a bare length rule would fire on it.
+  #
+  # BOTH quote kinds are read on the `:` side, and a bare scalar. Compose accepts all three and
+  # the Go half trims both (`strings.Trim(v, "\"'")`), so a shell half that read only `"` would
+  # let `TOD_SESSION_KEY: 'AAAA…'` through in exactly the CI job that has no Go toolchain to
+  # catch it — which is the half this grep exists to be. Review caught the equals-only version of
+  # this same mistake; this is the second narrowing of the same regex.
   names='TOD_TOKEN_PEPPER|TOD_SESSION_KEY|TOD_SETUP_TOKEN|TOD_METRICS_TOKEN'
   secrets=$( { git ls-files -z | xargs -0 grep -InE "($names)=\"?[^ \"\$<]{16,}"
-               git ls-files -z | xargs -0 grep -InE "($names):[[:space:]]+\"?([A-Za-z0-9+/]{16,}={0,2}|[0-9a-fA-F]{32,})\"?([[:space:]]|\$)"
+               git ls-files -z | xargs -0 grep -InE "($names):[[:space:]]+['\"]?([A-Za-z0-9+/]{16,}={0,2}|[0-9a-fA-F]{32,})['\"]?([[:space:]]|\$)"
              } | grep -v 'CHANGE_ME' | sort -u || true)
   if [ -n "$secrets" ]; then
     report ENV002 "a generated secret is committed; remove it and ROTATE it — it is in the history:"
