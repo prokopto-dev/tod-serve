@@ -11,9 +11,10 @@
 // first time comes through an invite link, which is the whole point of the link.
 
 import { useState } from 'react'
-import { Link, Navigate } from 'react-router-dom'
+import { Link, Navigate, useLocation } from 'react-router-dom'
 
 import { api, body, toError } from '../api'
+import { readSignedOut, signedOutMessage } from '../app/signedOut'
 import { useResource } from '../app/useResource'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { ProviderButton } from '../components/ProviderButton'
@@ -21,6 +22,11 @@ import { Banner, Button, Card, Empty, Field, Input, Select, Spinner } from '../c
 import { forgetCircle, rememberedCircles, setPendingJoin } from '../lib/storage'
 
 export function SignIn() {
+  // Sign-out lands here, and the confirmation it carries is rendered here rather than where the
+  // button is: that component navigated away and was gone before it could draw anything. The state
+  // is narrowed rather than trusted — see [readSignedOut] — because the browser's history is not
+  // an input this console controls.
+  const signedOut = readSignedOut(useLocation().state)
   const meta = useResource((signal) => api.getServerMeta({}, { signal }).then((r) => r.data), [])
   const providers = useResource(
     (signal) => api.listIdentityProviders({}, { signal }).then((r) => r.data),
@@ -98,6 +104,7 @@ export function SignIn() {
         </p>
       </header>
 
+      {signedOut && <Banner title="Signed out">{signedOutMessage(signedOut)}</Banner>}
       {error && <ProblemNotice error={error} />}
       {(providers.loading || busy) && <Spinner label="Working" />}
       <StaleNotice resource={providers} />

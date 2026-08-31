@@ -34,7 +34,7 @@ type Config struct {
 	Log   *slog.Logger
 }
 
-// Service removes expired rows from the three prunable tables.
+// Service removes expired rows from the four prunable tables.
 type Service struct {
 	db    *store.DB
 	clock clock.Clock
@@ -64,21 +64,25 @@ type Report struct {
 	AuthFlows          int64 `json:"auth_flows"`
 	CredentialTickets  int64 `json:"credential_tickets"`
 	IdempotencyRecords int64 `json:"idempotency_records"`
+	// SessionRevocations is how many signed-out sessions were forgotten. A revocation stops
+	// meaning anything once the session it names has expired, because the codec refuses an expired
+	// cookie without consulting anything.
+	SessionRevocations int64 `json:"session_revocations"`
 	// Before is the cutoff used: rows with `expires_at` strictly before it were removed.
 	Before core.Micros `json:"before"`
 	AsOf   core.Micros `json:"as_of"`
 }
 
-// Total is how many rows the run removed across all three tables.
+// Total is how many rows the run removed across all four tables.
 func (r Report) Total() int64 {
-	return r.AuthFlows + r.CredentialTickets + r.IdempotencyRecords
+	return r.AuthFlows + r.CredentialTickets + r.IdempotencyRecords + r.SessionRevocations
 }
 
 // Sweep deletes every row that expired more than [Grace] ago and reports what it took.
 //
-// The three deletes share one transaction so the returned counts and the database cannot disagree:
+// The four deletes share one transaction so the returned counts and the database cannot disagree:
 // on an error nothing is removed and the report is empty, rather than the sweep having deleted rows
-// it then failed to tell anybody about. That is cheap here — these are three indexed deletes
+// it then failed to tell anybody about. That is cheap here — these are four indexed deletes
 // against litter, not a table walk.
 //
 // It is safe to run at any time and safe to run concurrently with the server. Every reader of these
@@ -103,7 +107,12 @@ func (s *Service) Sweep(ctx context.Context) (Report, error) {
 		if err != nil {
 			return fmt.Errorf("delete expired idempotency records: %w", err)
 		}
+		revocations, err := q.DeleteExpiredSessionRevocations(ctx, int64(before))
+		if err != nil {
+			return fmt.Errorf("delete expired session revocations: %w", err)
+		}
 		report.AuthFlows, report.CredentialTickets, report.IdempotencyRecords = flows, tickets, records
+		report.SessionRevocations = revocations
 		return nil
 	})
 	if err != nil {
@@ -117,6 +126,7 @@ func (s *Service) Sweep(ctx context.Context) (Report, error) {
 		slog.Int64("auth_flows", report.AuthFlows),
 		slog.Int64("credential_tickets", report.CredentialTickets),
 		slog.Int64("idempotency_records", report.IdempotencyRecords),
+		slog.Int64("session_revocations", report.SessionRevocations),
 		slog.Int64("total", report.Total()),
 		slog.String("before", before.String()),
 	)

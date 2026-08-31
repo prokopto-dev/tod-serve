@@ -5,15 +5,16 @@
 // server is stated in the header rather than being a filter somebody can change.
 
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
-import { api, type Circle } from '../api'
+import { api, body, toError, type Circle } from '../api'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { RevocationBanner } from '../components/RevocationBanner'
-import { Spinner } from '../components/ui'
+import { Button, Spinner } from '../components/ui'
 import { classes } from '../lib/format'
 import { rememberCircle } from '../lib/storage'
 import { usePrincipalState } from './principal'
+import { signedOutState } from './signedOut'
 import { useResource } from './useResource'
 
 interface Section {
@@ -93,9 +94,12 @@ export function Shell() {
             </li>
           ))}
         </ul>
-        <div className="border-t border-ink-800 px-3 py-2.5">
-          <p className="truncate text-xs text-ink-200">{principal.view.display_name}</p>
-          <p className="text-[11px] text-ink-500">{principal.view.role}</p>
+        <div className="space-y-2 border-t border-ink-800 px-3 py-2.5">
+          <div>
+            <p className="truncate text-xs text-ink-200">{principal.view.display_name}</p>
+            <p className="text-[11px] text-ink-500">{principal.view.role}</p>
+          </div>
+          <SignOut />
         </div>
       </nav>
 
@@ -108,6 +112,62 @@ export function Shell() {
           <Outlet />
         </main>
       </div>
+    </div>
+  )
+}
+
+/**
+ * SignOut ends this browser session — this one, not every session the identity holds.
+ *
+ * It sits under the principal because that is where somebody looks to answer "who am I signed in
+ * as", and the answer they most often want to act on is "not this person, on this machine".
+ *
+ * It says the session it ends is THIS one, because the identity may hold others and a control that
+ * silently ended them all would be the destructive reading of the same button.
+ *
+ * What it does NOT do is render the confirmation. Success navigates away, so this component
+ * unmounts in the same commit that would have drawn it — `tokens_kept` therefore travels WITH the
+ * navigation and [SignIn] shows it. See [signedOutState]: holding it in state here is exactly the
+ * bug that shape exists to make unwritable.
+ *
+ * A failure IS rendered here, and stays here. The one thing this control must never do is look
+ * like it worked: somebody walking away from a shared machine believing they are signed out, when
+ * the server never heard the request, is the exact harm sign-out exists to prevent — so on an
+ * error the notice stays on screen and the navigation does not happen.
+ */
+function SignOut() {
+  const [error, setError] = useState<Error | null>(null)
+  const [busy, setBusy] = useState(false)
+  const navigate = useNavigate()
+  const { reload } = usePrincipalState()
+
+  async function signOut() {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = body(await api.signOut({}))
+      // The principal is re-read as well as navigated away from, so anything still holding one —
+      // the provider outlives this route — asks the server rather than believing what it had.
+      reload()
+      navigate('/signin', { replace: true, state: signedOutState(result.tokens_kept) })
+    } catch (e) {
+      setError(toError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {error && <ProblemNotice error={error} />}
+      <Button
+        className="w-full justify-center"
+        disabled={busy}
+        onClick={() => void signOut()}
+        title="Ends this browser session only. Your API tokens keep working."
+      >
+        {busy ? 'Signing out' : 'Sign out'}
+      </Button>
     </div>
   )
 }

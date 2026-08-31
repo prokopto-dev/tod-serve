@@ -48,6 +48,7 @@ it is a reviewed decision.
 | `raid_target_alias` | mutable | `VA`, `Naggy`, `Vox`, `Trak` → target. |
 | `raid_target_timer` | mutable | **Per-server** respawn window. PK `(target_id, server)`. |
 | `api_token` | mutable | Opaque PATs, bound to a membership. |
+| `session_revocation` | mutable, prunable | A browser session that signed out, refused from that moment on. Sessions are signed rather than stored, so this holds only the ones somebody ENDED; `expires_at` is the revoked session's own expiry and `internal/sweep` takes the row afterwards; a repeated sign-out moves `updated_at` rather than writing a second row. |
 | `idempotency_record` | mutable | `(principal_membership_id, key)` → request hash, response, `completed_at`. |
 | `event_outbox` | append-only | Global `event_seq` (`INTEGER PRIMARY KEY AUTOINCREMENT`), SSE delivery. `circle_id` is nullable: an instance-level event belongs to no circle. |
 

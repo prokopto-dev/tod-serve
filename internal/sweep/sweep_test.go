@@ -65,6 +65,12 @@ func TestSweep_ARowPastTheGrace_IsRemovedAndOneInsideItIsNot(t *testing.T) {
 			alive: (*fixture).idempotencyRecordExists,
 			count: func(r sweep.Report) int64 { return r.IdempotencyRecords },
 		},
+		{
+			name:  "session_revocation",
+			seed:  (*fixture).seedSessionRevocation,
+			alive: (*fixture).sessionRevocationExists,
+			count: func(r sweep.Report) int64 { return r.SessionRevocations },
+		},
 	}
 
 	for _, tc := range tests {
@@ -106,6 +112,10 @@ func TestSweep_EveryTableAtOnce_IsCountedSeparately(t *testing.T) {
 	f.seedIdempotencyRecord("i1", stale)
 	f.seedIdempotencyRecord("i2", stale)
 	f.seedIdempotencyRecord("i3", stale)
+	f.seedSessionRevocation("s1", stale)
+	f.seedSessionRevocation("s2", stale)
+	f.seedSessionRevocation("s3", stale)
+	f.seedSessionRevocation("s4", stale)
 
 	report, err := f.svc.Sweep(t.Context())
 	require.NoError(t, err)
@@ -113,7 +123,8 @@ func TestSweep_EveryTableAtOnce_IsCountedSeparately(t *testing.T) {
 	require.Equal(t, int64(1), report.AuthFlows)
 	require.Equal(t, int64(2), report.CredentialTickets)
 	require.Equal(t, int64(3), report.IdempotencyRecords)
-	require.Equal(t, int64(6), report.Total())
+	require.Equal(t, int64(4), report.SessionRevocations)
+	require.Equal(t, int64(10), report.Total())
 }
 
 // TestSweep_AnInstanceWithNothingExpired_RemovesNothingAndSaysSo. The quiet case still reports and
@@ -166,6 +177,7 @@ func TestSweep_TheLog_NamesEveryCountStructurally(t *testing.T) {
 	require.Equal(t, float64(1), line["auth_flows"])
 	require.Equal(t, float64(1), line["credential_tickets"])
 	require.Equal(t, float64(0), line["idempotency_records"])
+	require.Equal(t, float64(0), line["session_revocations"])
 	require.Equal(t, float64(2), line["total"])
 	require.Equal(t, fixtureNow.Add(-sweep.Grace).String(), line["before"])
 }
@@ -332,6 +344,25 @@ func (f *fixture) idempotencyRecordExists(key string) bool {
 			PrincipalMembershipID: f.membership, Key: key,
 		})
 	return f.exists(err)
+}
+
+// seedSessionRevocation writes a signed-out session whose own expiry is expiresAt. The row's whole
+// job is to outlive the cookie by nothing: past that instant the codec refuses the cookie on its
+// own, so keeping the row buys nobody anything.
+func (f *fixture) seedSessionRevocation(key string, expiresAt core.Micros) {
+	f.t.Helper()
+	err := f.store.Queries().RevokeSession(f.t.Context(), sqlitegen.RevokeSessionParams{
+		SessionID: key, ExpiresAt: int64(expiresAt),
+		CreatedAt: int64(fixtureNow), UpdatedAt: int64(fixtureNow),
+	})
+	require.NoError(f.t, err)
+}
+
+func (f *fixture) sessionRevocationExists(key string) bool {
+	f.t.Helper()
+	n, err := f.store.Queries().CountSessionRevocations(f.t.Context(), key)
+	require.NoError(f.t, err)
+	return n > 0
 }
 
 // exists separates "the row is gone" from "the read failed", so a broken query cannot read as a

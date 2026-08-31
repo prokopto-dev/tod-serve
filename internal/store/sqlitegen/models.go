@@ -282,6 +282,13 @@ type RaidTargetTimer struct {
 	UpdatedAt                int64
 }
 
+type SessionRevocation struct {
+	SessionID string
+	ExpiresAt int64
+	CreatedAt int64
+	UpdatedAt int64
+}
+
 type TargetStateCache struct {
 	CircleID              string
 	TargetID              string

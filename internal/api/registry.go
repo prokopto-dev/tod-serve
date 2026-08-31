@@ -38,6 +38,7 @@ const (
 	OpPreviewInvite          OperationID = "previewInvite"
 	OpRedeemInvite           OperationID = "redeemInvite"
 	OpAuthenticateIdentity   OperationID = "authenticateIdentity"
+	OpSignOut                OperationID = "signOut"
 	OpListMyTokens           OperationID = "listMyTokens"
 	OpRevokeToken            OperationID = "revokeToken"
 
@@ -356,6 +357,16 @@ func routes() []Route {
 			ID: OpAuthenticateIdentity, Method: http.MethodPost, Path: "/sessions", Versioned: true,
 			Auth: AuthPublic, CreatesState: true, Idempotency: IdempotencyHandler,
 			Summary: "Re-authenticate an existing membership on a new device, with no invite",
+		},
+		{
+			ID: OpSignOut, Method: http.MethodDelete, Path: "/sessions", Versioned: true,
+			Auth: AuthSelf,
+			// No scopes and `AnyScope` false, so [Route.SessionOnly] is true and no token reaches
+			// it at any scope. That is the same shape `revokeToken` carries and for the same
+			// reason: ending a credential is exactly what a stolen credential must not be able to
+			// do. A PAT has no session to end anyway — the two are separate credentials, ADR-0005
+			// — so a token reaching this route could only ever be ending somebody else's.
+			Summary: "End my own browser session. Ends this session only, and touches no token",
 		},
 		{
 			ID: OpListMyTokens, Method: http.MethodGet, Path: "/tokens", Versioned: true,

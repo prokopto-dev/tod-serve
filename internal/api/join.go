@@ -182,7 +182,15 @@ func clientName(c ClientBody) string {
 func (s *Server) sessionCookie(joined membership.Joined) (http.Cookie, error) {
 	now := s.cfg.Clock.Now()
 	expires := now.Add(auth.DefaultSessionTTL)
+	// The session's own id, and the only place one is minted. It is what `signOut` writes into
+	// `session_revocation`, so a session that could not be given an id is a session nobody could
+	// end — which is why the failure is returned rather than swallowed into an id-less cookie.
+	id, err := s.cfg.IDs.New(now)
+	if err != nil {
+		return http.Cookie{}, apierr.Wrap(apierr.CodeInternalError, err, "")
+	}
 	value, err := s.cfg.Sessions.Encode(auth.Session{
+		ID:           id.String(),
 		MembershipID: joined.Membership.ID.String(),
 		IssuedAt:     now,
 		ExpiresAt:    expires,

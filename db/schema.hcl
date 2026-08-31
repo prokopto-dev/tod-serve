@@ -965,6 +965,52 @@ table "api_token" {
   strict = true
 }
 
+// session_revocation - one browser session that has signed out, refused from that moment on.
+//
+// Sessions are signed, not stored, so there is no row to delete when one ends: this is the ONE
+// piece of session state the server keeps, and it holds only sessions somebody actually ended.
+// Signing out writes the session's own id here and `authenticateSession` refuses any cookie naming
+// it, which is what makes sign-out a fact about the server rather than a fact about one browser's
+// cookie jar - a copy of the cookie taken before the sign-out is refused too.
+//
+// It is `mutable, prunable` rather than append-only, and deliberately: a revocation stops meaning
+// anything once the session it names has expired anyway, so `expires_at` carries the REVOKED
+// SESSION's expiry and `internal/sweep` takes the row afterwards. An append-only table here would
+// grow one row per sign-out forever to remember something nobody can act on.
+//
+// The primary key is the session id itself. Signing out twice is one row, not two, because there
+// is one fact to record - and a second sign-out of an already-dead session must not be an error.
+table "session_revocation" {
+  schema = schema.main
+  column "session_id" {
+    null = false
+    type = text
+  }
+  // The expiry of the session this row revokes, NOT of the row. Once it passes, the cookie is
+  // refused by [auth.SessionCodec.Decode] on its own and the row is litter.
+  column "expires_at" {
+    null = false
+    type = integer
+  }
+  column "created_at" {
+    null = false
+    type = integer
+  }
+  // When somebody last ASKED for this session to end, which is not always when it ended: a retry
+  // or a second click finds the row already there and moves this rather than writing a second one.
+  column "updated_at" {
+    null = false
+    type = integer
+  }
+  primary_key {
+    columns = [column.session_id]
+  }
+  index "ix_session_revocation_expires_at" {
+    columns = [column.expires_at]
+  }
+  strict = true
+}
+
 // idempotency_record — (principal, key) -> the request that was made and the response that was
 // returned. Uniqueness is on the MEMBERSHIP, never the token, so a rotation mid-retry still
 // replays (canonical §7).

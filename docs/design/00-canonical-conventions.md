@@ -265,7 +265,7 @@ The replacement is three gates, not a promise:
 
 The instance-scoped allowlist is explicit and short: `tod_meta`, `instance`, `identity_provider`,
 `identity`, `identity_link`, `instance_grant`, `auth_flow`, `credential_ticket`, `raid_target`,
-`raid_target_alias`, `raid_target_timer`, `api_token`, `idempotency_record`, `event_outbox`. Adding
+`raid_target_alias`, `raid_target_timer`, `api_token`, `session_revocation`, `idempotency_record`, `event_outbox`. Adding
 a table to it is a reviewed decision, not a convenience.
 
 `instance_grant` is on it because a grant is about an identity and **the whole instance**

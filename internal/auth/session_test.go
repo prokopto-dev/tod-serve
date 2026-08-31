@@ -1,6 +1,10 @@
 package auth_test
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -17,6 +21,10 @@ const sessionKey = core.Secret("session-signing-key-for-tests")
 // now is a fixed instant. The clock is injected everywhere, so a test that needs an exact moment
 // writes one down rather than reading one.
 const now = core.Micros(1_755_483_247_000_000)
+
+// sessionID is a fixed session id, so a test that needs one writes it down for the same reason the
+// instant above is written down.
+const sessionID = "01K3TGT8N9M4X0Q7R2VB6C5D1F"
 
 func testCodec(t *testing.T) *auth.SessionCodec {
 	t.Helper()
@@ -35,6 +43,7 @@ func TestSession_RoundTrip_PreservesEveryField(t *testing.T) {
 	t.Parallel()
 	c := testCodec(t)
 	want := auth.Session{
+		ID:           sessionID,
 		MembershipID: "01K3TGT8N9M4X0Q7R2VB6C5D1E",
 		IssuedAt:     now,
 		ExpiresAt:    now.Add(auth.DefaultSessionTTL),
@@ -53,6 +62,7 @@ func TestSession_TamperedPayload_IsRefused(t *testing.T) {
 	t.Parallel()
 	c := testCodec(t)
 	value, err := c.Encode(auth.Session{
+		ID:           sessionID,
 		MembershipID: "01K3TGT8N9M4X0Q7R2VB6C5D1E",
 		ExpiresAt:    now.Add(time.Hour),
 	})
@@ -71,6 +81,7 @@ func TestSession_SignedWithAnotherKey_IsRefused(t *testing.T) {
 	other, err := auth.NewSessionCodec("a different key")
 	require.NoError(t, err)
 	value, err := other.Encode(auth.Session{
+		ID:           sessionID,
 		MembershipID: "01K3TGT8N9M4X0Q7R2VB6C5D1E",
 		ExpiresAt:    now.Add(time.Hour),
 	})
@@ -84,6 +95,7 @@ func TestSession_Expired_IsRefused(t *testing.T) {
 	t.Parallel()
 	c := testCodec(t)
 	value, err := c.Encode(auth.Session{
+		ID:           sessionID,
 		MembershipID: "01K3TGT8N9M4X0Q7R2VB6C5D1E",
 		ExpiresAt:    now,
 	})
@@ -91,6 +103,42 @@ func TestSession_Expired_IsRefused(t *testing.T) {
 
 	_, err = c.Decode(value, now)
 	require.ErrorIs(t, err, auth.ErrSessionExpired, "a session expires AT its expiry, not after it")
+}
+
+// A session with no id cannot be signed out: there is nothing to write into `session_revocation`
+// and nothing for the authenticator to match. Refusing it on BOTH sides is what makes "every
+// accepted session can be ended" a property of the codec rather than a convention at its callers —
+// encoding covers the sessions this build mints, decoding covers the cookies an older one did.
+func TestSession_WithNoID_IsRefusedOnEncodeAndOnDecode(t *testing.T) {
+	t.Parallel()
+	c := testCodec(t)
+
+	_, err := c.Encode(auth.Session{
+		MembershipID: "01K3TGT8N9M4X0Q7R2VB6C5D1E",
+		ExpiresAt:    now.Add(time.Hour),
+	})
+	require.ErrorIs(t, err, auth.ErrSessionHasNoID)
+
+	// The decode half needs a cookie this codec would accept in every other respect, which the
+	// encoder now refuses to produce. So the payload is assembled and signed the way the codec
+	// does it: a correctly signed, unexpired, id-less session is exactly the shape a build from
+	// before the sign-out route left in somebody's browser.
+	payload, err := json.Marshal(struct {
+		MembershipID string      `json:"m"`
+		ExpiresAt    core.Micros `json:"e"`
+	}{MembershipID: "01K3TGT8N9M4X0Q7R2VB6C5D1E", ExpiresAt: now.Add(time.Hour)})
+	require.NoError(t, err)
+	body := base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, []byte(sessionKey.Reveal()))
+	_, err = mac.Write([]byte(body))
+	require.NoError(t, err)
+	legacy := body + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+
+	// The fixture is only worth anything if it is otherwise valid, so prove the signature verifies
+	// by checking the refusal is about the id rather than about the MAC.
+	_, err = c.Decode(legacy, now)
+	require.ErrorIs(t, err, auth.ErrSessionHasNoID)
+	require.NotErrorIs(t, err, auth.ErrSessionSignature)
 }
 
 func TestSession_MalformedValues_AreRefused(t *testing.T) {

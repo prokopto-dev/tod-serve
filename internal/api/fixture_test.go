@@ -536,9 +536,16 @@ func (h *harness) revokeInstance(member core.MembershipID, perm authz.Permission
 }
 
 // session returns a signed session cookie value for a membership.
+//
+// A fresh id per call, exactly as the two routes that mint one do, so two calls are two DIFFERENT
+// sessions. That is what lets a test sign one out and assert the other still works — the property
+// that distinguishes "this session" from "every session for the identity".
 func (h *harness) session(membership core.MembershipID, steppedUp bool) string {
 	h.t.Helper()
+	id, err := h.ids.New(h.clock.Now())
+	require.NoError(h.t, err)
 	s := auth.Session{
+		ID:           id.String(),
 		MembershipID: membership.String(),
 		IssuedAt:     h.clock.Now(),
 		ExpiresAt:    h.clock.Now().Add(auth.DefaultSessionTTL),
@@ -546,8 +553,8 @@ func (h *harness) session(membership core.MembershipID, steppedUp bool) string {
 	if steppedUp {
 		s.SteppedUpAt = h.clock.Now()
 	}
-	value, err := h.codec.Encode(s)
-	require.NoError(h.t, err)
+	value, encodeErr := h.codec.Encode(s)
+	require.NoError(h.t, encodeErr)
 	return value
 }
 
