@@ -31,6 +31,7 @@ directions linked.
 | [0018](0018-sign-out-ends-one-session.md) | Sign-out ends one session, and records it server-side | proposed |
 | [0019](0019-an-administrator-sees-a-circles-metadata-never-its-content.md) | An instance administrator sees a circle's metadata, never its content | proposed |
 | [0020](0020-instance-settings-are-mutable-with-a-change-ledger.md) | Instance settings stay mutable, and their changes are their own ledger | proposed |
+| [0018](0018-a-device-authorization-grant-against-this-instance.md) | A device authorization grant against this instance, not against Discord | proposed |
 
 ## Where this project diverges from Dragon Kill Party
 
