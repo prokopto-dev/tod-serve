@@ -223,7 +223,7 @@ const CallbackPathParam = "/{provider_key}"
 //
 // It is an error rather than a panic because the caller is `serve` starting up, and a startup
 // that refuses with a sentence beats one that dumps a stack — but it is not recoverable either:
-// TestCallbackBaseURL_MatchesTheRegistry fails first, in CI.
+// TestCallbackBaseURL_IsDerivedFromTheRouteRegistry fails first, in CI.
 var ErrCallbackPathChanged = errors.New("the completeAuthorization route no longer ends in " + CallbackPathParam)
 
 // ErrPublicURLNotAnOrigin reports a public URL carrying something an origin cannot carry: a query
