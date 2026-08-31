@@ -366,116 +366,133 @@ func secretGreps(t *testing.T) []string {
 	return out
 }
 
-// The shell half fires on every spelling Compose accepts, single quotes included.
+// fixtureSecret is shaped like `openssl rand -base64 48` output and is not a secret: it is a
+// literal in a public test file, which is exactly why it must never be a value anything accepts.
+const fixtureSecret = "5cKQ0uZK7xVQ8Wm3n1pRt2yB4dF6hJ8kL0nP2rT4vX6zA8cE0gI2kM4oQ6sU8wY0"
+
+// surfaceCase is one cell of the value-matching surface: a separator, a quoting, and a value kind.
+type surfaceCase struct {
+	name string
+	body string
+	want bool
+}
+
+// valueSurface is EVERY combination of the two separators an assignment takes here, the three
+// quotings both Compose and dotenv accept, and the value kinds this repository actually contains.
+//
+// It is generated rather than listed because this gate has now been narrowed twice, each time along
+// an axis nobody had a fixture for: first `=` only, which could not see the Compose form at all,
+// then `"` only, which could not see `TOD_SESSION_KEY: 'AAAA…'`. Both were one missing row in a
+// hand-written table. A product of the axes cannot be narrowed without a red test, because the
+// missing row does not depend on anybody thinking of it.
+//
+// Every negative is a line that exists in this repository: `$(openssl …)` is deploy/smoke.sh,
+// `${VAR:?}` is the compose files, `<YOUR_TOKEN_PEPPER>` is the documentation's placeholder
+// spelling, `CHANGE_ME_` is deploy/env.example, and `x` is the ENV001 fixture in deploygates_test.go.
+// Dropping one would make the gate fire on a green tree, which is how a gate gets switched off.
+func valueSurface() []surfaceCase {
+	separators := []struct{ name, text string }{
+		{"equals", "TOD_SESSION_KEY="},
+		{"colon", "      TOD_SESSION_KEY: "},
+	}
+	quotings := []struct{ name, open, close string }{
+		{"bare", "", ""},
+		{"single", "'", "'"},
+		{"double", `"`, `"`},
+	}
+	values := []struct {
+		name   string
+		text   string
+		secret bool
+	}{
+		{"generated", fixtureSecret, true},
+		{"command substitution", "$(openssl rand -base64 48)", false},
+		{"compose interpolation", "${TOD_SESSION_KEY:?}", false},
+		{"documentation placeholder", "<YOUR_TOKEN_PEPPER>", false},
+		{"shipped placeholder", "CHANGE_ME_SESSION_KEY", false},
+		{"gate fixture", "x", false},
+	}
+
+	var out []surfaceCase
+	for _, sep := range separators {
+		for _, q := range quotings {
+			for _, v := range values {
+				out = append(out, surfaceCase{
+					name: sep.name + "/" + q.name + "/" + v.name,
+					body: sep.text + q.open + v.text + q.close + "\n",
+					want: v.secret,
+				})
+			}
+		}
+	}
+
+	// Prose, which takes neither a quoting nor a value kind. The first is quoted verbatim from
+	// docs/operations/getting-started.md: a gate that fired on the documentation teaching somebody
+	// to read an error message would be switched off within a week.
+	return append(out,
+		surfaceCase{"prose/required variable", "`…environment.TOD_TOKEN_PEPPER: required variable`\n", false},
+		surfaceCase{"prose/label", "      TOD_SETUP_TOKEN: paste the value you generated\n", false},
+	)
+}
+
+// shellHalfFinds runs the real greps, and the script's own `grep -v CHANGE_ME` stage after them, so
+// a fixture is judged the way the gate judges it rather than by a regex in isolation.
+func shellHalfFinds(t *testing.T, greps []string, body string) bool {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "fixture")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+
+	for _, pattern := range greps {
+		out, err := exec.CommandContext(t.Context(), "grep", "-InE", pattern, path).Output()
+		// grep exits 1 for "no match", which is not an error here; anything else with output is.
+		require.False(t, err != nil && len(out) > 0, "grep failed: %s", out)
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line != "" && !strings.Contains(line, "CHANGE_ME") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// The shell half reads the whole value surface: both separators, all three quotings.
 //
 // This is the half that matters most and the easiest to get wrong: it runs in the `lint / repo` CI
 // job, which has NO Go toolchain, so it is the whole of ENV002 whenever the build is broken or this
-// file is deleted or renamed. Two narrowings of the same regex have now shipped into review — an
-// equals-only matcher that could not see the Compose form at all, then a double-quote-only one that
-// could not see `TOD_SESSION_KEY: 'AAAA…'` — and both looked right while reading strictly less than
-// the Go half beside them, which trims `"` and `'` alike.
-//
-// The negative rows are the ones that keep the gate switched on: `required variable` is quoted from
-// docs/operations/getting-started.md, and a gate that fired on documentation would be turned off
-// within a week.
-func TestENV002_TheShellHalf_ReadsEveryQuotingComposeAccepts(t *testing.T) {
+// file is deleted or renamed. Twice now it has been the narrower of the two mechanisms while looking
+// correct on its own.
+func TestENV002_TheShellHalf_ReadsTheWholeValueSurface(t *testing.T) {
 	t.Parallel()
-
-	const secret = "5cKQ0uZK7xVQ8Wm3n1pRt2yB4dF6hJ8kL0nP2rT4vX6zA8cE0gI2kM4oQ6sU8wY0"
-
-	tests := []struct {
-		name string
-		body string
-		want bool
-	}{
-		{"compose bare", "      TOD_SESSION_KEY: " + secret + "\n", true},
-		{"compose double quoted", "      TOD_SESSION_KEY: \"" + secret + "\"\n", true},
-		{"compose single quoted", "      TOD_SESSION_KEY: '" + secret + "'\n", true},
-		{"dotenv bare", "TOD_SESSION_KEY=" + secret + "\n", true},
-		{"dotenv double quoted", "TOD_SESSION_KEY=\"" + secret + "\"\n", true},
-		{"dotenv single quoted", "TOD_SESSION_KEY='" + secret + "'\n", true},
-		{"pepper, single quoted", "      TOD_TOKEN_PEPPER: '" + secret + "'\n", true},
-
-		// Every negative is a line this repository actually contains.
-		{"interpolation", "      TOD_SESSION_KEY: ${TOD_SESSION_KEY:?}\n", false},
-		{"placeholder", "TOD_SESSION_KEY=CHANGE_ME_SESSION_KEY\n", false},
-		{"documented error", "`…environment.TOD_TOKEN_PEPPER: required variable`\n", false},
-		{"prose label", "      TOD_SETUP_TOKEN: paste the value you generated\n", false},
-		{"gate fixture", "TOD_TOKEN_PEPPER=x\n", false},
-	}
 
 	greps := secretGreps(t)
 
-	for _, tc := range tests {
+	for _, tc := range valueSurface() {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-
-			path := filepath.Join(t.TempDir(), "fixture")
-			require.NoError(t, os.WriteFile(path, []byte(tc.body), 0o600))
-
-			var matched bool
-			for _, pattern := range greps {
-				// `grep -v CHANGE_ME` is the script's own next stage; apply it so a placeholder is
-				// judged the way the gate judges it rather than by the regex alone.
-				out, err := exec.CommandContext(t.Context(), "grep", "-InE", pattern, path).Output()
-				require.False(t, err != nil && len(out) > 0, "grep failed: %s", out)
-				for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-					if line != "" && !strings.Contains(line, "CHANGE_ME") {
-						matched = true
-					}
-				}
-			}
-			require.Equal(t, tc.want, matched,
-				"the shell half read %q as matched=%v; the Go half reads it as %v",
-				strings.TrimSpace(tc.body), matched, len(scanSecrets(tc.body)) > 0)
+			require.Equal(t, tc.want, shellHalfFinds(t, greps, tc.body),
+				"the shell half read %q wrongly", strings.TrimSpace(tc.body))
 		})
 	}
 }
 
-// The two halves of ENV002 agree on every fixture above.
+// The two halves of ENV002 agree on every cell of that surface.
 //
-// They are allowed to differ in what they SAY, never in what they find: the Go half is the one with
-// the vacancy check and the shell half is the one that survives a broken build, and a rule enforced
-// differently by its two mechanisms is enforced by neither. This is the assertion that would have
-// caught both narrowings on the day they were written.
+// They are allowed to differ in what they SAY — the Go half names the length, the shell half prints
+// the line — never in what they FIND. A rule whose two mechanisms disagree about what violates it is
+// enforced by whichever one happened to run, which is the opposite of why it has two. This is the
+// assertion that would have caught both narrowings on the day each was written, without anybody
+// having to think of the quoting style that was missing.
 func TestENV002_BothHalves_FindTheSameSecrets(t *testing.T) {
 	t.Parallel()
 
-	const secret = "5cKQ0uZK7xVQ8Wm3n1pRt2yB4dF6hJ8kL0nP2rT4vX6zA8cE0gI2kM4oQ6sU8wY0"
-
-	bodies := []string{
-		"      TOD_SESSION_KEY: '" + secret + "'\n",
-		"      TOD_SESSION_KEY: \"" + secret + "\"\n",
-		"      TOD_SESSION_KEY: " + secret + "\n",
-		"TOD_SESSION_KEY='" + secret + "'\n",
-		"TOD_SESSION_KEY=\"" + secret + "\"\n",
-		"TOD_SESSION_KEY=" + secret + "\n",
-		"      TOD_SESSION_KEY: ${TOD_SESSION_KEY:?}\n",
-		"TOD_SESSION_KEY=CHANGE_ME_SESSION_KEY\n",
-		"`…environment.TOD_TOKEN_PEPPER: required variable`\n",
-		"TOD_TOKEN_PEPPER=x\n",
-	}
-
 	greps := secretGreps(t)
 
-	for _, body := range bodies {
-		t.Run(strings.TrimSpace(body), func(t *testing.T) {
+	for _, tc := range valueSurface() {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-
-			path := filepath.Join(t.TempDir(), "fixture")
-			require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
-
-			var shell bool
-			for _, pattern := range greps {
-				out, _ := exec.CommandContext(t.Context(), "grep", "-InE", pattern, path).Output()
-				for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-					if line != "" && !strings.Contains(line, "CHANGE_ME") {
-						shell = true
-					}
-				}
-			}
-			require.Equal(t, len(scanSecrets(body)) > 0, shell,
-				"the Go half and the shell half disagree about %q", strings.TrimSpace(body))
+			require.Equal(t, len(scanSecrets(tc.body)) > 0, shellHalfFinds(t, greps, tc.body),
+				"the Go half and the shell half disagree about %q", strings.TrimSpace(tc.body))
 		})
 	}
 }
