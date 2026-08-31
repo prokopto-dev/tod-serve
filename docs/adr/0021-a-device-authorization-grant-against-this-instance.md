@@ -1,4 +1,4 @@
-# ADR-0019 — A device authorization grant against this instance, not against Discord
+# ADR-0021 — A device authorization grant against this instance, not against Discord
 
 **Status:** proposed · **Date:** 2026-08-31 · **Deciders:** Courtney Caldwell
 
@@ -47,13 +47,13 @@ has no quake scope to name. Its summary reads "a false one wipes the whole board
 holds, so adding it once Phase 6 ships a handler widens the transport, not the rows. Today it would
 grant nothing yet still need reviewing as if it did.
 
-**What an approval yields is [ADR-0020](0020-a-device-grant-is-identity-scoped.md)'s question** —
+**What an approval yields is [ADR-0022](0022-a-device-grant-is-identity-scoped.md)'s question** —
 an identity-scoped grant exchanging for per-membership tokens, and the ceiling that one Discord
 login cannot span instances.
 
 **The new public surface.** `/device/authorize`, `/device/approve` and `/device/token` are all
 `AuthPublic`; approval takes a `provider_ticket`, not a cookie
-([ADR-0020](0020-a-device-grant-is-identity-scoped.md)). The two that accept a code join the
+([ADR-0022](0022-a-device-grant-is-identity-scoped.md)). The two that accept a code join the
 invite-oracle bucket via `Route.InviteOracle`, whose comment already says a code-taking route joins
 it rather than minting another: two buckets hand a guesser twice the budget. `/device/authorize`
 reveals no code and is limited separately.
@@ -65,7 +65,7 @@ it names them. The user code uses `internal/invite`'s Crockford alphabet at no l
 B by the path `TestTenancy_CrossCircle_EveryOperationDenies` drives.
 
 **Approval is a grant, and `audit_log.circle_id` is `NOT NULL`.** An approval is on an identity and
-may precede every membership ([ADR-0020](0020-a-device-grant-is-identity-scoped.md)), so
+may precede every membership ([ADR-0022](0022-a-device-grant-is-identity-scoped.md)), so
 `internal/audit` cannot hold it — the wall `instance_grant` already hit. `device_grant` is its own
 append-only, hash-chained record on `audit.ChainHash`, so a memberless approval is one row rather
 than none anywhere. The circle-scoped `audit_log` row belongs to the exchange that mints into a
@@ -88,7 +88,7 @@ credential in the plugin, and no circle named in advance.
   scope set bounds what they reach, not how long they last.
 - **Bad, because the bucket is keyed per caller,** so a distributed guesser gets a budget per
   address. Entropy and short expiry defend this, not the limiter.
-- **Bad, because a client holds one token per circle** (ADR-0020), which every client author will
+- **Bad, because a client holds one token per circle** (ADR-0022), which every client author will
   get wrong once.
 - **Bad, because `authorization_pending` must not become a timing oracle** for whether a code
   exists — nothing in the tree tests that today.
@@ -96,5 +96,5 @@ credential in the plugin, and no circle named in advance.
 ### Reversal cost
 
 A release: drop three routes, the `device_authorization` table and a console screen — never
-`device_grant`, which is a ledger ([ADR-0020](0020-a-device-grant-is-identity-scoped.md)). Minted
+`device_grant`, which is a ledger ([ADR-0022](0022-a-device-grant-is-identity-scoped.md)). Minted
 tokens are ordinary PATs and keep working, so nothing is re-issued.

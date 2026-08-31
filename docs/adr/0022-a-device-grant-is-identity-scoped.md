@@ -1,10 +1,10 @@
-# ADR-0020 — A device grant is identity-scoped and exchanges for per-membership tokens
+# ADR-0022 — A device grant is identity-scoped and exchanges for per-membership tokens
 
 **Status:** proposed · **Date:** 2026-08-31 · **Deciders:** Courtney Caldwell
 
 ## Context and problem statement
 
-[ADR-0019](0019-a-device-authorization-grant-against-this-instance.md) chose a device authorization
+[ADR-0021](0021-a-device-authorization-grant-against-this-instance.md) chose a device authorization
 grant but left open what an approval yields. The requirement is one "sign in with Discord" in the
 plugin, after which a circle the user gains access to **later** appears without authenticating
 again. [ADR-0005](0005-pats-bound-to-memberships.md) binds a PAT to a membership — but read it
@@ -42,9 +42,9 @@ exists.
 and calls `EvaluateGuildGate` before minting, because — `internal/identity/gate.go` — "a gate on
 join alone would let `/sessions` mint a fresh PAT for somebody who has left the guild". Exchange
 does that same re-read. Where `Gate.IsZero()` it mints for every current, non-revoked membership,
-carrying ADR-0019's scope set and never widening it. Where the circle gates it needs facts, which no
+carrying ADR-0021's scope set and never widening it. Where the circle gates it needs facts, which no
 approval can capture for a circle joined later —
-[ADR-0021](0021-guild-facts-come-from-browser-flows.md) is where they come from and how they age. A
+[ADR-0023](0023-guild-facts-come-from-browser-flows.md) is where they come from and how they age. A
 membership it cannot prove is **skipped and counted in the response**, never dropped silently.
 `api_token.expires_at` already exists, so short TTLs need no schema change.
 
@@ -73,7 +73,7 @@ an affordance somebody must build.
   a revoked membership mints nothing.
 - **Bad, because a guild-gate change is no longer caught within 120 seconds.** `/sessions` evaluates
   facts that fresh; the exchange reads stored ones up to `GateFactsTTL` old
-  ([ADR-0021](0021-guild-facts-come-from-browser-flows.md)), so somebody who left the guild keeps
+  ([ADR-0023](0023-guild-facts-come-from-browser-flows.md)), so somebody who left the guild keeps
   refreshing until then. That window is the security this design spends.
 - **Bad, because the grant is identity-wide and long-lived** — blast radius is per-circle on the
   tokens and whole-identity on the grant.

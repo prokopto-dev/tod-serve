@@ -1,15 +1,15 @@
-# ADR-0021 — Guild facts for a device grant come from browser flows, not a stored Discord credential
+# ADR-0023 — Guild facts for a device grant come from browser flows, not a stored Discord credential
 
 **Status:** proposed · **Date:** 2026-08-31 · **Deciders:** Courtney Caldwell
 
 ## Context and problem statement
 
-[ADR-0020](0020-a-device-grant-is-identity-scoped.md)'s exchange re-proves a circle's guild gate
+[ADR-0022](0022-a-device-grant-is-identity-scoped.md)'s exchange re-proves a circle's guild gate
 before minting, which needs `GuildFacts`. A `credential_ticket` carries them — but only for the
 guilds `guildsToAsk` selects: with an invite, that invite's circle; without one, "the circles THIS
 IDENTITY already has a membership in" (`internal/identity/flow.go`). So a memberless approval
 captures nothing, and a circle joined **later** appears in no captured set. Without another source,
-ADR-0020's "circles appear automatically" is false precisely where the circle gates — which is the
+ADR-0022's "circles appear automatically" is false precisely where the circle gates — which is the
 deployment [ADR-0011](0011-operator-registered-discord-application.md) exists for.
 
 ## Considered options
@@ -40,7 +40,7 @@ to is exactly the enumeration that sentence forbids.
 **Absence is not a pass.** `EvaluateGuildGate` already returns `guild_role_required` where it holds
 no fact rather than succeeding — "reading an absent role list as an empty one would disable the gate
 for every user while appearing to enforce it" — and a missing row here is that same absent fact.
-Exchange reads a row only past ADR-0020's live gate re-read and only while `verified_at` is within
+Exchange reads a row only past ADR-0022's live gate re-read and only while `verified_at` is within
 `GateFactsTTL`.
 
 ### Consequences
