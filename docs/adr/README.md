@@ -29,6 +29,7 @@ directions linked.
 | [0016](0016-first-run-setup-is-an-env-token-and-a-derived-window.md) | First-run setup is an env token, open only while no administrator exists | accepted |
 | [0017](0017-discord-interactions-in-the-binary.md) | Discord interactions in the binary, disambiguated by a channel binding | proposed |
 | [0018](0018-sign-out-ends-one-session.md) | Sign-out ends one session, and records it server-side | proposed |
+| [0019](0019-an-administrator-sees-a-circles-metadata-never-its-content.md) | An instance administrator sees a circle's metadata, never its content | proposed |
 
 ## Where this project diverges from Dragon Kill Party
 
