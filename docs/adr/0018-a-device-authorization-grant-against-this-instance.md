@@ -74,8 +74,8 @@ and is swept by `tod-serve sweep` past `sweep.Grace`, beside `auth_flow` and `cr
 `device_grant` is append-only and never swept.
 
 **This becomes the answer to "I lost my token" for humans too** — intended, not incidental. A
-member re-approves a device in the console rather than asking an officer for an invite. Invites keep
-one job: first entry into a circle.
+member re-approves a device rather than asking an officer for an invite. Invites keep one job:
+first entry into a circle.
 
 ### Consequences
 
@@ -93,5 +93,6 @@ one job: first entry into a circle.
 
 ### Reversal cost
 
-A release: drop two routes, a table and a console screen. Minted tokens are ordinary PATs and keep
-working, so nothing is re-issued.
+A release: drop two routes, the `device_authorization` table and a console screen — never
+`device_grant`, which is a ledger ([ADR-0019](0019-a-device-grant-is-identity-scoped.md)). Minted
+tokens are ordinary PATs and keep working, so nothing is re-issued.
