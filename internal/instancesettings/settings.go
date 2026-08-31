@@ -173,10 +173,61 @@ func New(cfg Config) (*Service, error) {
 	return &Service{db: cfg.Store, clock: cfg.Clock, ids: cfg.IDs, log: cfg.Log}, nil
 }
 
+// Describe returns the settings and the whole ledger behind them, from ONE read snapshot.
+//
+// **The three reads are a PAIR of pairs, and reading them as pooled statements gets both wrong.**
+// The instance row and the chain head are one answer: a writer committing between them hands the
+// caller the OLD settings beside the NEW revision, and the entity tag computed over that describes
+// a state that never existed — so the very next conditional write is refused with `412` although
+// nobody changed anything after the read. The settings and the ledger are the other: a change
+// committing between them returns a revision that does not cover the rows beside it, which is the
+// same confident mistake pointing the other way.
+//
+// It is [store.DB.InReadSnapshot] rather than [store.DB.InTx] for the reason ADR-0014 gives: `InTx`
+// takes the write lock at `BEGIN`, and a read has no business serialising every writer on the
+// instance behind it. This is the same shape issue #17 closed for the board.
+func (s *Service) Describe(ctx context.Context) (Settings, []Change, error) {
+	var (
+		settings Settings
+		changes  []Change
+	)
+	err := s.db.InReadSnapshot(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
+		var err error
+		if settings, err = read(ctx, q); err != nil {
+			return err
+		}
+		changes, err = history(ctx, q)
+		return err
+	})
+	if err != nil {
+		return Settings{}, nil, err
+	}
+	return settings, changes, nil
+}
+
 // Current returns the instance settings as they stand, including the ledger revision that makes
 // them versionable. See [Settings.Revision] for why the clock reading alone is not one.
+//
+// It reads the row and the chain head from one snapshot, because they are one answer: see
+// [Service.Describe]. A caller that also needs the ledger must use that rather than calling both,
+// or the two are again two instants.
 func (s *Service) Current(ctx context.Context) (Settings, error) {
-	q := s.db.Queries()
+	var out Settings
+	err := s.db.InReadSnapshot(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
+		var err error
+		out, err = read(ctx, q)
+		return err
+	})
+	if err != nil {
+		return Settings{}, err
+	}
+	return out, nil
+}
+
+// read returns the settings through the query set it is given, so the caller decides what instant
+// they are read at. Inside [Service.Apply]'s transaction that is the row about to be replaced;
+// inside a snapshot it is one consistent instant.
+func read(ctx context.Context, q *sqlitegen.Queries) (Settings, error) {
 	row, err := q.GetInstance(ctx)
 	if err != nil {
 		return Settings{}, readInstance(err)
@@ -188,9 +239,10 @@ func (s *Service) Current(ctx context.Context) (Settings, error) {
 	return settingsOf(row, head), nil
 }
 
-// History returns every change ever recorded, NEWEST first. Nothing prunes it.
-func (s *Service) History(ctx context.Context) ([]Change, error) {
-	rows, err := s.db.Queries().ListInstanceSettingChanges(ctx)
+// history returns every change ever recorded, NEWEST first, through the query set it is given.
+// Nothing prunes it.
+func history(ctx context.Context, q *sqlitegen.Queries) ([]Change, error) {
+	rows, err := q.ListInstanceSettingChanges(ctx)
 	if err != nil {
 		return nil, apierr.Wrap(apierr.CodeInternalError,
 			fmt.Errorf("read the instance setting ledger: %w", err), "")
@@ -228,17 +280,18 @@ func (s *Service) Apply(
 		recorded []Change
 	)
 	err := s.db.InTx(ctx, func(ctx context.Context, q *sqlitegen.Queries) error {
-		row, err := q.GetInstance(ctx)
+		// Through the same helper the snapshot read uses, so "the settings" has one definition:
+		// the row and the chain head together, because the entity tag covers both. Here they are
+		// read inside the writing transaction, which is what makes the precondition below a check
+		// against the version this UPDATE replaces.
+		current, err := read(ctx, q)
 		if err != nil {
-			return readInstance(err)
+			return err
 		}
-		// The chain head is read here rather than just before the appends, because it is half of
-		// what `current` is a version OF: the precondition below compares against it.
 		prevHash, err := chainTail(ctx, q)
 		if err != nil {
 			return err
 		}
-		current := settingsOf(row, prevHash)
 
 		if pre != nil {
 			if err := pre(current); err != nil {

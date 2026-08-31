@@ -211,11 +211,13 @@ func (s *Server) registerInstance() error {
 			func(ctx context.Context, _ *getInstanceSettingsInput) (
 				*getInstanceSettingsOutput, error,
 			) {
-				current, err := s.cfg.InstanceSettings.Current(ctx)
-				if err != nil {
-					return nil, err
-				}
-				changes, err := s.cfg.InstanceSettings.History(ctx)
+				// ONE read snapshot for the settings, the revision and the ledger. As three
+				// pooled statements a writer committing between them returns the old settings
+				// beside the new revision — an entity tag describing a state that never existed,
+				// which refuses the caller's very next write with `412` although nobody changed
+				// anything after their read — or a revision that does not cover the rows returned
+				// beside it. ADR-0014, and the shape of issue #17.
+				current, changes, err := s.cfg.InstanceSettings.Describe(ctx)
 				if err != nil {
 					return nil, err
 				}

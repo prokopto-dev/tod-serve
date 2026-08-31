@@ -26,6 +26,11 @@
 //     effect at the next restart, on an instance whose operator had long since stopped connecting
 //     the two. `schemaenum` leaves it out of the `setting` enum, so a row claiming it changed is
 //     unrepresentable rather than merely unwritten.
+//   - **A read of the settings is a read of THREE things at one instant** — the row, the ledger's
+//     chain head and the ledger itself — because the entity tag is computed over the first two and
+//     the third is returned beside them. [Service.Describe] takes one `InReadSnapshot` for that
+//     reason; pooled statements would pair old settings with a new revision and refuse the
+//     caller's next write for nothing. ADR-0014, and the shape of issue #17.
 //   - **Nothing here is ordered by id.** A ULID is monotonic within one generator and a change can
 //     arrive from any process holding the database, so the chain's tail is the row whose hash no
 //     other row names — never the greatest id. Selecting it by id is what locked the instance

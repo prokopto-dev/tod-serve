@@ -414,6 +414,11 @@ appending a ledger row on a precondition that had stopped holding — and a beli
 worse than a missing `412`. The comparison is handed to the service, which runs it between its own
 read and its own `UPDATE`.
 
+`getInstanceSettings` reads the settings, the revision and the ledger from ONE read snapshot. As
+separate statements a writer committing between them returns the old settings beside the new
+revision — a tag describing a state that never existed, which refuses the caller's next write with
+`412` although nobody changed anything after their read.
+
 The tag covers a `revision` — the settings ledger's chain head — as well as the values and
 `updated_at`. `updated_at` is a clock reading rather than a revision: two commits can share a
 microsecond, and if the second restores what the first replaced then every other field returns to

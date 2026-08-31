@@ -1,7 +1,10 @@
 package instancesettings_test
 
 import (
+	"crypto/rand"
 	"errors"
+	"io"
+	"log/slog"
 	"strconv"
 	"testing"
 	"time"
@@ -11,9 +14,11 @@ import (
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/audit"
+	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/instancesettings"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
+	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 )
 
@@ -247,7 +252,7 @@ func TestHistory_IsNewestFirst_AndKeepsEveryRow(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	history, err := f.service.History(t.Context())
+	current, history, err := f.service.Describe(t.Context())
 	require.NoError(t, err)
 	require.Len(t, history, 3)
 	for i := 1; i < len(history); i++ {
@@ -256,10 +261,23 @@ func TestHistory_IsNewestFirst_AndKeepsEveryRow(t *testing.T) {
 	}
 	// The instance is back where it started and the ledger still remembers the round trip. That
 	// is the whole difference between a log and a current-state column.
-	current, err := f.service.Current(t.Context())
-	require.NoError(t, err)
 	require.True(t, current.SelfServiceCircleCreation)
 	require.Equal(t, "0", history[len(history)-1].OldValue)
+
+	// The pair Describe returns is ONE instant: the revision it reports is the head of the ledger
+	// it returned beside it, not of some later one. Read as separate statements this is the
+	// assertion a concurrent write breaks.
+	require.Equal(t, history[0].ID.String(), newestChangeID(t, f),
+		"the ledger returned is not the one the revision covers")
+}
+
+// newestChangeID reads the ledger's newest row id straight out of the database, so the pairing
+// above is checked against the table rather than against the answer being checked.
+func newestChangeID(t *testing.T, f *fixture) string {
+	t.Helper()
+	rows := f.rows()
+	require.NotEmpty(t, rows)
+	return rows[len(rows)-1].ID
 }
 
 // codeOf returns the problem code a service error renders as. Every error this package returns is
@@ -400,4 +418,50 @@ func TestApply_TheRevision_MovesOnEveryChangeAndNeverRepeats(t *testing.T) {
 		require.Equal(t, start.UpdatedAt, read.UpdatedAt,
 			"the clock must not have moved, or this test is not exercising the case it names")
 	}
+}
+
+// **Describe and Current read through a SNAPSHOT, and this is what says so.**
+//
+// The property is a pairing — the instance row, the chain head and the ledger have to be one
+// instant, or the entity tag describes a state that never existed and refuses the caller's next
+// write with `412` for nothing — and a concurrent-writer test for it fires far too rarely to be a
+// gate. This is the deterministic half: a store with no snapshot pool REFUSES the read, and
+// pooled autocommit statements would succeed instead. So the mechanism is observable rather than
+// only reviewable, and reverting either read to `s.db.Queries()` turns this green-to-red.
+func TestDescribeAndCurrent_ReadThroughASnapshot(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// The one store shape that has no snapshot pool, which is exactly why it is the probe.
+	db, err := store.Open(ctx, store.MemoryPath, log)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	require.NoError(t, db.Migrate(ctx))
+
+	svc, err := instancesettings.New(instancesettings.Config{
+		Store: db, Clock: clock.NewTest(fixtureNow), IDs: core.NewGenerator(rand.Reader), Log: log,
+	})
+	require.NoError(t, err)
+
+	// Seeded, so a refusal below cannot be "there was no instance row" wearing the wrong error.
+	_, err = db.Queries().CreateInstance(ctx, sqlitegen.CreateInstanceParams{
+		Name: "Test Instance", PublicUrl: "https://tod.example.com", Timezone: "UTC",
+		CreatedAt: int64(fixtureNow), UpdatedAt: int64(fixtureNow),
+	})
+	require.NoError(t, err)
+
+	_, _, describeErr := svc.Describe(ctx)
+	require.ErrorIs(t, describeErr, store.ErrNoSnapshot,
+		"Describe answered without a snapshot pool, so its reads are separate autocommit "+
+			"statements and the settings, the revision and the ledger are three instants")
+
+	_, currentErr := svc.Current(ctx)
+	require.ErrorIs(t, currentErr, store.ErrNoSnapshot,
+		"Current answered without a snapshot pool, so the instance row and the chain head are "+
+			"two instants and the entity tag over them can describe a state that never existed")
+
+	// And the write path is unaffected: it has its own transaction and must not need a snapshot.
+	_, _, err = svc.Apply(ctx, instancesettings.ChangeRequest{Name: ptr("Riot")}, nil)
+	require.NoError(t, err, "Apply must not depend on the snapshot pool; it holds a transaction")
 }
