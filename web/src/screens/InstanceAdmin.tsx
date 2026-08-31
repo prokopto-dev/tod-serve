@@ -1,6 +1,6 @@
-// Instance administration — identity providers, and the per-circle Discord gate.
+// Instance administration — the instance's identity providers.
 //
-// This is the screen that makes the operator's Discord gate configurable without a terminal.
+// This is the screen that makes an instance's identity providers configurable without a terminal.
 // Everything here needs `instance.security.manage`, which is INSTANCE-REALM: no circle role grants
 // it, no personal access token reaches it at any scope, and what does grant it is an
 // `instance_grant` written by `tod-serve instance grant` at the console. That is deliberate — a
@@ -12,30 +12,29 @@
 // `verifiable_subject`, which is what every circle's revocation strength is derived from. Deleting
 // a provider is refused once anybody has joined through it — DISABLING is the operation that stops
 // new joins, and the difference matters: disabling leaves the history intact.
+//
+// The per-circle half — which of these a circle accepts, and the Discord guild and roles that gate
+// it — is NOT here. It requires `circle.security.manage`, which is CIRCLE-realm: an owner holds it
+// and an instance operator does not, so an editor sitting on this screen was one no circle owner
+// could ever reach. It lives on Circle settings, once, and this screen links to it rather than
+// carrying a second copy.
 
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 
-import { api, type AdminIdentityProvider, type Circle, type ProviderView, toError } from '../api'
-import { usePrincipal } from '../app/principal'
+import { api, type AdminIdentityProvider, toError } from '../api'
 import { useResource } from '../app/useResource'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { DiscordMark } from '../components/ProviderButton'
-import { RevocationBanner } from '../components/RevocationBanner'
 import { Banner, Button, Card, Empty, Field, Input, Mono, Select, Spinner, Td, Th } from '../components/ui'
 
 export function InstanceAdmin() {
-  const principal = usePrincipal()
   const [error, setError] = useState<Error | null>(null)
   const [adding, setAdding] = useState(false)
 
   const providers = useResource(
     (signal) => api.listAdminIdentityProviders({}, { signal }).then((r) => r.data),
     [],
-  )
-  const circle = useResource(
-    (signal) =>
-      api.getCircle({ circle_id: principal.view.circle_id }, { signal }).then((r) => r.data),
-    [principal.view.circle_id],
   )
 
   const rows = providers.data?.items ?? []
@@ -99,14 +98,15 @@ export function InstanceAdmin() {
         />
       )}
 
-      {circle.data && (
-        <CircleProvidersCard
-          circle={circle.data}
-          available={rows}
-          onDone={circle.reload}
-          onError={setError}
-        />
-      )}
+      <Banner tone="info" title="A circle's own gate is not configured here">
+        Which of these providers a circle accepts — and the Discord guild and roles that gate it —
+        needs <Mono>circle.security.manage</Mono>. That is CIRCLE-realm: a circle owner holds it and
+        this instance-realm grant does not imply it. It is edited on{' '}
+        <Link className="text-accent-400 underline" to="/settings">
+          Circle settings
+        </Link>
+        , by the people who hold it.
+      </Banner>
     </div>
   )
 }
@@ -336,168 +336,6 @@ function AddProviderCard({ onDone }: { onDone: () => void }) {
             {busy ? 'Creating…' : 'Create'}
           </Button>
         </div>
-      </div>
-    </Card>
-  )
-}
-
-/**
- * CircleProvidersCard is the per-circle half: which providers this circle accepts, and the Discord
- * guild and role ids that gate it.
- *
- * EMPTY REQUIRED ROLES MEANS ANYONE IN THE GUILD, and holding ANY listed role admits. Both are
- * stated on the form, because getting either backwards is a gate that silently admits everybody.
- *
- * This is `circle.security.manage` — owner only — because changing which providers a circle
- * accepts changes its revocation guarantee.
- */
-function CircleProvidersCard({
-  circle,
-  available,
-  onDone,
-  onError,
-}: {
-  circle: Circle
-  available: AdminIdentityProvider[]
-  onDone: () => void
-  onError: (error: Error | null) => void
-}) {
-  const accepted = circle.accepted_providers ?? []
-  const [draft, setDraft] = useState<ProviderView[]>(accepted)
-  const [busy, setBusy] = useState(false)
-
-  const toggle = (provider: AdminIdentityProvider) => {
-    setDraft((current) =>
-      current.some((p) => p.key === provider.key)
-        ? current.filter((p) => p.key !== provider.key)
-        : [
-            ...current,
-            {
-              provider_id: provider.id,
-              key: provider.key,
-              kind: provider.kind,
-              display_name: provider.display_name,
-              verifiable_subject: provider.verifiable_subject,
-              available: provider.enabled,
-              discord_required_role_ids: [],
-            },
-          ],
-    )
-  }
-
-  const setGuild = (key: string, guild: string) => {
-    setDraft((current) =>
-      current.map((p) => (p.key === key ? { ...p, discord_guild_id: guild } : p)),
-    )
-  }
-
-  const setRoles = (key: string, roles: string) => {
-    setDraft((current) =>
-      current.map((p) =>
-        p.key === key
-          ? {
-              ...p,
-              discord_required_role_ids: roles
-                .split(',')
-                .map((r) => r.trim())
-                .filter(Boolean),
-            }
-          : p,
-      ),
-    )
-  }
-
-  // Read the circle, then write with the entity tag that read returned. `*` would be accepted and
-  // would mean "whatever is there now" — this console overwriting another owner's change having
-  // read nothing, which is exactly what the precondition exists to prevent. The 412 carries the
-  // current representation, so a collision costs no extra round trip to recover from.
-  const save = () => {
-    setBusy(true)
-    onError(null)
-    api
-      .getCircle({ circle_id: circle.id })
-      .then((current) =>
-        api.setCircleProviders(
-          {
-            circle_id: circle.id,
-            body: {
-              providers: draft.map((p) => ({
-                key: p.key,
-                ...(p.discord_guild_id ? { discord_guild_id: p.discord_guild_id } : {}),
-                discord_required_role_ids: p.discord_required_role_ids ?? [],
-              })),
-              acknowledge_weak_revocation: draft.some((p) => !p.verifiable_subject),
-            },
-          },
-          current.etag ? { ifMatch: current.etag } : {},
-        ),
-      )
-      .then(onDone)
-      .catch((err: unknown) => onError(toError(err)))
-      .finally(() => setBusy(false))
-  }
-
-  return (
-    <Card
-      title={`Providers accepted by ${circle.name}`}
-      subtitle="Owner only: changing this changes the circle's revocation guarantee."
-      actions={
-        <Button variant="primary" onClick={save} disabled={busy}>
-          {busy ? 'Saving…' : 'Save'}
-        </Button>
-      }
-    >
-      <div className="space-y-3 p-4">
-        <RevocationBanner
-          strength={circle.revocation_strength}
-          reasons={circle.revocation_weak_reasons}
-          weakProviders={circle.weak_providers}
-        />
-        {available.length === 0 && <Empty title="Add a provider above first." />}
-        {available.map((provider) => {
-          const chosen = draft.find((p) => p.key === provider.key)
-          return (
-            <div key={provider.id} className="rounded border border-ink-700 bg-ink-850 p-3">
-              <label className="flex items-center gap-2 text-xs text-ink-100">
-                <input type="checkbox" checked={Boolean(chosen)} onChange={() => toggle(provider)} />
-                {provider.kind === 'discord' && <DiscordMark className="text-discord-blurple" />}
-                {provider.display_name} <Mono>{provider.key}</Mono>
-                {!provider.enabled && (
-                  <span className="text-[10px] tracking-wide text-amber-400 uppercase">
-                    disabled instance-wide
-                  </span>
-                )}
-              </label>
-              {chosen && provider.kind === 'discord' && (
-                <div className="mt-2 grid gap-3 md:grid-cols-2">
-                  <Field
-                    label="Discord server (guild) id"
-                    hint="Leave empty to accept anybody with a Discord account."
-                  >
-                    <Input
-                      value={chosen.discord_guild_id ?? ''}
-                      onChange={(e) => setGuild(provider.key, e.target.value.trim())}
-                    />
-                  </Field>
-                  <Field
-                    label="Required role ids"
-                    hint="Comma-separated. EMPTY MEANS ANYONE IN THE SERVER; holding ANY listed role admits."
-                  >
-                    <Input
-                      value={(chosen.discord_required_role_ids ?? []).join(', ')}
-                      onChange={(e) => setRoles(provider.key, e.target.value)}
-                    />
-                  </Field>
-                </div>
-              )}
-            </div>
-          )
-        })}
-        <p className="text-[11px] text-ink-500">
-          The gate is evaluated at join AND at every re-authentication, through one evaluator. It is
-          not re-checked continuously: losing a Discord role does not revoke a token that has
-          already been issued — revoking the member does, on their very next request.
-        </p>
       </div>
     </Card>
   )
