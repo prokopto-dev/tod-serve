@@ -90,9 +90,25 @@ if [ -f docs/concepts/invariants.md ]; then
   # `{ report DOC001 "..."; bad=1; }` inside an `if` — and an anchored pattern silently skipped
   # every one of them, which is precisely the shape of failure this gate exists to catch. The cost
   # of over-matching is a name in a comment asking to be written down, which is the safe direction.
-  gates=$( { grep -ohE '(report|pass|vacant) [A-Z]+[0-9]{3}' scripts/*.sh
-             grep -ohE 'func Test[A-Z]+[0-9]{3}_' test/repo/*.go 2>/dev/null
-           } | grep -oE '[A-Z]+[0-9]{3}' | sort -u )
+# gate_definitions <root> — every gate id DEFINED under <root>, by the FORM a definition takes and
+# never by a mention of one. A stale `# report FOO001` left behind by a deleted gate is a mention;
+# `x && report FOO001 "..."` is a definition. Likewise `^func Test…` rather than a comment naming
+# the test, and, in internal/repogate, the two forms that declare a rule id in a NON-test file — a
+# `_test.go` asserting `require.Equal(t, "CLOCK001")` references a rule, it does not define one.
+#
+# DOC002 and DOC003 share it because they are the two DIRECTIONS of one rule. Two scans would be
+# two answers to "does this gate exist", and the pair would eventually disagree — which is the bug
+# they were both written to catch, in the gates that catch it.
+gate_definitions() {
+  root="$1"
+  { grep -hoE '^[^#]*\b(report|pass|vacant) [A-Z]+[0-9]{3}' "$root"/scripts/*.sh 2>/dev/null
+    grep -hoE '^func Test[A-Z]+[0-9]{3}_' "$root"/test/repo/*.go 2>/dev/null
+    find "$root/internal/repogate" -maxdepth 1 -name '*.go' ! -name '*_test.go' -exec \
+      grep -hoE '^[^/]*(ID:[[:space:]]*|=[[:space:]]*)"[A-Z]+[0-9]{3}"' {} + 2>/dev/null
+  } | grep -oE '[A-Z]+[0-9]{3}' | sort -u
+}
+
+  gates=$(gate_definitions .)
   if [ -z "$gates" ]; then
     report DOC002 "no gate names were parsed out of scripts/ or test/repo; the patterns are wrong"
   else
@@ -143,42 +159,51 @@ if [ -f "$INVARIANTS_PAGE" ]; then
   else
     # Every place a gate id is DEFINED. Three, because the gates live in three shapes: a shell
     # report, a can-fail test in test/repo, and an AST rule id in internal/repogate.
-    defined=$( { grep -ohE '(report|pass|vacant) [A-Z]+[0-9]{3}' scripts/*.sh
-                 grep -ohE 'func Test[A-Z]+[0-9]{3}_' test/repo/*.go 2>/dev/null
-                 grep -ohE '"[A-Z]+[0-9]{3}"' internal/repogate/*.go 2>/dev/null
-               } | grep -oE '[A-Z]+[0-9]{3}' | sort -u )
-    # Compared in ONE pass, not one subprocess per name. The loop this replaces ran
-    # `echo "$defined" | grep -qx "$g"` per id and read ANY non-zero exit as "absent" — including a
-    # grep that never ran. Under `go test ./test/repo`, several copies of this script run at once
-    # and each was forking a few hundred greps; the ones that lost the race were reported as
-    # phantom gates, naming a different innocent test on every run. A gate whose findings are
-    # sometimes fiction is worse than no gate, because the first false one teaches everybody to
-    # ignore the true ones. `grep -Fxv -f` answers the same question with a single process, so
-    # there is no longer an exit status that can mean two different things.
-    named_gates=""; n=0
-    for g in $named; do
-      case " $NOT_GATES " in *" $g "*) continue ;; esac
-      n=$((n + 1))
-      named_gates="$named_gates$g
-"
-    done
-    missing=$(printf '%s' "$named_gates" | grep -Fxv -f <(printf '%s\n' "$defined"))
-    if [ -n "$missing" ]; then
-      report DOC003 "$INVARIANTS_PAGE names a gate that is defined in no script, test/repo test or repogate rule:"
-      printf '%s\n' "$missing" | sed 's/^/  /'
-    fi
-
-    # A gate id is not the only shape of mechanism this page cites, and the narrow check was not
-    # enough to justify the claim made for it. Of the three phantoms that motivated DOC003 only
-    # SQL002 was an id: the other two were `scripts/licence-gate.sh` and
-    # `TestAuthFlow_RateLimitedCaller_CreatesNoRows`, and an id-only gate would have caught neither
-    # — it would have shipped as the gate that "would have caught all three" while two of the three
-    # walked straight past it. So every backticked shape the page uses to name a mechanism is
-    # resolved against the tree: an id, a test function, and a repository path.
+    # A gate is DEFINED by a definition, never by a mention of one. This scan used to accept any
+    # matching text, so a stale `# report FOO001 ...` left behind by a deleted gate kept a
+    # backticked FOO001 on this page looking enforced — which is the exact phantom DOC003 exists to
+    # catch, reintroduced by DOC003 itself. Each of the three is now pinned to a form that only a
+    # real definition takes:
     #
-    # No vacancy check on these two. The id parse above is the canary that says the page was read
-    # at all, and a page may legitimately cite no test and no path; a second "parsed nothing"
-    # branch here would fire on every small fixture without telling anybody anything new.
+    #   shell     a call with no `#` before it on the line, so `# report FOO001` is a mention
+    #             while `[ -n "$x" ] && report FOO001 "..."` is still a call.
+    #   test/repo `^func Test…`, anchored, because a comment naming a test is not the test.
+    #   repogate  the two forms that declare a rule id, in NON-test files: a `_test.go` asserting
+    #             `require.Equal(t, "CLOCK001")` references a rule, it does not define one.
+    #
+    # Tightening this changed nothing about what resolves today — 36 before and 36 after — which is
+    # what says it is a tightening rather than a rewrite.
+    GATE_ROOT="${TOD_GATE_ROOT:-.}"
+    defined=$(gate_definitions "$GATE_ROOT")
+
+    # The same vacancy argument the test scan makes about itself: an empty set here would report
+    # every gate the page names as a phantom, burying a real finding under three dozen false ones.
+    n=0
+    if [ -z "$defined" ]; then
+      report DOC003 "no gate definitions were found under $GATE_ROOT; this gate's own scan is wrong"
+    else
+      # Compared in ONE pass, not one subprocess per name. The loop this replaces ran
+      # `echo "$defined" | grep -qx "$g"` per id and read ANY non-zero exit as "absent" — including
+      # a grep that never ran. Under `go test ./test/repo` several copies of this script run at
+      # once, each forking a few hundred greps, and the ones that lost the race were reported as
+      # phantoms naming a different innocent gate every run. Findings that are sometimes fiction
+      # are worse than no findings, because the first false one teaches everybody to ignore the
+      # true ones. `grep -Fxv -f` answers the same question in one process, so no exit status has
+      # to mean two different things.
+      # Filtered with one grep rather than a `case` inside `$( )`: bash 3.2, which is what
+      # /bin/bash still is on macOS, miscounts the `)` closing a case pattern there and fails to
+      # parse the file at all. A developer's local `make check` is not a place to need bash 4.
+      # shellcheck disable=SC2086 # deliberately word-split: NOT_GATES is a list, not one word.
+      not_gates_re=$(printf '%s\n' $NOT_GATES | paste -sd'|' -)
+      named_gates=$(printf '%s\n' "$named" | grep -vxE "$not_gates_re")
+      n=$(printf '%s\n' "$named_gates" | grep -c '[^[:space:]]')
+      missing=$(printf '%s\n' "$named_gates" | grep -v '^$' \
+                | grep -Fxv -f <(printf '%s\n' "$defined"))
+      if [ -n "$missing" ]; then
+        report DOC003 "$INVARIANTS_PAGE names a gate that is defined in no script, test/repo test or repogate rule:"
+        printf '%s\n' "$missing" | sed 's/^/  /'
+      fi
+    fi
 
     # Rows that start NOT HELD are dropped first. The page's own header fixes that convention —
     # "Some rows say the mechanism is missing, and they start `NOT HELD`" — and such a row names a

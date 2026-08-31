@@ -261,3 +261,77 @@ func TestDOC003_EveryTestFile_IsUnderADirectoryTheGateReads(t *testing.T) {
 			"the tests they define:\n  %s\nAdd the directory to TEST_ROOTS in that script",
 		strings.Join(stray, "\n  "))
 }
+
+// A gate is defined by a DEFINITION, never by a mention of one — and this is the half that keeps
+// DOC003 from reintroducing the failure it exists to catch.
+//
+// The scan used to accept any matching text, so deleting a gate and leaving its `# report FOO001`
+// comment behind kept a backticked `FOO001` on the page resolving. The page would then say the rule
+// was enforced, DOC003 would agree, and nothing would enforce it: a phantom mechanism, certified by
+// the phantom-mechanism gate. Both directions are driven, because a scan tightened until it matches
+// nothing would pass this test's first half and fail the repository.
+func TestDOC003_AGateNamedOnlyInAComment_IsStillAPhantom(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		script  string
+		wantErr bool
+	}{
+		{
+			// The deleted gate's comment, left behind. NOPE999 is named nowhere else.
+			name:    "a comment is a mention, not a definition",
+			script:  "#!/usr/bin/env bash\n# report NOPE999 \"this gate was deleted in 2026\"\nreport REAL001 \"a real one\"\n",
+			wantErr: true,
+		},
+		{
+			// The same id, actually called. Without this the test above passes for a scan that
+			// finds nothing at all, which would make every gate on the real page a phantom.
+			name:    "a call is a definition",
+			script:  "#!/usr/bin/env bash\nreport NOPE999 \"a gate that exists\"\nreport REAL001 \"a real one\"\n",
+			wantErr: false,
+		},
+		{
+			// A call reached through a guard still defines the gate: the rule is "no `#` before it
+			// on the line", not "the line starts with report".
+			name:    "a guarded call is still a definition",
+			script:  "#!/usr/bin/env bash\n[ -n \"$x\" ] && report NOPE999 \"guarded\"\nreport REAL001 \"a real one\"\n",
+			wantErr: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(root, "scripts"), 0o750))
+			require.NoError(t, os.WriteFile(
+				filepath.Join(root, "scripts", "gate.sh"), []byte(tc.script), 0o600))
+
+			page := filepath.Join(t.TempDir(), "invariants.md")
+			require.NoError(t, os.WriteFile(page, []byte(
+				"| `NOPE999` | the gate under test |\n"+
+					"| `REAL001` | present so the scan is never empty |\n"), 0o600))
+
+			out, err := runDocsCheck(t, page, "TOD_GATE_ROOT="+root)
+			if tc.wantErr {
+				require.Error(t, err, "DOC003 accepted a gate that only a comment names:\n%s", out)
+				require.Contains(t, out, "NOPE999")
+				return
+			}
+			require.NoError(t, err, "DOC003 called a defined gate a phantom:\n%s", out)
+		})
+	}
+}
+
+// And its vacancy half, for the same reason the test scan has one: a scan that finds no definitions
+// must say its own scan is wrong, rather than report every gate the page names as a phantom and
+// bury the real finding under three dozen false ones.
+func TestDOC003_WhenItCanReadNoGates_ItBlamesItselfNotThePage(t *testing.T) {
+	t.Parallel()
+
+	out, err := runDocsCheck(t, "", "TOD_GATE_ROOT="+t.TempDir())
+	require.Error(t, err, "DOC003 passed while it could read no gate definitions:\n%s", out)
+	require.Contains(t, out, "this gate's own scan is wrong")
+	require.NotContains(t, out, "is defined in no script",
+		"a gate that cannot read the definitions must not accuse the page of naming absent ones")
+}
