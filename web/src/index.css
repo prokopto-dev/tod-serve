@@ -34,6 +34,14 @@
   --color-status-overdue: #9d6bd8;
   --color-status-up: #21b8c9;
 
+  /* Discord's brand colours: the only two in this file that are not ours to pick. They are named
+   * after the vendor rather than given a palette step so that nothing else reaches for them —
+   * blurple is a sign-in control's identity, and spending it on an accent somewhere else would be
+   * a claim about who built the thing it is on. #5865F2 and #4752C4 are the published pair, and
+   * the darker one is the hover state Discord's own controls use. */
+  --color-discord-blurple: #5865f2;
+  --color-discord-blurple-dark: #4752c4;
+
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 }
 
