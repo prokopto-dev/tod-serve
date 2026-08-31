@@ -60,6 +60,16 @@ type Circle struct {
 	UpdatedAt                int64
 }
 
+type CircleDiscordChannel struct {
+	DiscordChannelID      string
+	CircleID              string
+	DiscordGuildID        string
+	AllowVisible          int64
+	CreatedByMembershipID string
+	CreatedAt             int64
+	UpdatedAt             int64
+}
+
 type CircleProvider struct {
 	CircleID                   string
 	ProviderID                 string

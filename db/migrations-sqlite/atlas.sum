@@ -1,4 +1,4 @@
-h1:iVNbvwShbPoFSjW9M/WfNtA4np05l9EW+Wzo5ZiW8qc=
+h1:5P3bB2dbNW0kU2bK/ifhEd5xGzQ7xAKjtg7D4UJgZfc=
 000001_initial_schema.sql h1:Eho8UgfiInMLnh5woH+FNpDAncrS3pAdi7SAVWBf+TQ=
 000002_invariant_triggers.sql h1:a76H6kvdc9f1xc1wOw0CO4eMw5+r/3wdLc8vtB682K0=
 000003_identity_provider_client_id_matches_kind.sql h1:UwIOCNZYpJSnk8LeZ2goRrXJZUx5wIVsFvczF0DQn+c=
@@ -7,3 +7,4 @@ h1:iVNbvwShbPoFSjW9M/WfNtA4np05l9EW+Wzo5ZiW8qc=
 000006_add_instance_grant.sql h1:+ajbgvK8VPTYRzbl5+Wo+hzt5dKxPu+OC7a5BNKGNW0=
 000007_instance_grant_append_only.sql h1:b7xJPdEey2gOh/MvVpfXNdAEqzowP6VFUWEukfpbIQE=
 000008_instance_grant_unique_hash.sql h1:6mVNB5TT8VjI8+usKgLjOEw6FvCinpWDaTUCeIHON9k=
+000009_circle_discord_channel.sql h1:Ktb70c8nR23Fz24a8H4N2Lnljzq+PQPqA6zsXp6mEsI=
