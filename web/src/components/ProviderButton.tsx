@@ -28,12 +28,17 @@ import { classes } from '../lib/format'
  * Discord's brand terms permit the logo on a sign-in control and do not permit a restyled logo.
  * The two colours it is ever given here are both sanctioned single-colour versions: white on
  * blurple inside the button, blurple on the console's own dark surface in the operator's list.
+ *
+ * It carries no `xmlns`, deliberately. The attribute is redundant for an SVG inlined in an HTML
+ * document — React creates the element in the SVG namespace itself — and writing it would put an
+ * `http://` literal into the bundle of a console whose whole rule about external references is
+ * that it has none. `TestHandler_TheDocument_ReferencesNoExternalHost` reads the served document
+ * and not the assets, so nothing would have caught it, which is the reason to not write it.
  */
 export function DiscordMark({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 127.14 96.36"
-      xmlns="http://www.w3.org/2000/svg"
       fill="currentColor"
       aria-hidden="true"
       focusable="false"
