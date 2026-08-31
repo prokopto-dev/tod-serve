@@ -25,13 +25,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { api, type Circle, type ProviderView, type PublicIdentityProvider, toError } from '../api'
+import { api, type Circle, type PublicIdentityProvider, toError } from '../api'
 import { usePrincipal } from '../app/principal'
 import { useResource } from '../app/useResource'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { DiscordMark } from '../components/ProviderButton'
 import { RevocationBanner } from '../components/RevocationBanner'
 import { Banner, Button, Card, Empty, Field, Input, Mono, Spinner } from '../components/ui'
+import { choicesFor, gateState, saveSet, type Choice, type GateState } from '../lib/gate'
 import { forgetCircle } from '../lib/storage'
 
 export function CircleSettings() {
@@ -181,74 +182,6 @@ function CircleNameCard({
 }
 
 /**
- * Choice is one provider this circle could accept, and the gate configured on it.
- *
- * It is a local shape rather than the wire's `ProviderView` because the two sources it is built
- * from carry different halves: the public list knows a provider exists and is enabled, and
- * `accepted_providers` knows the guild and roles this circle set on it. The write body needs only
- * the key and the gate, so nothing here invents a `provider_id` it never read.
- */
-interface Choice {
-  key: string
-  kind: string
-  display_name: string
-  verifiable_subject: boolean
-  /** available is false for a provider the INSTANCE has disabled since this circle accepted it. */
-  available: boolean
-  accepted: boolean
-  discord_guild_id: string
-  discord_required_role_ids: string[]
-}
-
-/** GateState is what a Discord gate actually admits. Three states, per `db/schema.hcl`. */
-type GateState = 'none' | 'guild' | 'roles'
-
-function gateState(choice: Choice): GateState {
-  if (!choice.discord_guild_id.trim()) return 'none'
-  return choice.discord_required_role_ids.length > 0 ? 'roles' : 'guild'
-}
-
-/**
- * choicesFor merges the instance's enabled providers with the ones this circle already accepts.
- *
- * The union rather than the public list alone: a provider the operator disabled AFTER this circle
- * accepted it is still on the circle, still stops nobody who is already in, and still counts
- * towards the revocation strength. It comes back with `available: false` and says so on the row.
- * Never hide a row silently.
- */
-function choicesFor(circle: Circle, available: PublicIdentityProvider[]): Choice[] {
-  const accepted = new Map<string, ProviderView>()
-  for (const p of circle.accepted_providers ?? []) accepted.set(p.key, p)
-
-  const out: Choice[] = available.map((p) => ({
-    key: p.key,
-    kind: p.kind,
-    display_name: p.display_name,
-    verifiable_subject: p.verifiable_subject,
-    available: true,
-    accepted: accepted.has(p.key),
-    discord_guild_id: accepted.get(p.key)?.discord_guild_id ?? '',
-    discord_required_role_ids: accepted.get(p.key)?.discord_required_role_ids ?? [],
-  }))
-
-  const listed = new Set(out.map((c) => c.key))
-  for (const [key, p] of accepted) {
-    if (listed.has(key)) continue
-    out.push({
-      key,
-      kind: p.kind,
-      display_name: p.display_name,
-      verifiable_subject: p.verifiable_subject,
-      available: p.available,
-      accepted: true,
-      discord_guild_id: p.discord_guild_id ?? '',
-      discord_required_role_ids: p.discord_required_role_ids ?? [],
-    })
-  }
-  return out
-}
-
-/**
  * CircleProvidersCard is the per-circle identity gate: which providers this circle accepts, and
  * the Discord guild and role ids that gate each one.
  *
@@ -277,6 +210,11 @@ function CircleProvidersCard({
   const [draft, setDraft] = useState<Choice[]>(() => choicesFor(circle, available))
   const [busy, setBusy] = useState(false)
 
+  // What this press of Save can carry, and what it costs. `dropped` is not a filter applied
+  // quietly: see [saveSet] — a disabled provider can neither be re-sent nor kept, so the owner is
+  // told which one a save gives up before they press it.
+  const { send, dropped, acknowledgeWeak } = saveSet(draft)
+
   const patch = (key: string, change: Partial<Choice>) =>
     setDraft((current) => current.map((c) => (c.key === key ? { ...c, ...change } : c)))
 
@@ -287,7 +225,6 @@ function CircleProvidersCard({
   const save = () => {
     setBusy(true)
     onError(null)
-    const chosen = draft.filter((c) => c.accepted)
     api
       .getCircle({ circle_id: circle.id })
       .then((current) =>
@@ -295,14 +232,14 @@ function CircleProvidersCard({
           {
             circle_id: circle.id,
             body: {
-              providers: chosen.map((c) => ({
+              providers: send.map((c) => ({
                 key: c.key,
                 ...(c.discord_guild_id.trim()
                   ? { discord_guild_id: c.discord_guild_id.trim() }
                   : {}),
                 discord_required_role_ids: c.discord_required_role_ids,
               })),
-              acknowledge_weak_revocation: chosen.some((c) => !c.verifiable_subject),
+              acknowledge_weak_revocation: acknowledgeWeak,
             },
           },
           current.etag ? { ifMatch: current.etag } : {},
@@ -331,6 +268,23 @@ function CircleProvidersCard({
           reasons={circle.revocation_weak_reasons}
           weakProviders={circle.weak_providers}
         />
+
+        {!readOnly && dropped.length > 0 && (
+          <Banner
+            tone="warn"
+            title={`Saving will stop this circle accepting ${dropped
+              .map((c) => c.display_name)
+              .join(', ')}`}
+          >
+            <p>
+              This instance has disabled{' '}
+              {dropped.map((c) => c.key).join(', ')}, and this operation replaces the whole set: the
+              server refuses a request that names a disabled provider, and a request that omits one
+              removes it. There is no third outcome, so a save gives it up — nobody joins through it
+              either way, and no existing membership is revoked.
+            </p>
+          </Banner>
+        )}
 
         {readOnly && (
           <Banner tone="info" title="Read only: editing this needs circle.security.manage">
@@ -391,20 +345,28 @@ function ProviderChoice({
         <input
           type="checkbox"
           checked={choice.accepted}
-          disabled={readOnly}
+          // A provider the instance disabled cannot be re-sent and cannot be kept, so there is no
+          // decision left to offer. Leaving it tickable would be a control whose only reachable
+          // outcome is the one it appears to prevent.
+          disabled={readOnly || !choice.available}
           onChange={() => onChange({ accepted: !choice.accepted })}
         />
         {choice.kind === 'discord' && <DiscordMark className="text-discord-blurple" />}
         {choice.display_name} <Mono>{choice.key}</Mono>
         {!choice.available && (
-          <span
-            className="text-[10px] tracking-wide text-amber-400 uppercase"
-            title="The instance operator disabled this provider. It still counts towards this circle's revocation strength, and nobody new joins through it."
-          >
+          <span className="text-[10px] tracking-wide text-amber-400 uppercase">
             disabled instance-wide
           </span>
         )}
       </label>
+      {!choice.available && choice.accepted && (
+        <p className="mt-1 text-[11px] text-amber-300">
+          This circle still accepts it on paper, and nobody can join through it: the instance
+          operator disabled it. It is not gating anything and it does not count towards this
+          circle&rsquo;s revocation strength. The next save removes it — an existing member who
+          joined this way keeps their membership, because removing a provider revokes nobody.
+        </p>
+      )}
 
       {choice.accepted && choice.kind === 'discord' && (
         <div className="mt-2 space-y-2">
