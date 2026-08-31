@@ -4,11 +4,14 @@
 
 ## Context and problem statement
 
-A PAT is born in two places: `POST /join` returns one to whoever redeemed an invite code, and
-`POST /circles/{circle_id}/service-members` mints one for a **new** service membership behind the
-`token.mint` capability floor. Neither re-credentials an *existing* human membership, so a raider
-who loses a token needs a fresh invite code and nParse+ cannot obtain one at all. Discord sign-in
-is the toolchain's pattern, so this shape outlives nParse+.
+A PAT is born in three places: `POST /join` on an invite,
+`POST /circles/{circle_id}/service-members` behind the `token.mint` floor, and `POST /sessions`,
+which re-authenticates an existing membership on a new device with no invite. `/sessions` is the
+one that matters, and it cannot serve nParse+: it takes **one** `circle_id`, 404s where the identity
+holds no membership there, and needs a **provider credential** — for Discord the single-use ticket
+the browser flow mints, obtainable by a desktop binary only as the public per-install app this ADR
+rejects. The console lives with that by remembering circles in browser storage
+(`web/src/screens/SignIn.tsx`); a plugin cannot, for circles nobody has visited yet.
 
 ## Considered options
 
@@ -21,8 +24,7 @@ is the toolchain's pattern, so this shape outlives nParse+.
 ## Decision outcome
 
 **Chosen: C**, because the plugin never speaks to Discord: the user code goes to a browser that
-signs in against this instance as it does today, while the plugin polls. Nothing about ADR-0011
-moves.
+signs in as it does today, while the plugin polls. Nothing about ADR-0011 moves.
 
 **Scopes.** A device may request `tod:read`, `tod:report` and `catalogue:read`, nothing else.
 `catalogue:read` is not optional — without it the plugin cannot resolve a parsed mob name to a raid
@@ -30,52 +32,50 @@ target, so it cannot turn a log line into a report. `circle:read`, `member:read`
 `invite:create` are refused: a log parser must not enumerate members or mint invites.
 
 **`tod:retract` is excluded.** For it: a correction is a new row, not a deletion
-([ADR-0004](0004-append-only-reports-derived-consensus.md)), so retraction is arguably reporting,
-and a plugin that mis-parses a line should be able to withdraw it. Against, and decisive:
-`ScopeTodRetract` grants `tod.retract` **and** `tod.retract.any`, so there is no narrow own-reports
-scope to hand over — it would let an unattended desktop process invalidate another member's ToD.
-Splitting it is a separate decision. The plugin corrects by reporting again: consensus is derived,
-so better evidence wins.
+([ADR-0004](0004-append-only-reports-derived-consensus.md)), so retraction is arguably reporting.
+Against, and decisive: `ScopeTodRetract` grants `tod.retract` **and** `tod.retract.any`, so there is
+no narrow own-reports scope to hand over — it would let an unattended desktop process invalidate
+another member's ToD.
+The plugin corrects by reporting again: consensus is derived, so better evidence wins.
 
 **The quake is excluded, and there is no scope to include.** `OpReportQuake` carries
 `PermissionTodQuakeReport` and declares **no scopes at all**, so no PAT reaches it and the catalogue
-has no quake scope to name. A quake is game data, but its summary reads "a false one wipes the whole
-board"; minting `tod:quake` for a log parser is a bigger decision than this. It stays
-session-only.
+has no quake scope to name. Its summary reads "a false one wipes the whole board"; minting
+`tod:quake` for a log parser is a bigger decision than this. It stays session-only.
 
 **`events:subscribe` belongs later, not now.** It grants only `tod.read`, which a device already
 holds, so adding it once Phase 6 ships a handler widens the transport, not the rows. Today it would
-put a scope on live tokens that grants nothing yet must be reviewed as if it did.
+grant nothing yet still need reviewing as if it did.
 
 **What an approval yields is [ADR-0019](0019-a-device-grant-is-identity-scoped.md)'s question** —
-an identity-scoped grant exchanging for per-membership tokens, the cross-circle token this one no
-longer weighs, and the ceiling that one Discord login cannot span instances.
+an identity-scoped grant exchanging for per-membership tokens, and the ceiling that one Discord
+login cannot span instances.
 
 **The new public surface.** `/device/authorize` and `/device/token` are `AuthPublic` and join the
 invite-oracle bucket via `Route.InviteOracle`, whose comment already says a third code-taking route
-joins this bucket rather than minting another: two buckets hand a guesser twice the budget.
+joins it rather than minting another: two buckets hand a guesser twice the budget.
 `TestInviteOracle_TheMeteredSet_IsEveryPublicRouteThatTakesACode` pins that set and stays red until
 it names them. The user code uses `internal/invite`'s Crockford alphabet at no less than
 `invite.CodeBits`, single-use, expiring in minutes.
 
 **Law 5 needs no new rule.** What reaches a route is a membership-bound token, so it 404s on circle
-B by the path `TestTenancy_CrossCircle_EveryOperationDenies` already drives.
+B by the path `TestTenancy_CrossCircle_EveryOperationDenies` drives.
 
 **Approval is a grant, and `audit_log.circle_id` is `NOT NULL`.** An approval is on an identity and
 may precede every membership ([ADR-0019](0019-a-device-grant-is-identity-scoped.md)), so
 `internal/audit` cannot hold it — the wall `instance_grant` already hit. `device_grant` is its own
-append-only, hash-chained record on `audit.ChainHash`, so a memberless approval is one row there
-rather than none anywhere. The circle-scoped `audit_log` row belongs to the exchange that mints into
+append-only, hash-chained record on `audit.ChainHash`, so a memberless approval is one row rather
+than none anywhere. The circle-scoped `audit_log` row belongs to the exchange that mints into
 a circle, where a `circle_id` exists. ADR-0011's guarantee that an audit names a responsible person
 holds on both.
 
 **The device code is litter; the grant is history.** `device_authorization` carries `expires_at`
-and is swept by `tod-serve sweep` past `sweep.Grace`, beside `auth_flow` and `credential_ticket`.
+and is swept by `tod-serve sweep` past `sweep.Grace`, beside `auth_flow` and `credential_ticket`;
 `device_grant` is append-only and never swept.
 
-**This becomes the answer to "I lost my token" for humans too** — intended, not incidental. A
-member re-approves a device rather than asking an officer for an invite. Invites keep one job:
-first entry into a circle.
+**It does not replace `/sessions`; it reaches where `/sessions` cannot.** A member who lost a token
+still re-authenticates in the console. What the device flow adds is the two things that route cannot
+do: no provider credential in the plugin, and no circle named in advance.
 
 ### Consequences
 

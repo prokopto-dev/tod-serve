@@ -24,8 +24,8 @@ the token model is open rather than settled.
 ## Decision outcome
 
 **Chosen: b.** The requirement is not "fewer credentials" but "no second login when I join a
-circle", which (a) fails by construction. (c) meets it by surrendering blast radius, which is the
-only thing ADR-0005's binding actually buys. (b) keeps both.
+circle", which (a) fails by construction. (c) meets it by surrendering blast radius, the only thing
+ADR-0005's binding buys. (b) keeps both.
 
 **The grant authorizes no request.** Only the PATs it mints do, each an ordinary ADR-0005 token
 bound to one membership and checked every request — so the authorization path, tenancy and
@@ -42,7 +42,7 @@ membership, carrying ADR-0018's approved scope set and never widening it. `api_t
 already exists, so short TTLs need no schema change; expired rows join `internal/sweep`. The grant
 is a `core.Secret`, hashed like a PAT and never compared by value (`SECRET001`).
 
-**One Discord login cannot span instances, and that is by design rather than a gap.** An identity is
+**One Discord login cannot span instances, by design rather than by gap.** An identity is
 `(provider_id, subject)` where `provider_id` is *that instance's* `identity_provider` row, because
 [ADR-0011](0011-operator-registered-discord-application.md) made each instance its own confidential
 client precisely so a token minted by a shared app cannot be replayed at another. The shape is
@@ -55,9 +55,9 @@ instances, and nothing should.
 **Authenticating with no membership is supported, and it is new state.** "Instances I plan to get
 access to" requires it: a user completes a device authorization on an instance where they hold
 nothing, the exchange returns an **empty token set** rather than an error, and circles appear at a
-later exchange once they redeem an invite in the browser. Today `/join` requires an invite and is
-the only route that mints, so approval must be reachable from a session holding no membership — a
-change, written here rather than left to be discovered.
+later exchange once they redeem an invite in the browser. Today every minting route refuses such an
+identity — `/join` demands an invite, `/sessions` 404s where the membership is absent — so approval
+must be reachable from a session holding none: a change, written here rather than discovered.
 
 ### Consequences
 
@@ -80,6 +80,5 @@ change, written here rather than left to be discovered.
 
 A release and a revocation row per live grant — **not** a migration dropping `device_grant`. That
 table is the only record a memberless approval has, so erasing it would erase the audit this ADR
-added; a reversal closes the ledger rather than deleting it. Clients fall back to option (a),
-approval minting per-membership tokens directly: a real change to every client and none to the
-server's authorization path.
+added; a reversal closes the ledger rather than deleting it. Clients fall back to option (a): a real
+change to every client, none to the server's authorization path.
