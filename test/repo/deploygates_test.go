@@ -173,6 +173,162 @@ func TestENV001_PassesWhatItShould(t *testing.T) {
 	}
 }
 
+// TestENV001_RefusesAPartialScan — the gate must never report success over a file it could not
+// read. Neither `find` nor `grep` is all-or-nothing: grep prints every match from the files it
+// opened and exits 2, find lists what it reached and exits non-zero, and partial output passes an
+// is-it-empty test. With `2>/dev/null` swallowing the diagnostic and no `set -e` in the script,
+// that status used to be dropped — a fixture whose compose.yaml was mode 000 and held
+// TOD_TOKEN_PEPER exited 0 printing the usual count, silently skipping the one file the typo was
+// in. This is the direction that catches a typo, so a partial scan is a false clean bill.
+func TestENV001_RefusesAPartialScan(t *testing.T) {
+	t.Parallel()
+
+	// Mode 000 denies nobody when you are root, so there would be no partial read to refuse.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode 000 still reads, so this cannot be provoked")
+	}
+
+	tests := []struct {
+		name    string
+		hide    func(t *testing.T, dir string)
+		wantOut string
+		why     string
+	}{
+		{
+			name: "a deployment file that cannot be opened",
+			hide: func(t *testing.T, dir string) {
+				unreadable(t, filepath.Join(dir, "compose.yaml"))
+			},
+			wantOut: "could not read every file",
+			why:     "grep exits 2 having printed the matches from every OTHER file",
+		},
+		{
+			name: "a directory that cannot be descended",
+			hide: func(t *testing.T, dir string) {
+				sub := filepath.Join(dir, "sub")
+				require.NoError(t, os.Mkdir(sub, 0o700))
+				require.NoError(t, os.WriteFile(filepath.Join(sub, "extra.yaml"),
+					[]byte("TOD_NOT_A_CONSTANT: x\n"), 0o600))
+				unreadable(t, sub)
+			},
+			wantOut: "could not list every file",
+			why:     "find exits non-zero having listed everything it did reach",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "env.example"),
+				[]byte("TOD_ADDR=:8080\n"), 0o600))
+			// The typo this direction exists to catch, in the file that goes unread.
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "compose.yaml"),
+				[]byte("services:\n  s:\n    environment:\n      TOD_TOKEN_PEPER: x\n"), 0o600))
+			tt.hide(t, dir)
+
+			args := []string{
+				filepath.Join("..", "..", "scripts", "deploy-gates.sh"),
+				"env", dir, rootGo(t, "TOD_ADDR"),
+			}
+			cmd := exec.CommandContext(t.Context(), "bash", args...)
+			out, err := cmd.CombinedOutput()
+
+			require.Error(t, err, "ENV001 must refuse rather than pass: %s\n%s", tt.why, out)
+			require.Contains(t, string(out), tt.wantOut)
+		})
+	}
+}
+
+// TestDeployGates_RefuseAPartialRead — the same defect, checked across every mode of the script.
+//
+// It is a class, not an incident: a shell pipeline whose status nobody reads. `|| true` and a bare
+// `$(…)` both discard it, `2>/dev/null` hides the diagnostic, and the script runs without `set -e`,
+// so every one of these scans used to accept whatever it managed to read as the whole input. The
+// guards are only worth having if they fire, so each mode is given a file it may not open and
+// required to refuse.
+func TestDeployGates_RefuseAPartialRead(t *testing.T) {
+	t.Parallel()
+
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode 000 still reads, so this cannot be provoked")
+	}
+
+	const pinned = "FROM node:24-bookworm@sha256:" + sixtyFourHex + "\n"
+	const labelled = "services:\n  s:\n    image: caddy:2@sha256:" + sixtyFourHex + "\n" +
+		"    labels:\n      traefik.http.routers.r.service: svc\n" +
+		"      traefik.http.services.svc.loadbalancer.server.port: \"80\"\n"
+
+	tests := []struct {
+		name    string
+		mode    string
+		files   map[string]string
+		hidden  string
+		wantOut string
+		why     string
+	}{
+		{
+			name:    "IMG001, a Dockerfile it may not open",
+			mode:    "images",
+			files:   map[string]string{"Dockerfile": pinned, "Dockerfile.web": pinned, "compose.yaml": labelled},
+			hidden:  "Dockerfile.web",
+			wantOut: "could not read every Dockerfile",
+			why:     "grep exits 2 having printed the FROM lines of every other Dockerfile",
+		},
+		{
+			name:    "IMG001, a compose file it may not open",
+			mode:    "images",
+			files:   map[string]string{"Dockerfile": pinned, "compose.yaml": labelled, "extra.yaml": labelled},
+			hidden:  "extra.yaml",
+			wantOut: "could not read every compose file",
+			why:     "an unread compose file is an unpinned image nobody sees",
+		},
+		{
+			name:    "LBL001, a compose file it may not open",
+			mode:    "traefik",
+			files:   map[string]string{"compose.yaml": labelled, "extra.yaml": labelled},
+			hidden:  "extra.yaml",
+			wantOut: "could not read every compose file",
+			why:     "a partial read drops a label that DEFINES a name, so a valid router looks dangling",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			for name, body := range tt.files {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
+			}
+			// Readable, it must pass: otherwise the refusal below proves nothing about the guard.
+			args := []string{filepath.Join("..", "..", "scripts", "deploy-gates.sh"), tt.mode, dir}
+			out, err := exec.CommandContext(t.Context(), "bash", args...).CombinedOutput()
+			require.NoError(t, err, "the fixture must be clean before it is broken\n%s", out)
+
+			unreadable(t, filepath.Join(dir, tt.hidden))
+
+			out, err = exec.CommandContext(t.Context(), "bash", args...).CombinedOutput()
+			require.Error(t, err, "%s must refuse rather than pass: %s\n%s", tt.mode, tt.why, out)
+			require.Contains(t, string(out), tt.wantOut)
+		})
+	}
+}
+
+// unreadable strips every permission bit from path and restores them afterwards, because
+// t.TempDir's own cleanup cannot remove a directory it may not descend. Registered after the
+// TempDir call, so it runs before that removal — t.Cleanup is last-in, first-out.
+func unreadable(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(path, 0o000))
+	t.Cleanup(func() {
+		require.NoError(t, os.Chmod(path, info.Mode().Perm()))
+	})
+}
+
 // TestIMG001_FiresOnAnUnpinnedImage — PIN001's reasoning, applied to images.
 func TestIMG001_FiresOnAnUnpinnedImage(t *testing.T) {
 	t.Parallel()
@@ -276,7 +432,7 @@ func TestIMG001_PassesWhatItShould(t *testing.T) {
 
 	// The counts are what prove it READ them: three pinned references and two waived
 	// interpolations. A gate that had stopped matching would report a clean tree with zeroes.
-	require.Equal(t, "3 2", strings.TrimSpace(out))
+	require.Equal(t, "3 2 3", strings.TrimSpace(out))
 }
 
 // sixtyFourHex is a syntactically valid digest. It names nothing; the gate checks shape.
@@ -364,7 +520,7 @@ func TestLBL001_PassesWhatItShould(t *testing.T) {
 	require.Equal(t, 0, code, "LBL001 rejected a configuration that is serving in production\n%s", out)
 	// Two references — the secure router's service, and the plain router's middleware. The count is
 	// what proves it READ them: a scanner that had stopped matching would report a clean tree.
-	require.Equal(t, "2", strings.TrimSpace(out))
+	require.Equal(t, "2 1", strings.TrimSpace(out))
 }
 
 // The vacancy check. Labels with no router reference at all means the pattern stopped matching, and

@@ -52,32 +52,152 @@ case "$mode" in
     fi
 
     findings=""
+
+    # NOTHING BELOW THIS LINE MAY FORK A PROCESS PER VARIABLE NAME.
+    #
+    # Both membership tests used to be a `grep` inside the loop, so the gate forked once per TOD_
+    # name — around twenty-five processes for a repository with ten constants. A fork that fails
+    # under load (EAGAIN, the per-user process limit) makes grep exit non-zero, and a non-zero grep
+    # is INDISTINGUISHABLE from "no match": the gate then reports a variable as undocumented, or as
+    # named-but-not-a-constant, with total confidence. Two balanced runs of 3000 parallel
+    # invocations a side measured 10 and 11 findings that NAMED A VARIABLE before this was
+    # hoisted, and none after; the gate went from 2N+9 processes to a flat 8, so the exposure no
+    # longer grows with the const block.
+    #
+    # It is NOT fork-proof, and do not read it as though it were. `consts=$(grep | grep | sort)`
+    # above is still a fork, and still says "the pattern is wrong" when what actually went wrong
+    # was the fork. What changed is that every remaining failure names THIS GATE — "parsed no
+    # TOD_ constants", "listed no files", "found no TOD_ names" — and none of them can any longer
+    # invent a finding against a variable. Removing the last four would mean reimplementing find,
+    # grep -r and sort in bash, and `sort`'s locale collation is not reproducible in a shell.
+    #
+    # It surfaced far from here. test/repo's TEN001 tests shell out to the whole of
+    # repo-gates.sh, so the failure arrived as a bare `exit status 1` attributed to whichever test
+    # happened to fork the script — MIG001 wore the blame on 2026-08-28, ENV001 on 2026-08-29, and
+    # the TEN001 tests both times. THE TEST NAME IN SUCH A FAILURE IS MEANINGLESS.
+    #
+    # THE DISCRIMINATOR, when this gate goes red and you need to know which kind of red it is:
+    # a real defect names THE SAME variable on every run. A fork failure names a DIFFERENT one
+    # each time, because which name loses the race is which name happened to be in hand when the
+    # limit was hit. Run it a dozen times before you go looking at deploy/env.example.
+    #
+    # So: read each input ONCE, outside the loop, and do the per-name test with shell builtins.
+
     # 1. Every variable the binary reads is written down where an operator will look for it.
     #    Anchored to the start of a line, optionally commented: a name has to be an ENTRY in that
     #    file, not a word somewhere in a paragraph.
+    #
+    #    `^#? ?NAME\b` per name, done without grep. Each line is reduced ONCE to the entry name it
+    #    declares, and the names are then compared as whole strings:
+    #      - `^#? ?` — strip at most one leading `#`, then at most one leading space. Stripping
+    #        greedily is safe because a TOD_ name can begin with neither, so no shorter prefix the
+    #        regex would have tried can match where the greedy one does not.
+    #      - `\b` — take the leading run of word characters. `${line%%[!A-Za-z0-9_]*}` cuts at the
+    #        first character grep would call a word boundary, so `TOD_ADDR` does NOT match an entry
+    #        `TOD_ADDRESS=x`: the run is the longer name, and the two are unequal.
+    #    `|| [ -n "$line" ]` because grep reads a last line with no trailing newline and `read`
+    #    reports failure on it.
+    entries=$'\n'
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line#\#}"
+      line="${line# }"
+      entries="${entries}${line%%[!A-Za-z0-9_]*}"$'\n'
+    done < "$example"
+
     for name in $consts; do
-      grep -qE "^#? ?${name}\b" "$example" \
-        || findings="${findings}  ${name} is read by the binary and is not an entry in ${example}"$'\n'
+      case "$entries" in
+        *$'\n'"$name"$'\n'*) ;;
+        *) findings="${findings}  ${name} is read by the binary and is not an entry in ${example}"$'\n' ;;
+      esac
     done
 
     # 2. And nothing in the deployment files names a variable the binary does not read. This is the
     #    direction that catches a typo: `TOD_TOKEN_PEPER` in a compose file interpolates to empty
     #    and the server refuses to start with a message about a variable that IS set.
+    #
+    #    NEITHER find NOR grep IS ALL-OR-NOTHING, so both are checked on STATUS and not only on
+    #    emptiness. A `grep` that cannot open one file still prints every match from the others and
+    #    exits 2; a `find` that cannot descend one directory still lists the rest. Partial output
+    #    passes an is-it-empty test, `2>/dev/null` swallows the diagnostic, and without `set -e` a
+    #    non-zero status is simply dropped — so the gate reported success over files it never
+    #    opened, and the file it skipped is exactly where the unknown name would be. Watched: a
+    #    fixture whose compose.yaml is mode 000 and holds TOD_TOKEN_PEPER exited 0 printing "1".
     scanned=$(find "$dir" -type f 2>/dev/null | sort)
-    for name in $(grep -rhoE 'TOD_[A-Z0-9_]+' $scanned 2>/dev/null | sort -u); do
+    find_status=$?
+    if [ -z "$scanned" ]; then
+      # A checker that checked nothing must never look like a checker that found nothing — and here
+      # it is worse than that. `grep -r PATTERN` with no file operand reads the CURRENT DIRECTORY,
+      # so an empty list does not scan nothing, it scans the whole repository: the run that put
+      # this guard here reported TOD_NEW_THING and TOD_TOKEN_PEPER, which are fixtures inside
+      # test/repo/deploygates_test.go, as findings against deploy/.
+      printf 'ENV001 listed no files under %s; it must never fall back to scanning the tree\n' "$dir"
+      exit 1
+    fi
+    if [ "$find_status" -ne 0 ]; then
+      printf 'ENV001 could not list every file under %s (find exited %d); a partial list drops the file an unknown name would be in\n' "$dir" "$find_status"
+      exit 1
+    fi
+
+    #    `grep -qx` per name, done without grep. `$consts` is one name per line, so wrapping it in
+    #    newlines at both ends puts a `\n` on both sides of EVERY line; a pattern of the name
+    #    likewise bounded then matches only a whole line, which is what `-x` means. `TOD_ADDR` does
+    #    not match a `TOD_ADDRESS` line, because what follows the name there is `E` and not `\n`.
+    #    The names hold `[A-Z0-9_]` only, so they are neither BRE metacharacters to grep nor glob
+    #    metacharacters to `case`; quoting them inside the pattern keeps that true regardless.
+    #    An empty `$consts` degenerates to `\n\n`, which matches no name — the same answer
+    #    `grep -qx` gives against a single empty line, though the guard above already exited.
+    #
+    #    The scan is hoisted for a second reason: an empty result USED TO PASS. A failed fork left
+    #    the `for` list empty, direction 2 then examined nothing, and the gate exited 0 — a silent
+    #    false negative, which is worse than the red one above. env.example lives inside "$dir" and
+    #    documents every constant, so a run that finds no TOD_ name there did not scan.
+    deploy_names=$(grep -rhoE 'TOD_[A-Z0-9_]+' $scanned 2>/dev/null | sort -u)
+    scan_status=$?
+    # 1 is grep's "nothing matched" and is answered by the emptiness guard below; 2 and above are
+    # read errors, and those are the ones that can arrive WITH output attached.
+    if [ "$scan_status" -gt 1 ]; then
+      printf 'ENV001 could not read every file under %s (the scan exited %d); a partial scan drops exactly the file an unknown name would be in\n' "$dir" "$scan_status"
+      exit 1
+    fi
+    if [ -z "$deploy_names" ]; then
+      printf 'ENV001 found no TOD_ names in %s; it must never pass on a scan that read nothing\n' "$dir"
+      exit 1
+    fi
+
+    consts_set=$'\n'"$consts"$'\n'
+    for name in $deploy_names; do
       case "$name" in
         "${deploy_prefix}"*) continue ;;
       esac
-      echo "$consts" | grep -qx "$name" \
-        || findings="${findings}  ${name} appears in ${dir} and is not a constant in ${rootgo}"$'\n'
+      case "$consts_set" in
+        *$'\n'"$name"$'\n'*) ;;
+        *) findings="${findings}  ${name} appears in ${dir} and is not a constant in ${rootgo}"$'\n' ;;
+      esac
     done
 
     # 3. The prefix means what it says. A TOD_DEPLOY_ name reaching Go source would be a variable
     #    the gate above has been told to ignore AND the binary reads, which is the one combination
     #    that makes the whole convention worthless.
-    leaked=$(grep -rlE "\"${deploy_prefix}[A-Z0-9_]+\"" ./cmd ./internal 2>/dev/null || true)
-    if [ -n "$leaked" ]; then
-      findings="${findings}  ${deploy_prefix}* names the binary must never read appear in: ${leaked}"$'\n'
+    #    Status-checked for the same reason as the scan: `|| true` was swallowing a read error here
+    #    too, and 1 is the CLEAN answer for `grep -l` (nothing matched) while 2 and above are
+    #    errors, so the two cannot be collapsed into "non-zero is fine".
+    #
+    #    Conditioned on the search roots existing because this direction reads the SOURCE TREE,
+    #    relative to the working directory, while the other two read "$dir". Under the fixture
+    #    harness in test/repo the working directory has no ./cmd, so direction 3 has nothing to
+    #    say there and has always been a no-op — pre-existing, and not something this change is
+    #    the place to alter. What the status check buys is the case that matters: a run from the
+    #    repository root, where an unreadable internal/ used to pass as "no leaked names".
+    if [ -d ./cmd ] && [ -d ./internal ]; then
+      leaked=$(grep -rlE "\"${deploy_prefix}[A-Z0-9_]+\"" ./cmd ./internal 2>/dev/null)
+      leak_status=$?
+      if [ "$leak_status" -gt 1 ]; then
+        printf 'ENV001 could not search cmd and internal for %s names (grep exited %d)\n' "$deploy_prefix" "$leak_status"
+        exit 1
+      fi
+      if [ -n "$leaked" ]; then
+        findings="${findings}  ${deploy_prefix}* names the binary must never read appear in: ${leaked}"$'\n'
+      fi
     fi
 
     if [ -n "$findings" ]; then
@@ -87,7 +207,19 @@ case "$mode" in
       printf '  Names beginning with %s are read by docker compose and by the binary never.\n' "$deploy_prefix"
       exit 1
     fi
-    printf '%d\n' "$(echo "$consts" | grep -c .)"
+    # Counted in the shell for the same reason: this is the LAST command of a clean run, so its
+    # status is the gate's. A failed fork here made `printf '%d' ''` print 0 and return 1, which
+    # repo-gates.sh renders as a finding whose entire headline is `0`.
+    count=0
+    while IFS= read -r _; do count=$((count + 1)); done <<< "$consts"
+    # The counts are REPORTED, not just asserted, so a silent drop is visible in the CI log without
+    # anyone having to reproduce it: a run that reads eleven deployment files today and nine
+    # tomorrow says so in the pass line. WEB001 and WEB002 print theirs for the same reason.
+    file_count=0
+    while IFS= read -r _; do file_count=$((file_count + 1)); done <<< "$scanned"
+    name_count=0
+    while IFS= read -r _; do name_count=$((name_count + 1)); done <<< "$deploy_names"
+    printf '%d %d %d\n' "$count" "$file_count" "$name_count"
     ;;
 
   images)
@@ -101,7 +233,31 @@ case "$mode" in
     checked=0
     waived=0
 
-    refs=$(grep -hnE '^[[:space:]]*FROM[[:space:]]' "$dir"/Dockerfile* 2>/dev/null || true)
+    # THE SAME CLASS AS ENV001's SCANS, and the reason this file now states it once: a shell
+    # pipeline whose status nobody reads. `|| true` here swallowed a grep that exited 2 having
+    # printed only part of what it was asked for, and `checked` would still be non-zero, so the
+    # is-anything-there guard below passed while an unread Dockerfile kept its unpinned FROM. The
+    # property needed is not "non-empty", it is NON-EMPTY AND COMPLETE.
+    #
+    # The inputs are resolved with nullglob rather than handed to grep as a glob, so "no Dockerfile
+    # in this directory" is a list of length zero — a legitimate answer — and not a grep that
+    # exited 2 on a filename that never existed. That is what makes the status check meaningful:
+    # every non-zero status left is a real read failure. `traefik` below already did it this way.
+    shopt -s nullglob
+    dockerfiles=("$dir"/Dockerfile*)
+    compose_files=("$dir"/*.yaml "$dir"/*.yml)
+    shopt -u nullglob
+    files_read=$((${#dockerfiles[@]} + ${#compose_files[@]}))
+
+    refs=""
+    if [ ${#dockerfiles[@]} -gt 0 ]; then
+      refs=$(grep -hnE '^[[:space:]]*FROM[[:space:]]' "${dockerfiles[@]}" 2>/dev/null)
+      refs_status=$?
+      if [ "$refs_status" -gt 1 ]; then
+        printf 'IMG001 could not read every Dockerfile in %s (grep exited %d); a partial read drops the FROM it would have caught\n' "$dir" "$refs_status"
+        exit 1
+      fi
+    fi
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       # Drop the line number, the FROM, and any --platform flag; take the reference.
@@ -116,7 +272,15 @@ case "$mode" in
       esac
     done <<< "$refs"
 
-    images=$(grep -hE '^[[:space:]]*image:[[:space:]]' "$dir"/*.yaml "$dir"/*.yml 2>/dev/null || true)
+    images=""
+    if [ ${#compose_files[@]} -gt 0 ]; then
+      images=$(grep -hE '^[[:space:]]*image:[[:space:]]' "${compose_files[@]}" 2>/dev/null)
+      images_status=$?
+      if [ "$images_status" -gt 1 ]; then
+        printf 'IMG001 could not read every compose file in %s (grep exited %d); a partial read drops the image it would have caught\n' "$dir" "$images_status"
+        exit 1
+      fi
+    fi
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       value=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*image:[[:space:]]*//')
@@ -169,7 +333,7 @@ case "$mode" in
       printf '  A tag is mutable. Pin as name:tag@sha256:<digest>, keeping the tag readable.\n'
       exit 1
     fi
-    printf '%d %d\n' "$checked" "$waived"
+    printf '%d %d %d\n' "$checked" "$waived" "$files_read"
     ;;
 
   traefik)
@@ -235,6 +399,14 @@ case "$mode" in
         printf "CHECKED %d\n", n
       }
     ' "${label_files[@]}")
+    awk_status=$?
+    # Same class again. awk prints what it managed to read and exits non-zero on the file it could
+    # not open, and a partial read here drops a LABEL — which is the definition, not the reference,
+    # so the gate would then report a router pointing at nothing as a finding, or miss one.
+    if [ "$awk_status" -ne 0 ]; then
+      printf 'LBL001 could not read every compose file in %s (awk exited %d); a partial read drops the label that defines the name\n' "$dir" "$awk_status"
+      exit 1
+    fi
 
     case "$findings" in
       VACANT | "")
@@ -251,6 +423,6 @@ case "$mode" in
       printf '  the host answers 404 — the same 404 as a host with no router at all.\n'
       exit 1
     fi
-    printf '%s\n' "$count"
+    printf '%s %d\n' "$count" "${#label_files[@]}"
     ;;
 esac
