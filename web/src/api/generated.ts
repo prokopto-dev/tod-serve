@@ -333,6 +333,8 @@ export type InstanceSettingsResponse = {
   name: string
   /** Read-only: it must keep matching every registered redirect URI. Sending it is 422 field_immutable */
   public_url: string
+  /** The settings ledger's chain head. Empty on an instance nothing has changed */
+  revision: string
   /** The instance's stated policy on who may create a circle. Published, not yet enforced: createCircle still requires instance.circle.create */
   self_service_circle_creation: boolean
   timezone: string

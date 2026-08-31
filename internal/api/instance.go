@@ -52,9 +52,10 @@ func (InstanceSettingKey) Schema(huma.Registry) *huma.Schema {
 // two. `updateInstanceSettings` refuses it with `422 field_immutable`, and
 // `instance_setting_change.setting` cannot hold it, so there is no second way in.
 //
-// `updated_at` is part of the representation rather than beside it, because the entity tag is
-// computed over this type: without it, turning a switch on and off again would return the tag a
-// client already holds and the two changes it recorded would be invisible to a conditional read.
+// `updated_at` and `revision` are part of the representation rather than beside it, because the
+// entity tag is computed over this type. `revision` is the load-bearing one: turning a switch on
+// and off again returns every other field here to its old value, and a tag that then repeated
+// would answer `304` to a client whose copy is two ledger rows behind.
 type InstanceSettings struct {
 	// Name is the operator's name for the instance, as `/meta` publishes it.
 	Name string `json:"name"`
@@ -72,6 +73,16 @@ type InstanceSettings struct {
 	SelfServiceCircleCreation bool `json:"self_service_circle_creation" doc:"The instance's stated policy on who may create a circle. Published, not yet enforced: createCircle still requires instance.circle.create"`
 	// UpdatedAt is when the row last moved.
 	UpdatedAt core.Micros `json:"updated_at"`
+	// Revision is the settings ledger's chain head, and it is what makes the entity tag over this
+	// type a version rather than a guess.
+	//
+	// `updated_at` is a CLOCK READING, not a revision: two commits can land in the same
+	// microsecond, and if the second restores what the first replaced then every other field here
+	// returns to its old value — so a tag without this repeats, a revalidating client is told
+	// `304`, and the two ledger rows it should have seen never arrive. A chain hash covers the
+	// row's own ULID and `ux_instance_setting_change_hash` forbids a duplicate, so it cannot
+	// repeat. It is also what lets a reader check the chain for themselves.
+	Revision string `json:"revision" doc:"The settings ledger's chain head. Empty on an instance nothing has changed"`
 }
 
 // InstanceSettingChange is one row of the hash-chained ledger: one setting that moved, and who
@@ -121,6 +132,7 @@ func instanceSettings(s instancesettings.Settings) InstanceSettings {
 		Timezone:                  s.Timezone,
 		SelfServiceCircleCreation: s.SelfServiceCircleCreation,
 		UpdatedAt:                 s.UpdatedAt,
+		Revision:                  s.Revision,
 	}
 }
 
@@ -237,14 +249,6 @@ func (s *Server) registerInstance() error {
 						WithField("body.public_url", "immutable")
 				}
 
-				current, err := s.cfg.InstanceSettings.Current(ctx)
-				if err != nil {
-					return nil, err
-				}
-				if err := RequireIfMatch(in.IfMatch, instanceSettings(current)); err != nil {
-					return nil, err
-				}
-
 				// The principal's IDENTITY, not their membership: an instance decision outlives
 				// any one circle, which is the same reason `instance_grant` is keyed on an
 				// identity (ADR-0012). A service membership has no identity and cannot reach here
@@ -254,11 +258,15 @@ func (s *Server) registerInstance() error {
 					return nil, apierr.New(apierr.CodeUnauthenticated, "no principal on the request")
 				}
 
-				// `current` was read outside the transaction that writes, so a second
-				// administrator can land between the two. That costs a `412` somebody deserved,
-				// and it costs the LEDGER nothing: `Apply` computes each `old_value` from the row
-				// it reads inside its own writing transaction, so a lost race is recorded
-				// truthfully rather than attested wrongly.
+				// **`If-Match` is enforced INSIDE the transaction that writes**, by handing the
+				// comparison to `Apply` rather than making it here against a separate read. Two
+				// administrators holding the same tag would otherwise both pass a check out here,
+				// serialise in the writing transaction, and the loser would commit anyway —
+				// appending a ledger row on a precondition that had stopped holding, while this
+				// operation documents a `412`. A believed audit row is worse than none.
+				//
+				// It costs one read: `Apply` has to read the row it is replacing regardless, so
+				// the tag is computed from that read rather than from an earlier one.
 				updated, recorded, err := s.cfg.InstanceSettings.Apply(ctx,
 					instancesettings.ChangeRequest{
 						Name:                      in.Body.Name,
@@ -266,6 +274,9 @@ func (s *Server) registerInstance() error {
 						SelfServiceCircleCreation: in.Body.SelfServiceCircleCreation,
 						ChangedBy:                 p.IdentityID,
 						Reason:                    in.Body.Reason,
+					},
+					func(current instancesettings.Settings) error {
+						return RequireIfMatch(in.IfMatch, instanceSettings(current))
 					})
 				if err != nil {
 					return nil, err

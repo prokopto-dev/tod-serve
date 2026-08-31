@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -191,10 +190,16 @@ func TestUpdateInstanceSettings_IfMatch_IsRequiredAndChecked(t *testing.T) {
 	})).Changes)
 }
 
-// The entity tag covers `updated_at`, so turning a switch on and off again does NOT return to the
-// tag a client already holds. Without that, a conditional read would answer 304 and the two
-// changes the ledger recorded would be invisible.
-func TestGetInstanceSettings_TheTag_MovesEvenWhenTheValuesReturn(t *testing.T) {
+// Turning a switch on and off again must NOT return to the tag a client already holds, **and the
+// clock is deliberately not advanced between the two writes.**
+//
+// That is the whole test. `updated_at` is in the representation and would carry this on its own as
+// long as time passed, so a version of this that advanced the clock was green over the case that
+// is not at risk. Two commits landing in the same microsecond is the case that is: every field
+// except `revision` returns to its original value, the tag repeats, and a revalidating client is
+// told `304` while its copy is two ledger rows behind. `revision` is the ledger's chain head,
+// which covers each row's own ULID and cannot repeat.
+func TestGetInstanceSettings_TheTag_MovesWhenTwoChangesShareAnInstant(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	session, _ := instanceAdmin(t, h, false)
@@ -202,6 +207,8 @@ func TestGetInstanceSettings_TheTag_MovesEvenWhenTheValuesReturn(t *testing.T) {
 	first := h.do(request{Method: http.MethodGet, Path: instancePath, Session: session})
 	original := first.Header.Get(api.ETagHeader)
 	require.NotEmpty(t, original)
+	require.Empty(t, readInstanceSettings(t, first).Revision,
+		"an instance nothing has changed has no chain head, and must not fabricate one")
 
 	on := h.do(request{
 		Method: http.MethodPatch, Path: instancePath, Session: session,
@@ -210,16 +217,22 @@ func TestGetInstanceSettings_TheTag_MovesEvenWhenTheValuesReturn(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, on.Status, on.Body)
 
-	h.clock.Advance(time.Minute)
+	// No clock advance: both writes carry the same `updated_at`, and the second restores the
+	// value the first replaced.
 	off := h.do(request{
 		Method: http.MethodPatch, Path: instancePath, Session: session,
 		Headers: map[string]string{api.IfMatchHeader: on.Header.Get(api.ETagHeader)},
 		Body:    `{"self_service_circle_creation":false}`,
 	})
 	require.Equal(t, http.StatusOK, off.Status, off.Body)
+
+	restored := readInstanceSettings(t, off)
+	require.False(t, restored.SelfServiceCircleCreation)
+	require.Equal(t, readInstanceSettings(t, first).UpdatedAt, restored.UpdatedAt,
+		"the two writes must share an instant, or this test is not exercising the case it names")
 	require.NotEqual(t, original, off.Header.Get(api.ETagHeader),
-		"the settings returned to their original values and so did the tag; a cached client "+
-			"would be told 304 and never see the two changes the ledger recorded")
+		"every value returned to what it was and the tag came back with them; a revalidating "+
+			"client would be told 304 and never see the two changes the ledger recorded")
 
 	revalidated := h.do(request{
 		Method: http.MethodGet, Path: instancePath, Session: session,
@@ -301,4 +314,50 @@ func TestCreateCircle_SelfServiceOn_StillRequiresTheInstanceGrant(t *testing.T) 
 		Body:    `{"name":"Second","server":"blue"}`,
 	})
 	h.requireProblem(got, apierr.CodeForbidden)
+}
+
+// A tag that a real write has superseded is refused, and the refusal is what makes `If-Match` the
+// retry protection this operation relies on instead of `Idempotency-Key`.
+//
+// Deterministic on purpose. The interesting case — two writers racing on ONE tag — is NOT tested
+// here, and pretending otherwise would be worse than the gap: measured over ten runs with the
+// check moved back outside the writing transaction, a barrier-released 64-caller version of that
+// test went red once. Go schedules the first request through the whole handler before the others
+// have read, so the window the bug needs almost never opens in-process. What actually holds the
+// property is structural rather than observed — `Apply` takes the precondition and evaluates it
+// between its own read and its own write, so a caller CANNOT check outside that transaction
+// without changing a function signature — and `TestApply_ThePrecondition_SeesTheRowTheWriteReplaces`
+// and `TestApply_ARefusingPrecondition_WritesNothing` are the deterministic halves of it.
+func TestUpdateInstanceSettings_ASupersededTag_IsRefusedAndWritesNothing(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	session, _ := instanceAdmin(t, h, false)
+
+	read := h.do(request{Method: http.MethodGet, Path: instancePath, Session: session})
+	require.Equal(t, http.StatusOK, read.Status, read.Body)
+	stale := read.Header.Get(api.ETagHeader)
+	require.NotEmpty(t, stale)
+
+	first := h.do(request{
+		Method: http.MethodPatch, Path: instancePath, Session: session,
+		Headers: map[string]string{api.IfMatchHeader: stale},
+		Body:    `{"name":"Riot"}`,
+	})
+	require.Equal(t, http.StatusOK, first.Status, first.Body)
+
+	// The same tag again. It named a version that no longer exists, so this is the write that must
+	// not land — and it asks for a DIFFERENT value, so a `409 conflict` here would mean the
+	// precondition was never consulted.
+	second := h.do(request{
+		Method: http.MethodPatch, Path: instancePath, Session: session,
+		Headers: map[string]string{api.IfMatchHeader: stale},
+		Body:    `{"name":"Second"}`,
+	})
+	h.requireProblem(second, apierr.CodePreconditionFailed)
+
+	after := readInstanceSettings(t, h.do(request{
+		Method: http.MethodGet, Path: instancePath, Session: session,
+	}))
+	require.Equal(t, "Riot", after.Name, "the refused write landed anyway")
+	require.Len(t, after.Changes, 1, "a refused writer appended to the hash-chained ledger")
 }

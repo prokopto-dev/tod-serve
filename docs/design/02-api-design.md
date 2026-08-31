@@ -392,7 +392,7 @@ lost.
 is its own audit record — the same answer
 [ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md) gave for `instance_grant`,
 rather than a reason to skip the audit — see
-[ADR-0018](../adr/0018-instance-settings-are-mutable-with-a-change-ledger.md).
+[ADR-0019](../adr/0019-instance-settings-are-mutable-with-a-change-ledger.md).
 `getInstanceSettings` returns the whole ledger beside the settings; `updateInstanceSettings`
 returns the rows it just wrote.
 
@@ -407,6 +407,19 @@ re-registering the redirect URI, and restarting — three steps `tod-serve docto
 Neither operation requires `Idempotency-Key`: nothing is appended to the domain, and `If-Match` is
 what makes a retry safe — the second attempt carries the tag of the state the first one replaced
 and is refused with `412`.
+
+**That precondition is decided inside the transaction that writes**, not against an earlier read.
+Compared at handler entry, two administrators holding one tag both pass and both then commit,
+appending a ledger row on a precondition that had stopped holding — and a believed audit row is
+worse than a missing `412`. The comparison is handed to the service, which runs it between its own
+read and its own `UPDATE`.
+
+The tag covers a `revision` — the settings ledger's chain head — as well as the values and
+`updated_at`. `updated_at` is a clock reading rather than a revision: two commits can share a
+microsecond, and if the second restores what the first replaced then every other field returns to
+its old value and the tag repeats. A revalidating client would be told `304` with its copy two
+ledger rows behind. A chain hash covers each row's own ULID and `ux_instance_setting_change_hash`
+forbids a duplicate, so it cannot.
 
 | Method | Path | OperationID | Permission | Scope |
 |---|---|---|---|---|

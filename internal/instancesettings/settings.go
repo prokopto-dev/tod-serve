@@ -2,6 +2,7 @@ package instancesettings
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -74,6 +75,21 @@ type Settings struct {
 	SelfServiceCircleCreation bool
 	// UpdatedAt is when the row last moved.
 	UpdatedAt core.Micros
+	// Revision is the ledger's chain head: the hash of the last change recorded, hex-encoded, and
+	// empty on an instance nothing has changed since setup.
+	//
+	// **It exists because `updated_at` is a clock reading and not a revision, which is a weaker
+	// thing than the entity tag over these settings needs.** Two commits can land in the same
+	// microsecond, and if the second restores the values the first replaced, every other field
+	// here returns to what it was — so a tag computed without this repeats, an `If-None-Match`
+	// client is told `304`, and the two ledger rows it would have shown are invisible. A chain
+	// hash cannot repeat: it covers the row's own ULID, and `ux_instance_setting_change_hash`
+	// makes a duplicate unrepresentable.
+	//
+	// It is not a substitute for the other fields either. First-run setup writes the `instance`
+	// row without appending here, so the values move while this does not — which is why the tag
+	// covers both.
+	Revision string
 }
 
 // Change is one recorded move of one setting.
@@ -98,6 +114,19 @@ type Change struct {
 // ByConsole reports whether this change was written by an operator holding the database rather
 // than by somebody presenting a credential.
 func (c Change) ByConsole() bool { return c.ChangedBy.IsZero() }
+
+// Precondition is a caller's check against the settings as they stand, run INSIDE the transaction
+// that is about to replace them.
+//
+// It is a callback rather than a field on [ChangeRequest] because the check that needs it is an
+// HTTP one — `If-Match` against an entity tag — and this package must not learn how to compute an
+// entity tag to enforce it. What it must do is guarantee WHEN the check runs, and that is what a
+// callback invoked between the read and the write buys: the version compared is the version the
+// `UPDATE` replaces, so two callers holding the same tag cannot both pass.
+//
+// A nil Precondition is no check, which is what `tod-serve` at the console has: an operator holding
+// the database has read nothing to be stale against.
+type Precondition func(Settings) error
 
 // ChangeRequest is a change to apply. A nil field is one the caller did not mention, which is a
 // different thing from a field set to its current value: the second is refused as no change and
@@ -144,13 +173,19 @@ func New(cfg Config) (*Service, error) {
 	return &Service{db: cfg.Store, clock: cfg.Clock, ids: cfg.IDs, log: cfg.Log}, nil
 }
 
-// Current returns the instance settings as they stand.
+// Current returns the instance settings as they stand, including the ledger revision that makes
+// them versionable. See [Settings.Revision] for why the clock reading alone is not one.
 func (s *Service) Current(ctx context.Context) (Settings, error) {
-	row, err := s.db.Queries().GetInstance(ctx)
+	q := s.db.Queries()
+	row, err := q.GetInstance(ctx)
 	if err != nil {
 		return Settings{}, readInstance(err)
 	}
-	return settingsOf(row), nil
+	head, err := chainTail(ctx, q)
+	if err != nil {
+		return Settings{}, err
+	}
+	return settingsOf(row, head), nil
 }
 
 // History returns every change ever recorded, NEWEST first. Nothing prunes it.
@@ -165,16 +200,29 @@ func (s *Service) History(ctx context.Context) ([]Change, error) {
 
 // Apply changes the instance row and appends one ledger row per setting that actually moved.
 //
-// **The read, the update and every append are ONE transaction**, and that is not a tidiness
-// preference. The old value written into the ledger has to be the value the update replaced: read
-// outside the transaction, two administrators toggling at once both record the same "from", and
-// the chain then attests to a history that never happened. [store.DB.InTx] opens `IMMEDIATE`, so
-// the two are serialised rather than racing.
+// **The precondition, the read, the update and every append are ONE transaction**, and that is not
+// a tidiness preference. Two things depend on it, and both were wrong when the check ran outside:
+//
+//   - The old value written into the ledger has to be the value the update replaced. Read outside
+//     the transaction, two administrators toggling at once both record the same "from", and the
+//     chain then attests to a history that never happened.
+//   - A conditional write has to compare the version the `UPDATE` replaces. Checked outside, two
+//     callers holding the SAME entity tag both pass, then serialise here, and the loser commits
+//     anyway — appending a ledger row on a precondition that no longer held, while the API
+//     documents a `412`. That is worse than no precondition, because the row it writes is
+//     believed.
+//
+// [store.DB.InTx] opens `IMMEDIATE`, so the two are serialised rather than racing, and the second
+// caller re-reads inside its own transaction and fails `pre`.
 //
 // A request that would change nothing is refused with [ErrNoChange] rather than committing an
 // empty transaction and answering 200. An audit record whose rows include ones where nothing
-// happened is an audit record somebody has to filter before reading.
-func (s *Service) Apply(ctx context.Context, req ChangeRequest) (Settings, []Change, error) {
+// happened is an audit record somebody has to filter before reading. The precondition runs BEFORE
+// that check, so a stale caller is told their copy is out of date rather than told there is
+// nothing to do — which is the more useful of the two and the only one that is true.
+func (s *Service) Apply(
+	ctx context.Context, req ChangeRequest, pre Precondition,
+) (Settings, []Change, error) {
 	var (
 		out      Settings
 		recorded []Change
@@ -184,7 +232,19 @@ func (s *Service) Apply(ctx context.Context, req ChangeRequest) (Settings, []Cha
 		if err != nil {
 			return readInstance(err)
 		}
-		current := settingsOf(row)
+		// The chain head is read here rather than just before the appends, because it is half of
+		// what `current` is a version OF: the precondition below compares against it.
+		prevHash, err := chainTail(ctx, q)
+		if err != nil {
+			return err
+		}
+		current := settingsOf(row, prevHash)
+
+		if pre != nil {
+			if err := pre(current); err != nil {
+				return err
+			}
+		}
 
 		next, moves, err := plan(current, req)
 		if err != nil {
@@ -210,10 +270,6 @@ func (s *Service) Apply(ctx context.Context, req ChangeRequest) (Settings, []Cha
 				fmt.Errorf("update the instance row: %w", err), "")
 		}
 
-		prevHash, err := chainTail(ctx, q)
-		if err != nil {
-			return err
-		}
 		for _, m := range moves {
 			appended, err := s.append(ctx, q, m, req, prevHash, now)
 			if err != nil {
@@ -226,6 +282,9 @@ func (s *Service) Apply(ctx context.Context, req ChangeRequest) (Settings, []Cha
 			recorded = append(recorded, appended.change)
 		}
 		next.UpdatedAt = now
+		// The revision the caller is handed back is the chain head this call just wrote, so the
+		// entity tag over the response is the tag the next conditional write must present.
+		next.Revision = revisionOf(prevHash)
 		out = next
 		return nil
 	})
@@ -407,14 +466,25 @@ func readInstance(err error) error {
 		fmt.Errorf("read the instance row: %w", err), "")
 }
 
-func settingsOf(row sqlitegen.Instance) Settings {
+func settingsOf(row sqlitegen.Instance, chainHead []byte) Settings {
 	return Settings{
 		Name:                      row.Name,
 		PublicURL:                 row.PublicUrl,
 		Timezone:                  row.Timezone,
 		SelfServiceCircleCreation: row.SelfServiceCircleCreation != 0,
 		UpdatedAt:                 core.Micros(row.UpdatedAt),
+		Revision:                  revisionOf(chainHead),
 	}
+}
+
+// revisionOf renders the ledger's chain head for [Settings.Revision]. An empty ledger has no head
+// and renders empty rather than as a zero hash, because "nothing has been changed here" is a real
+// state and a fabricated hash for it would be indistinguishable from a real one.
+func revisionOf(chainHead []byte) string {
+	if len(chainHead) == 0 {
+		return ""
+	}
+	return hex.EncodeToString(chainHead)
 }
 
 func convert(rows []sqlitegen.InstanceSettingChange) ([]Change, error) {

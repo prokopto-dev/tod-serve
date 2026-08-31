@@ -1,4 +1,4 @@
-# ADR-0018 — Instance settings stay mutable, and their changes are their own ledger
+# ADR-0019 — Instance settings stay mutable, and their changes are their own ledger
 
 **Status:** proposed · **Date:** 2026-08-31 · **Deciders:** owner
 
@@ -32,12 +32,14 @@ rewritten. Splitting them is what lets the second be append-only at all.
 
 `db/schema.hcl` adds `instance_setting_change`, on the canonical §9 instance-scoped allowlist for
 `instance_grant`'s reason — the row is about the whole instance, so a `circle_id` would be a false
-column rather than a missing one. `000011_instance_setting_change_append_only.sql` is the
+column rather than a missing one. `000012_instance_setting_change_append_only.sql` is the
 hand-written trigger pair, and `TestAppendOnly_TriggersFire_AfterAllMigrations` asserts they
 **abort** rather than that they appear in `sqlite_master`. `internal/instancesettings` is the only
-writer: it reads, updates and appends in one `IMMEDIATE` transaction, so each `old_value` is the
-value the update actually replaced, and `TestApply_EveryRow_ChainsOntoTheOneBeforeIt` recomputes
-every hash from the row's own fields rather than trusting the writer.
+writer: it checks the caller's precondition, reads, updates and appends in one `IMMEDIATE`
+transaction, so each `old_value` is the value the update actually replaced and no `If-Match` can be
+decided against a version some other writer has already moved past.
+`TestApply_EveryRow_ChainsOntoTheOneBeforeIt` recomputes every hash from the row's own fields
+rather than trusting the writer.
 
 `setting` is `CHECK`ed against the enum generated from `internal/schemaenum`, and the list is the
 settings an endpoint may move. **`public_url` is not on it.** It must match the redirect URI
@@ -51,9 +53,9 @@ is one `if` from being gone.
 
 The routes carry `instance.security.manage`, not `instance.owner`. Ownership expands to the whole
 instance realm ([ADR-0015](0015-instance-owner-implies-the-instance-realm.md)), so requiring it
-would make delegating this one switch impossible without also handing over the identity providers,
-the catalogue and the ops dashboard — a narrower route reachable only through a wider grant. Every
-owner already holds the narrower key through that expansion.
+would make delegating this one switch impossible without also handing over the providers, the
+catalogue and the ops dashboard — a narrower route behind a wider grant. Every owner already holds
+the narrower key through that expansion.
 
 ### Consequences
 
@@ -70,6 +72,9 @@ owner already holds the narrower key through that expansion.
 - **Bad, because the current value and the ledger can disagree** if anything ever writes the
   `instance` row outside `internal/instancesettings`. First-run setup already does, deliberately,
   and its writes are not in the ledger: `Configured` is the boundary, and nothing enforces it.
+- **Bad, because the ledger head is now load-bearing for caching.** The entity tag over these
+  settings covers it, because `updated_at` is a clock reading and two commits can share a
+  microsecond; a change to how the chain is derived is now also a change to what `304` means.
 
 ### Reversal cost
 

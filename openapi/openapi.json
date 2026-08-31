@@ -1250,6 +1250,10 @@
             "description": "Read-only: it must keep matching every registered redirect URI. Sending it is 422 field_immutable",
             "type": "string"
           },
+          "revision": {
+            "description": "The settings ledger's chain head. Empty on an instance nothing has changed",
+            "type": "string"
+          },
           "self_service_circle_creation": {
             "description": "The instance's stated policy on who may create a circle. Published, not yet enforced: createCircle still requires instance.circle.create",
             "type": "boolean"
@@ -1273,7 +1277,8 @@
           "public_url",
           "timezone",
           "self_service_circle_creation",
-          "updated_at"
+          "updated_at",
+          "revision"
         ],
         "type": "object"
       },
