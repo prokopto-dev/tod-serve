@@ -1250,6 +1250,84 @@ table "circle_provider" {
   strict = true
 }
 
+// circle_discord_channel — a Discord channel bound to ONE circle. It is the disambiguator for the
+// guild-to-many-circles case AND the place the disclosure decision is stored. ADR-0017.
+//
+// The primary key is the CHANNEL, not the pair. `circle_provider` deliberately carries no unique
+// index on `discord_guild_id`, because a guild raiding Blue and Green makes two circles — but a
+// channel bound to two circles would reintroduce exactly the ambiguity this table exists to remove,
+// and would leave a visible answer with no single circle it could have come from.
+//
+// It carries `circle_id NOT NULL REFERENCES circle(id)` — law 4 — rather than going on the
+// instance-scoped allowlist. The resolve reads channel -> circle, so its `WHERE` cannot name
+// `circle_id` and it needs a counted `-- tenancy:` waiver; that is the cheaper cost. Moving the
+// table onto the allowlist instead is the single edit #29 proved makes both tenancy gates quieter
+// with nothing red.
+//
+// `discord_guild_id` is stored so the resolve can refuse an interaction whose guild is not the one
+// the binding was made in. A channel id arrives in a payload this server did not author, and the
+// signature proves who sent it, not what it means.
+//
+// `created_by_membership_id` is a COMPOSITE key into `membership`, which is what makes "an officer
+// of circle A bound a channel to circle B" unrepresentable rather than merely refused.
+//
+// `allow_visible` DEFAULTS TO 0. Discord has no channel-membership API, so nobody — this server
+// included — can enumerate who will read a visible message. Ephemeral-by-default lives in the DDL
+// rather than only in a handler, so a binding written by any path is silent until an officer
+// says otherwise.
+table "circle_discord_channel" {
+  schema = schema.main
+  column "discord_channel_id" {
+    null = false
+    type = text
+  }
+  column "circle_id" {
+    null = false
+    type = text
+  }
+  column "discord_guild_id" {
+    null = false
+    type = text
+  }
+  column "allow_visible" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+  column "created_by_membership_id" {
+    null = false
+    type = text
+  }
+  column "created_at" {
+    null = false
+    type = integer
+  }
+  column "updated_at" {
+    null = false
+    type = integer
+  }
+  primary_key {
+    columns = [column.discord_channel_id]
+  }
+  foreign_key "fk_circle_discord_channel_circle" {
+    columns     = [column.circle_id]
+    ref_columns = [table.circle.column.id]
+  }
+  foreign_key "fk_circle_discord_channel_creator" {
+    columns     = [column.circle_id, column.created_by_membership_id]
+    ref_columns = [table.membership.column.circle_id, table.membership.column.id]
+  }
+  // "Which channels does this circle disclose into?" is the question an officer asks before a
+  // raid, and the one an audit asks afterwards. Without it that read is a table scan.
+  index "ix_circle_discord_channel_circle_id" {
+    columns = [column.circle_id, column.discord_channel_id]
+  }
+  check "ck_circle_discord_channel_allow_visible" {
+    expr = "allow_visible IN (0, 1)"
+  }
+  strict = true
+}
+
 // membership — (circle, identity) -> role and revocation. Mutable, because a role change and a
 // revocation are STATE, not events.
 //

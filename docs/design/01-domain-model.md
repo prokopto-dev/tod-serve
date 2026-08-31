@@ -59,6 +59,7 @@ Every row carries `circle_id NOT NULL REFERENCES circle(id)`.
 |---|---|---|
 | `circle` | mutable | The tenant. |
 | `circle_provider` | mutable | Which instance providers this circle accepts, **and the Discord guild gate**. |
+| `circle_discord_channel` | mutable | A Discord channel bound to **one** circle: the disambiguator for a guild raiding two, and where the disclosure decision is stored. [ADR-0017](../adr/0017-discord-interactions-in-the-binary.md) |
 | `membership` | mutable | `(circle, identity)` → role + revocation. Mutable because a role change and a revocation are *state*, not events. |
 | `invite` | mutable | `uses` and `revoked_at` mutate. |
 | `invite_redemption` | append-only | Who redeemed what, when. |
