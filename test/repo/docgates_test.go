@@ -586,3 +586,75 @@ func TestDOC003_ShellTextIsScanned_NotPatternMatched(t *testing.T) {
 		})
 	}
 }
+
+// A heredoc BODY is data, not code. The scanner reads a line at a time, so without cross-line state
+// `; report NOPE999` inside a `<<EOF` body arrives at the command-position matcher looking exactly
+// like a call at the start of a statement — and was certified.
+//
+// The `wantErr: false` cases are the ones that matter most here, because this fix is far more
+// dangerous than the phantom it closes. `<<` has to be counted as a RUN: scanning `<<<` one
+// character in looks precisely like `<<` followed by a non-`<`, so a naive version treats every
+// here-string as a heredoc and swallows the remainder of the file. Measured, not imagined — it took
+// the repository's 34 real shell gate definitions to zero, including `pass ADR001` on the very line
+// of this script that uses a here-string.
+func TestDOC003_AHeredocBody_IsDataNotACall(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		script  string
+		wantErr bool
+	}{
+		{
+			name:    "a plain heredoc body is data",
+			script:  "cat <<EOF\n; report NOPE999 was removed\nEOF\n",
+			wantErr: true,
+		},
+		{
+			name:    "a quoted delimiter still opens a heredoc",
+			script:  "cat <<'END'\n; report NOPE999 was removed\nEND\n",
+			wantErr: true,
+		},
+		{
+			name:    "the <<- form, whose terminator may be tab-indented",
+			script:  "cat <<-TAB\n\t; report NOPE999 was removed\n\tTAB\n",
+			wantErr: true,
+		},
+		{
+			// A here-string is not a heredoc. This repository uses them, and one carries a real
+			// `pass ADR001`, so mistaking `<<<` for `<<` silences every gate after it.
+			name:    "a here-string is not a heredoc",
+			script:  "grep -q . <<<\"$w\" && report NOPE999 \"a real call on a here-string line\"\n",
+			wantErr: false,
+		},
+		{
+			// The body ends at the delimiter, and code after it is code again.
+			name:    "a call after the heredoc closes is still a call",
+			script:  "cat <<EOF\njust data\nEOF\n[ -n \"$x\" ] && report NOPE999 \"after the body\"\n",
+			wantErr: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(root, "scripts"), 0o750))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "scripts", "gate.sh"),
+				[]byte("#!/usr/bin/env bash\n"+tc.script+"report REAL001 \"keeps the scan non-empty\"\n"),
+				0o600))
+
+			page := filepath.Join(t.TempDir(), "invariants.md")
+			require.NoError(t, os.WriteFile(page, []byte(
+				"| `NOPE999` | the gate under test |\n"+
+					"| `REAL001` | present so the scan is never empty |\n"), 0o600))
+
+			out, err := runDocsCheck(t, page, "TOD_GATE_ROOT="+root)
+			if tc.wantErr {
+				require.Error(t, err, "DOC003 read heredoc data as a call:\n%s", out)
+				require.Contains(t, out, "NOPE999")
+				return
+			}
+			require.NoError(t, err, "DOC003 called a defined gate a phantom:\n%s", out)
+		})
+	}
+}

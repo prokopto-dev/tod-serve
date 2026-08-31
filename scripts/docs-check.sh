@@ -90,27 +90,40 @@ if [ -f docs/concepts/invariants.md ]; then
   # `{ report DOC001 "..."; bad=1; }` inside an `if` — and an anchored pattern silently skipped
   # every one of them, which is precisely the shape of failure this gate exists to catch. The cost
   # of over-matching is a name in a comment asking to be written down, which is the safe direction.
-# strip_shell_text — the executable skeleton of a shell file: quoted text and comments removed,
-# separators and command words kept. One space replaces each string, so `report LIC001 "..."` stays
-# `report LIC001 ` and adjacent words never fuse.
+# strip_shell_text — the executable skeleton of a shell file: quoted text, comments and heredoc
+# BODIES removed, separators and command words kept. One space replaces each string, so
+# `report LIC001 "..."` stays `report LIC001 ` and adjacent words never fuse.
 #
 # It is a character scanner and not a `sed`, because a regex cannot pair quotes it cannot count.
 # `s/"[^"]*"//g` pairs left to right, so on
 #
 #     echo "a\"; report NOPE999 \"b"
 #
-# — one argument to echo, with escaped quotes inside it — it removes `"a\"` and `\"b"` and leaves
-# `echo ; report NOPE999`, handing the command-position grep a semicolon and a call that exist in
-# no shell reading of that line. That certified a phantom.
+# — one argument to echo, escaped quotes and all — it removed `"a\"` and `\"b"` and left
+# `echo ; report NOPE999`, a semicolon and a call present in no shell reading of that line.
 #
-# The scanner honours the three rules a regex kept getting wrong: a backslash escapes the next
-# character, single quotes take no escapes at all, and a `#` opens a comment only at a word
-# boundary — so `${x#prefix}` is an expansion rather than the start of a comment, and a call after
-# one is no longer silently dropped.
+# Four rules, each one a phantom that got through the previous version:
+#
+#   backslash    escapes the next character.
+#   single quote takes no escapes at all; the string ends at the next quote whatever precedes it.
+#   `#`          opens a comment only at a word boundary, so `${x#prefix}` is an expansion — the
+#                regex truncated there and silently LOST any real call later on that line.
+#   heredoc      a `<<` body is data. `<<` is counted as a RUN, because scanning `<<<` one
+#                character in looks exactly like `<<` followed by a non-`<`: that mistook every
+#                here-string in this repository for a heredoc and swallowed the rest of the file,
+#                taking 34 real gate definitions down to zero.
 strip_shell_text() {
   awk '
-    BEGIN { sq = sprintf("%c", 39); dq = sprintf("%c", 34); bs = sprintf("%c", 92) }
+    BEGIN { sq = sprintf("%c", 39); dq = sprintf("%c", 34); bs = sprintf("%c", 92)
+            hd = ""; hdstrip = 0 }
     {
+      if (hd != "") {
+        line = $0
+        if (hdstrip) sub(/^\t+/, "", line)
+        if (line == hd) { hd = ""; hdstrip = 0 }
+        print ""
+        next
+      }
       out = ""; n = length($0); i = 1
       while (i <= n) {
         c = substr($0, i, 1)
@@ -129,6 +142,25 @@ strip_shell_text() {
             i++
           }
           i++; out = out " "; continue
+        }
+        if (c == "<") {
+          k = 0
+          while (i + k <= n && substr($0, i + k, 1) == "<") k++
+          if (k != 2) { for (j = 0; j < k; j++) out = out "<"; i += k; continue }
+          i += 2; hdstrip = 0
+          if (substr($0, i, 1) == "-") { hdstrip = 1; i++ }
+          while (i <= n && substr($0, i, 1) ~ /[ \t]/) i++
+          q = ""
+          if (i <= n && (substr($0, i, 1) == sq || substr($0, i, 1) == dq)) { q = substr($0, i, 1); i++ }
+          word = ""
+          while (i <= n) {
+            d = substr($0, i, 1)
+            if (q != "") { if (d == q) { i++; break } }
+            else { if (d ~ /[ \t;&|<>()]/) break }
+            if (d == bs) { i++; d = substr($0, i, 1) }
+            word = word d; i++
+          }
+          hd = word; out = out " "; continue
         }
         if (c == "#" && (out == "" || substr(out, length(out), 1) ~ /[ \t]/)) break
         out = out c; i++
