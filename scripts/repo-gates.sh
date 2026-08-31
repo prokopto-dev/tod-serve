@@ -576,6 +576,85 @@ else
   vacant WEB003 "a module that holds a resource renders its staleness"
 fi
 
+# --- ENV002 — the operator's `.env` is ignored, and no secret is committed ----------------------
+# `deploy/env.example` opens with "Never commit the real thing", and until this existed that was a
+# wish: nothing in `.gitignore` matched `.env`, so the file every reader of
+# docs/operations/getting-started.md is told to create — holding TOD_TOKEN_PEPPER, TOD_SESSION_KEY,
+# TOD_SETUP_TOKEN and an identity provider's client secret — was one `git add -A` from the history
+# of a public repository. It is the same rule as `*.db`'s "a committed database is a committed
+# credential", applied to the file that makes the database readable.
+#
+# Three checks, because there are three different ways to get this wrong, and the ignore rule only
+# addresses the first:
+#
+#   the rule is missing or too narrow      a `.env` shows up in `git status` and gets added
+#   a `.env` is ALREADY tracked            ignoring it now changes nothing; git keeps it, and
+#                                          `.gitignore` is consulted for untracked paths only
+#   a secret committed under another name  a runbook with a real `openssl rand` in a fenced block
+#
+# The second direction of the first check matters as much as the first: a pattern broad enough to
+# cover `.env` is one character away from hiding `deploy/env.example`, which is the file
+# TestServe_PlaceholderSecret_Refused reads and every runbook points at.
+#
+# test/repo/envgates_test.go is the Go half. This one runs in the CI job with no Go toolchain, so
+# the rule survives a broken build — the same reason WEB001 is a grep beside an ESLint rule.
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  env002=0
+
+  for p in .env deploy/.env deploy/.env.production .env.local; do
+    git check-ignore -q --no-index "$p" \
+      || { report ENV002 "$p is not ignored; a generated secret is one \`git add -A\` from the history"; env002=1; }
+  done
+  for p in deploy/env.example .env.example; do
+    if git check-ignore -q --no-index "$p"; then
+      report ENV002 "$p IS ignored; the shipped example must stay tracked"
+      env002=1
+    fi
+  done
+
+  # Tracked dotenv files. `.example`, `.sample` and `.template` are the committed examples OF one.
+  tracked=$(git ls-files \
+    | grep -E '(^|/)\.env($|\.)' \
+    | grep -vE '\.(example|sample|template)$' || true)
+  if [ -n "$tracked" ]; then
+    report ENV002 "a dotenv file is tracked; \`git rm --cached\` it and ROTATE every secret in it:"
+    printf '  %s\n' $tracked
+    env002=1
+  fi
+
+  # A secret assigned a real-looking literal, in any tracked file. BOTH spellings an assignment
+  # takes here: `NAME=VALUE`, the dotenv and shell form, and `NAME: VALUE`, the Compose form. The
+  # compose files are the ones that actually name these variables, so an equals-only check would
+  # miss a secret hardcoded where the interpolation belongs — the likeliest way one gets committed
+  # in a repository whose deployment is two YAML files.
+  #
+  # The two are matched differently and have to be. After `=` any 16+ character token that is not a
+  # `CHANGE_ME_` placeholder, a `$`-interpolation (deploy/smoke.sh's `$(openssl …)`) or a
+  # `<PLACEHOLDER>` is a finding, because nothing writes `NAME=` except an assignment. After `:`
+  # the value must also LOOK generated — base64 or hex, whole token — because `NAME: words` is how
+  # English writes a label: docs/operations/getting-started.md quotes an error message reading
+  # `…environment.TOD_TOKEN_PEPPER: required variable`, and a bare length rule would fire on it.
+  #
+  # BOTH quote kinds are read on the `:` side, and a bare scalar. Compose accepts all three and
+  # the Go half trims both (`strings.Trim(v, "\"'")`), so a shell half that read only `"` would
+  # let `TOD_SESSION_KEY: 'AAAA…'` through in exactly the CI job that has no Go toolchain to
+  # catch it — which is the half this grep exists to be. Review caught the equals-only version of
+  # this same mistake; this is the second narrowing of the same regex.
+  names='TOD_TOKEN_PEPPER|TOD_SESSION_KEY|TOD_SETUP_TOKEN|TOD_METRICS_TOKEN'
+  secrets=$( { git ls-files -z | xargs -0 grep -InE "($names)=\"?[^ \"\$<]{16,}"
+               git ls-files -z | xargs -0 grep -InE "($names):[[:space:]]+['\"]?([A-Za-z0-9+/]{16,}={0,2}|[0-9a-fA-F]{32,})['\"]?([[:space:]]|\$)"
+             } | grep -v 'CHANGE_ME' | sort -u || true)
+  if [ -n "$secrets" ]; then
+    report ENV002 "a generated secret is committed; remove it and ROTATE it — it is in the history:"
+    printf '%s\n' "$secrets" | head -5
+    env002=1
+  fi
+
+  [ $env002 -eq 0 ] && pass ENV002 "no .env is tracked, every spelling of one is ignored, and no secret is committed"
+else
+  report ENV002 "not a git repository, so nothing can be said about what is tracked"
+fi
+
 # --- SEED001 — no bundled timer data ----------------------------------------------------------
 # Target identity ships as our own literals. Timers are community-derived and disputed; they load
 # from the separate tod-serve-p99-seed repo. See canonical conventions §15.

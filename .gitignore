@@ -29,6 +29,21 @@ node_modules/
 /internal/ui/dist/*
 !/internal/ui/dist/.gitkeep
 
+# The operator's `.env`. It holds TOD_TOKEN_PEPPER, TOD_SESSION_KEY and TOD_SETUP_TOKEN, and
+# `deploy/env.example` — the file it is copied from — says "Never commit the real thing" with
+# nothing behind it. This is that nothing, filled in: the same reasoning as `*.db` above and
+# harder, because the pepper keys every credential hash the database holds.
+#
+# It is `deploy/.env` in practice, not `/.env`: docker compose resolves `.env` from the directory
+# of the first `-f` file, so a `.env` at the repository root is read by nothing. Both are ignored
+# because both get created by somebody following instructions.
+#
+# `deploy/env.example` is NOT matched — its basename has no leading dot — and the negation covers
+# the dotted spelling, so the example this project ships stays committed either way.
+.env
+.env.*
+!.env*.example
+
 # Seed data. Timers load from the separate tod-serve-p99-seed repository and are deliberately not
 # bundled (canonical conventions §15). A seed file in the tree is how that firewall gets breached
 # by accident.
