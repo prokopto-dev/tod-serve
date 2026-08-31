@@ -50,7 +50,13 @@ fi
 # Ids the gates EMITTED. A vacant gate — yellow, "no code to check yet" — printed its id and
 # therefore exists; it is the gate reporting that the code it guards is absent, not the gate being
 # absent. Treating vacant as missing would report a real gate as a phantom.
-emitted=$(sed 's/\x1b\[[0-9;]*m//g' "$CAPTURE" | grep -oE '^[A-Z]+[0-9]{3}' | sort -u)
+# The escape byte is built with printf rather than written `\x1b` in the expression. `\x` is a GNU
+# extension, not POSIX: some BSD seds pass it through as a literal `x`, which leaves the ESC bytes
+# in place, and then the anchored extraction below matches nothing because every coloured line
+# starts with ESC rather than with an id. The failure is total and silent — an empty id set, which
+# the floor turns into "the capture was truncated" and points at the wrong thing entirely.
+ESC=$(printf '\033')
+emitted=$(sed "s/${ESC}\[[0-9;]*m//g" "$CAPTURE" | grep -oE '^[A-Z]+[0-9]{3}' | sort -u)
 
 # Ids the Go side emitted. `go test -list` is the toolchain's own answer to "what tests exist",
 # parsed by the compiler rather than by a pattern, and it is the ONLY source for the five rules that

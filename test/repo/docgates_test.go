@@ -259,3 +259,52 @@ func TestDOC003_EveryTargetFeedingTheCapture_IsAPrerequisiteOfTheCheck(t *testin
 				"runs doc-to-gate without it checks an incomplete capture:\n  doc-to-gate: %s", f, prereqs)
 	}
 }
+
+// The capture is COLOURED. Every gate prints its id wrapped in ANSI, because the scripts colour
+// unconditionally rather than checking for a tty, so what lands in the capture is
+// "\033[32mLIC001    \033[0m 19 runtime module(s)…" and not "LIC001 …".
+//
+// Stripping that is the one step between the capture and every id in it, and its failure mode is
+// total and silent: the extraction is anchored at the start of the line, so ESC bytes left in place
+// mean NOTHING matches. The id set comes back empty, the floor turns that into "the capture was
+// truncated", and the finding points at the wrong thing entirely — a gate blaming the run that
+// produced its input for a defect in how it read it.
+//
+// It was written `\x1b` first, which is a GNU extension rather than POSIX: some BSD seds pass it
+// through as a literal `x`. It happens to work on this machine's sed, which is exactly why it needs
+// a test rather than a developer's word — the escape is now built with printf, and these cases
+// drive coloured lines through the whole extractor rather than through the strip alone.
+func TestDOC003_AColouredCapture_IsReadCorrectly(t *testing.T) {
+	t.Parallel()
+
+	const (
+		green  = "\033[32m"
+		red    = "\033[31m"
+		yellow = "\033[33m"
+		off    = "\033[0m"
+	)
+
+	var b strings.Builder
+	b.WriteString(green + "DOC001    " + off + " 55 error codes\n")
+	b.WriteString(red + "DOC002    " + off + " a finding, but it still emitted its id\n")
+	b.WriteString(yellow + "WEB001    " + off + " no code to check yet\n")
+	// Padding, coloured too, so the floor is cleared only if stripping actually worked.
+	for i := range 40 {
+		b.WriteString(green + "PAD" + string(rune('A'+i%26)) + "999    " + off + " padding\n")
+	}
+	b.WriteString("TestPadding_Exists_SoTheTestScanIsNotEmpty\n")
+
+	capture := filepath.Join(t.TempDir(), "capture.txt")
+	require.NoError(t, os.WriteFile(capture, []byte(b.String()), 0o600))
+
+	page := writePage(t,
+		"| `DOC001` | a gate that passed |\n"+
+			"| `DOC002` | a gate that REPORTED — it still ran, so it still exists |\n"+
+			"| `WEB001` | a gate that is vacant |\n")
+
+	out, err := runDocToGate(t, page, capture)
+	require.NoError(t, err,
+		"DOC003 could not read a coloured capture, which is the only kind `make check` produces:\n%s",
+		out)
+	require.Contains(t, out, "each one emitted by a gate that actually ran")
+}
