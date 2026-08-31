@@ -67,7 +67,8 @@ grant and asserts it reaches none of them.
   the appetite for another one.
 - **Bad, because a future instance-realm permission is granted retroactively** to every holder of
   `instance.owner`, with no new decision and no new row. That is what "derived from `Realm`" buys
-  and it is also what it costs: adding a key widens live grants at deploy time.
+  and it is also what it costs: adding a key widens live grants at deploy time. *(Proposed first
+  exercise: [ADR-0019](0019-an-administrator-sees-a-circles-metadata-never-its-content.md).)*
 - **Bad, because the ledger and the effective set no longer read the same.** `tod-serve instance
   grants` shows one row where the holder has five permissions, so an operator answering "who can do
   X" from that listing is wrong unless they know about the expansion. `doctor` reports the expansion;
