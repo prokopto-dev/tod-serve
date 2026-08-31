@@ -515,3 +515,74 @@ func TestDOC003_AGateNamedAsAnArgument_IsStillAPhantom(t *testing.T) {
 		})
 	}
 }
+
+// The fourth and last reading of "names a gate", and the one that killed the regex outright: an
+// ESCAPED quote. A regex cannot pair quotes it cannot count. `s/"[^"]*"//g` pairs left to right, so
+// on
+//
+//	echo "a\"; report NOPE999 \"b"
+//
+// — one argument to echo, escaped quotes and all — it removes `"a\"` and `\"b"`, leaving
+// `echo ; report NOPE999`. That hands the command-position check a semicolon and a call which exist
+// in no shell reading of the line, and it certified the phantom. The stripper is a character
+// scanner now, and these are the rules it exists to get right.
+//
+// The last case is the one that motivated replacing the regex rather than patching it: a `#` opens
+// a comment only at a word boundary, so `${x#prefix}` is an expansion. The old `s/#.*//` truncated
+// there and silently lost any real call that followed on the same line.
+func TestDOC003_ShellTextIsScanned_NotPatternMatched(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		line    string
+		wantErr bool
+	}{
+		{
+			name:    "an escaped quote does not end the string",
+			line:    `echo "a\"; report NOPE999 \"b"`,
+			wantErr: true,
+		},
+		{
+			name:    "escaped quotes around a whole clause",
+			line:    `echo "he said \"stop\"; report NOPE999 was removed"`,
+			wantErr: true,
+		},
+		{
+			// Single quotes take no escapes at all: the backslash is literal, and the string ends
+			// at the next quote whatever precedes it.
+			name:    "a backslash inside single quotes is literal",
+			line:    `echo 'a\'"'"'; report NOPE999 is still quoted text'`,
+			wantErr: true,
+		},
+		{
+			name:    "a hash inside a parameter expansion is not a comment",
+			line:    `v=${x#prefix}; report NOPE999 "a real call after an expansion"`,
+			wantErr: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(root, "scripts"), 0o750))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "scripts", "gate.sh"),
+				[]byte("#!/usr/bin/env bash\n"+tc.line+"\nreport REAL001 \"keeps the scan non-empty\"\n"),
+				0o600))
+
+			page := filepath.Join(t.TempDir(), "invariants.md")
+			require.NoError(t, os.WriteFile(page, []byte(
+				"| `NOPE999` | the gate under test |\n"+
+					"| `REAL001` | present so the scan is never empty |\n"), 0o600))
+
+			out, err := runDocsCheck(t, page, "TOD_GATE_ROOT="+root)
+			if tc.wantErr {
+				require.Error(t, err,
+					"DOC003 read shell text inside a string as a command:\n%s", out)
+				require.Contains(t, out, "NOPE999")
+				return
+			}
+			require.NoError(t, err, "DOC003 called a defined gate a phantom:\n%s", out)
+		})
+	}
+}

@@ -90,6 +90,54 @@ if [ -f docs/concepts/invariants.md ]; then
   # `{ report DOC001 "..."; bad=1; }` inside an `if` — and an anchored pattern silently skipped
   # every one of them, which is precisely the shape of failure this gate exists to catch. The cost
   # of over-matching is a name in a comment asking to be written down, which is the safe direction.
+# strip_shell_text — the executable skeleton of a shell file: quoted text and comments removed,
+# separators and command words kept. One space replaces each string, so `report LIC001 "..."` stays
+# `report LIC001 ` and adjacent words never fuse.
+#
+# It is a character scanner and not a `sed`, because a regex cannot pair quotes it cannot count.
+# `s/"[^"]*"//g` pairs left to right, so on
+#
+#     echo "a\"; report NOPE999 \"b"
+#
+# — one argument to echo, with escaped quotes inside it — it removes `"a\"` and `\"b"` and leaves
+# `echo ; report NOPE999`, handing the command-position grep a semicolon and a call that exist in
+# no shell reading of that line. That certified a phantom.
+#
+# The scanner honours the three rules a regex kept getting wrong: a backslash escapes the next
+# character, single quotes take no escapes at all, and a `#` opens a comment only at a word
+# boundary — so `${x#prefix}` is an expansion rather than the start of a comment, and a call after
+# one is no longer silently dropped.
+strip_shell_text() {
+  awk '
+    BEGIN { sq = sprintf("%c", 39); dq = sprintf("%c", 34); bs = sprintf("%c", 92) }
+    {
+      out = ""; n = length($0); i = 1
+      while (i <= n) {
+        c = substr($0, i, 1)
+        if (c == bs) { i += 2; continue }
+        if (c == sq) {
+          i++
+          while (i <= n && substr($0, i, 1) != sq) i++
+          i++; out = out " "; continue
+        }
+        if (c == dq) {
+          i++
+          while (i <= n) {
+            d = substr($0, i, 1)
+            if (d == bs) { i += 2; continue }
+            if (d == dq) break
+            i++
+          }
+          i++; out = out " "; continue
+        }
+        if (c == "#" && (out == "" || substr(out, length(out), 1) ~ /[ \t]/)) break
+        out = out c; i++
+      }
+      print out
+    }
+  ' "$@"
+}
+
 # gate_definitions <root> — every gate id DEFINED under <root>, by the FORM a definition takes and
 # never by a mention of one. A stale `# report FOO001` left behind by a deleted gate is a mention;
 # `x && report FOO001 "..."` is a definition. Likewise `^func Test…` rather than a comment naming
@@ -115,7 +163,7 @@ gate_definitions() {
     #
     # Stripping strings before comments also makes the comment rule exact rather than approximate:
     # a `#` inside a string is no longer mistaken for the start of a comment.
-    sed -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$root"/scripts/*.sh 2>/dev/null \
+    strip_shell_text "$root"/scripts/*.sh 2>/dev/null \
       | grep -oE '(^|[;&|(){}]|[[:space:]](then|else|do|elif))[[:space:]]*(report|pass|vacant)[[:space:]]+[A-Z]+[0-9]{3}'
     grep -hoE '^func Test[A-Z]+[0-9]{3}_' "$root"/test/repo/*.go 2>/dev/null
     find "$root/internal/repogate" -maxdepth 1 -name '*.go' ! -name '*_test.go' -exec \
