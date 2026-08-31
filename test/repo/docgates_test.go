@@ -211,3 +211,51 @@ func TestDOC003_TheNotEmittedList_IsCheckedBothWays(t *testing.T) {
 	require.Error(t, err, "the waiver list was not checked in the other direction:\n%s", out)
 	require.Contains(t, out, "remove it from NOT_EMITTED_BY_CHECK")
 }
+
+// Every target that FEEDS the capture must be a prerequisite of the one that CHECKS it.
+//
+// This is the wiring, not the gate, and it failed review: CI's `build / test` job is a different
+// runner from `lint / repo`, so `make doc-to-gate` ran with only `go test -list` in the capture,
+// fell under the floor, and reported every repo-gates id as a phantom. The gate itself was correct
+// throughout — it was being handed an incomplete capture, which is exactly the input its floor
+// exists to refuse, and the floor did refuse it. The wiring is what nobody was checking.
+//
+// Parsed from the Makefile in both directions, so the next gate script cannot be teed into the
+// capture without also being made a prerequisite of the check that reads it. A `tee` without a
+// prerequisite is a gate that silently vanishes from the capture in whichever job runs it second.
+func TestDOC003_EveryTargetFeedingTheCapture_IsAPrerequisiteOfTheCheck(t *testing.T) {
+	t.Parallel()
+
+	root, err := canondoc.RepoRoot()
+	require.NoError(t, err)
+	src, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	require.NoError(t, err)
+
+	// Targets whose recipe appends to the capture, and the prerequisite list of the checker.
+	var feeders []string
+	var current string
+	var prereqs string
+	for _, ln := range strings.Split(string(src), "\n") {
+		if !strings.HasPrefix(ln, "\t") && strings.Contains(ln, ":") && !strings.HasPrefix(ln, "#") &&
+			!strings.HasPrefix(ln, " ") && !strings.Contains(ln, ":=") {
+			current = strings.TrimSpace(strings.SplitN(ln, ":", 2)[0])
+			if current == "doc-to-gate" {
+				prereqs = strings.TrimSpace(strings.SplitN(ln, ":", 2)[1])
+			}
+			continue
+		}
+		if strings.Contains(ln, "tee -a $(GATE_CAPTURE)") && current != "" {
+			feeders = append(feeders, current)
+		}
+	}
+
+	require.NotEmpty(t, feeders,
+		"no target tees into $(GATE_CAPTURE); the parse is wrong, or the capture is fed by nothing")
+	require.NotEmpty(t, prereqs, "doc-to-gate declares no prerequisites")
+
+	for _, f := range feeders {
+		require.Contains(t, strings.Fields(prereqs), f,
+			"%s appends to the gate capture but is not a prerequisite of doc-to-gate, so a job that "+
+				"runs doc-to-gate without it checks an incomplete capture:\n  doc-to-gate: %s", f, prereqs)
+	}
+}

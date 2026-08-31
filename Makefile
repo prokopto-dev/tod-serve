@@ -277,8 +277,15 @@ gate-capture-reset:
 # -- are internal/repogate rules that no shell run ever prints. `go test -list` is the toolchain's
 # own answer to "what tests exist", and without it those five would be reported as phantoms. That is
 # why this lives in CI's `build / test` job and NOT in `lint / repo`, which deliberately has no Go.
+#
+# It DEPENDS on the targets that emit, rather than assuming somebody ran them first. CI's
+# `build / test` job is a different runner from `lint / repo`, so the shell gates have not run in
+# this workspace: without these prerequisites the capture holds only `go test -list`, falls under
+# the floor, and reports every repo-gates id as a phantom. Make considers each target at most once
+# per invocation, so `make check` still runs them exactly once and this only adds the ones a
+# standalone `make doc-to-gate` would otherwise be missing.
 .PHONY: doc-to-gate
-doc-to-gate:
+doc-to-gate: gate-capture-reset lint-repo docs-check licence-check
 	@mkdir -p $(BUILD_DIR)
 	@$(GO) test -list '.*' $(PKG) >> $(GATE_CAPTURE)
 	@TOD_GATE_CAPTURE=$(GATE_CAPTURE) bash scripts/doc-to-gate.sh
