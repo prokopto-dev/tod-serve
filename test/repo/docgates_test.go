@@ -58,6 +58,12 @@ func TestDOC003_APhantomGate_IsReported(t *testing.T) {
 // and this is also what pins the two conventions DOC003 relies on: a BARE id is prose about a dead
 // gate and must not be a finding, and an algorithm name that happens to share the shape is not a
 // gate at all.
+//
+// The bare id below is NOPE999 — the same phantom TestDOC003_APhantomGate_IsReported requires a
+// finding for — so the pair differs in the backticks and nothing else, and the backtick is proved
+// to be what decides. An id that merely happens to exist would pass this whether the rule worked
+// or not: SQL002 was that id until it was written, at which point this assertion became vacuous
+// without going red, which is the failure a false-positive half is least able to notice.
 func TestDOC003_TheRealPage_Passes(t *testing.T) {
 	t.Parallel()
 
@@ -69,7 +75,7 @@ func TestDOC003_TheRealPage_Passes(t *testing.T) {
 	require.NoError(t, os.WriteFile(page, []byte(
 		// A live gate, a dead one named bare, and an algorithm that looks like an id.
 		"| `DOC003` | a real gate |\n"+
-			"| SQL002 | a gate that was never written, discussed rather than claimed |\n"+
+			"| NOPE999 | a gate nobody wrote, discussed rather than claimed |\n"+
 			"| `SHA256` | the hash, not a gate |\n"), 0o600))
 
 	out, err = runDocsCheck(t, page)
@@ -85,16 +91,17 @@ func runDocsCheck(t *testing.T, page string) (string, error) {
 	root, err := canondoc.RepoRoot()
 	require.NoError(t, err)
 
-	cmd := exec.Command("bash", filepath.Join(root, "scripts", "docs-check.sh"))
+	cmd := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts", "docs-check.sh"))
 	cmd.Dir = root
 	if page != "" {
 		cmd.Env = append(os.Environ(), "TOD_INVARIANTS_PAGE="+page)
 	}
-	out, err := cmd.CombinedOutput()
+	// The exit code is discarded deliberately: DOC002 fails whenever the substitute page does not
+	// register every gate in the repository, which every fixture here does not, so a non-zero exit
+	// says nothing about DOC003's verdict. Only the DOC003 lines are this test's business, and they
+	// are both what is returned and what the verdict is read from.
+	out, _ := cmd.CombinedOutput()
 
-	// DOC002 fails whenever the substitute page does not register every gate in the repository,
-	// which every fixture here deliberately does not. Only the DOC003 lines are this test's
-	// business, so they are what is returned.
 	var doc003 []string
 	for _, ln := range strings.Split(string(out), "\n") {
 		if strings.Contains(ln, "DOC003") || strings.Contains(ln, "NOPE999") {

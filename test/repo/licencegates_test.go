@@ -113,7 +113,7 @@ func TestLIC001_TheClassifier_TellsLicencesApart(t *testing.T) {
 			f := filepath.Join(t.TempDir(), "LICENSE")
 			require.NoError(t, os.WriteFile(f, []byte(tc.text), 0o600))
 
-			out, err := exec.Command("bash", gateScript(t), "classify", f).Output()
+			out, err := exec.CommandContext(t.Context(), "bash", gateScript(t), "classify", f).Output()
 			require.NoError(t, err)
 			require.Equal(t, tc.want, strings.TrimSpace(string(out)))
 		})
@@ -126,7 +126,8 @@ func TestLIC001_TheClassifier_TellsLicencesApart(t *testing.T) {
 func TestLIC001_ACopyleftDependency_IsReported(t *testing.T) {
 	t.Parallel()
 
-	out, err := exec.Command("bash", gateScript(t), "classify", agplFixture(t)).Output()
+	out, err := exec.CommandContext(t.Context(),
+		"bash", gateScript(t), "classify", agplFixture(t)).Output()
 	require.NoError(t, err)
 	require.Equal(t, "AGPL", strings.TrimSpace(string(out)),
 		"the classifier must name AGPL before the allow-list can refuse it")
@@ -153,7 +154,7 @@ func TestLIC001_ACopyleftDependency_IsReported(t *testing.T) {
 func TestLIC001_WithoutAToolchain_FailsRatherThanSkipping(t *testing.T) {
 	t.Parallel()
 
-	cmd := exec.Command("bash", gateScript(t))
+	cmd := exec.CommandContext(t.Context(), "bash", gateScript(t))
 	cmd.Env = append(os.Environ(), "PATH=/nonexistent")
 	out, err := cmd.CombinedOutput()
 

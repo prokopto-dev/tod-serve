@@ -114,19 +114,21 @@ fi
 
 # --- DOC003 — every gate invariants.md NAMES actually exists ----------------------------------
 # The reverse of DOC002, and the direction nothing checked until three phantoms were found by hand:
-# `SQL002`, `scripts/licence-gate.sh` and `TestAuthFlow_RateLimitedCaller_CreatesNoRows` were all
-# named as enforcement, all believed, and all absent. DOC002 polices gate-to-doc; without this,
-# doc-to-gate was policed by nobody, so invariants.md could promise a mechanism that does not exist
-# and CI stayed green.
+# SQL002, `scripts/licence-gate.sh` and `TestAuthFlow_RateLimitedCaller_CreatesNoRows` were all
+# named as enforcement, all believed, and all absent. SQL002 has since been written — it is
+# `internal/repogate/handle.go` — and the other two ship with this gate. DOC002 polices gate-to-doc;
+# without this, doc-to-gate was policed by nobody, so invariants.md could promise a mechanism that
+# does not exist and CI stayed green.
 #
 # DOC001 is NOT this check despite the name suggesting a pair — it compares docs/errors/ against the
 # error codes in the API design and never looks at a gate id.
 #
 # Only BACKTICKED ids count. A gate id in this repository is always written `LIKE001` in prose, so
-# a backtick is the marker for "this gate exists" — which is what lets invariants.md discuss a
-# DEAD id (SQL002, written bare) without the gate treating it as a live claim. The
-# algorithm names below are skipped because they share the shape and are not gates; the list is
-# deliberately short, and adding to it is a decision somebody has to make on purpose.
+# a backtick is the marker for "this gate exists", and a bare id is the escape prose needs in order
+# to NAME a gate without claiming one — which is how a row records a phantom it has just found
+# instead of being unable to mention it. The algorithm names below are skipped because they share
+# the shape and are not gates; the list is deliberately short, and adding to it is a decision
+# somebody has to make on purpose.
 NOT_GATES='SHA256 SHA384 SHA512 RS256 RS384 RS512 ES256 ES384 ES512 PS256 PS384 PS512 HS256 HS384 HS512'
 
 # Overridable so test/repo can point this at a page that names a gate nobody wrote and require the
