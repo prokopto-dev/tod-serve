@@ -19,6 +19,7 @@ import { api, type AdminIdentityProvider, type Circle, type ProviderView, toErro
 import { usePrincipal } from '../app/principal'
 import { useResource } from '../app/useResource'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
+import { DiscordMark } from '../components/ProviderButton'
 import { RevocationBanner } from '../components/RevocationBanner'
 import { Banner, Button, Card, Empty, Field, Input, Mono, Select, Spinner, Td, Th } from '../components/ui'
 
@@ -154,8 +155,15 @@ function ProviderRow({
       <Td>
         <Mono>{provider.key}</Mono>
       </Td>
+      {/* The same mark the join page brands its button with, from the same component and driven
+          off the same field, so an operator can see which row is the one members will meet as a
+          Discord button. Blurple on the console's own surface rather than white on blurple: both
+          are sanctioned single-colour versions of the artwork, and this one is not a control. */}
       <Td className="text-ink-400" title="Immutable: kind decides verifiable_subject.">
-        {provider.kind}
+        <span className="inline-flex items-center gap-1.5">
+          {provider.kind === 'discord' && <DiscordMark className="text-discord-blurple" />}
+          {provider.kind}
+        </span>
       </Td>
       <Td className="text-ink-100">{provider.display_name}</Td>
       <Td>
@@ -452,6 +460,7 @@ function CircleProvidersCard({
             <div key={provider.id} className="rounded border border-ink-700 bg-ink-850 p-3">
               <label className="flex items-center gap-2 text-xs text-ink-100">
                 <input type="checkbox" checked={Boolean(chosen)} onChange={() => toggle(provider)} />
+                {provider.kind === 'discord' && <DiscordMark className="text-discord-blurple" />}
                 {provider.display_name} <Mono>{provider.key}</Mono>
                 {!provider.enabled && (
                   <span className="text-[10px] tracking-wide text-amber-400 uppercase">
