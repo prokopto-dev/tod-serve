@@ -63,6 +63,16 @@ jobs:
       - run: make vet
       - run: make build
       - run: make test
+      # DOC003 is here and not in `lint / repo`, deliberately. It verifies invariants.md against
+      # what the gates EMITTED, and five of them -- CLOCK001, RAND001, ROUTE001, SLEEP001, SQL002 --
+      # are internal/repogate rules that no shell run prints; `go test -list` is the only source for
+      # those, and this is the job with a Go toolchain. The consequence, stated rather than left to
+      # be discovered: a phantom id added to invariants.md now goes red HERE rather than in the fast
+      # lint job. `ci-required` covers both, so nothing escapes -- but the fast job no longer
+      # catches it, and that is a real weakening worth writing down. DOC002, the gate -> doc
+      # direction, stays in `lint / repo` unchanged and needs no Go.
+      - name: Every mechanism the invariants page names actually exists
+        run: make doc-to-gate
       # AFTER the build, and in this job rather than `lint / repo`, because it resolves every
       # `tod-serve` verb the runbooks name by running the command tree — a check against a `Use:`
       # field grepped out of the source would be a second source of truth, and would pass a nested

@@ -16,6 +16,16 @@ GO        ?= go
 PKG       := ./...
 BIN       := tod-serve
 BUILD_DIR ?= ./bin
+
+# GATE_CAPTURE — what the gates EMITTED during this run of `make check`, which is what DOC003
+# verifies docs/concepts/invariants.md against. Written under $(BUILD_DIR), which is gitignored, and
+# NEVER a checked-in artefact: a capture that can go stale is a second source of truth, and removing
+# the second source of truth is the whole point of reading emissions rather than source text.
+#
+# Every target that emits a gate id appends to it. A new gate script must be teed here too — and if
+# somebody forgets, DOC003 reports that gate as a phantom, loudly, rather than quietly not covering
+# it. The failure lands in the right direction by construction.
+GATE_CAPTURE ?= $(BUILD_DIR)/gate-emissions.txt
 DB_PATH   ?= ./tod.db
 
 # The version the binary reports, and the link flags that stamp it.
@@ -128,7 +138,8 @@ lint-web:
 ## lint-repo: repository gates (PIN001, TEN001, LOG001, MIG001, SQLC001, NET001, WEB001, CLOCK001, ...)
 .PHONY: lint-repo
 lint-repo:
-	@bash scripts/repo-gates.sh
+	@mkdir -p $(BUILD_DIR)
+	@set -o pipefail; bash scripts/repo-gates.sh | tee -a $(GATE_CAPTURE)
 
 ## test: the unit suite
 .PHONY: test
@@ -223,7 +234,8 @@ smoke:
 ## docs-check: every error code has a docs page, every ADR is within budget
 .PHONY: docs-check
 docs-check:
-	@bash scripts/docs-check.sh
+	@mkdir -p $(BUILD_DIR)
+	@set -o pipefail; bash scripts/docs-check.sh | tee -a $(GATE_CAPTURE)
 
 ## verify-commands: every `make` target and `tod-serve` verb the docs name actually exists
 # Two documents, two failure modes. A renamed Makefile target leaves stale prose; a runbook step
@@ -242,11 +254,34 @@ verify-commands:
 # full suite.
 .PHONY: licence-check
 licence-check:
-	@bash scripts/licence-gate.sh
+	@mkdir -p $(BUILD_DIR)
+	@set -o pipefail; bash scripts/licence-gate.sh | tee -a $(GATE_CAPTURE)
 
 ## check: what CI runs
 .PHONY: check
-check: verify-commands licence-check docs-check lint vet build test
+check: gate-capture-reset verify-commands licence-check docs-check lint vet build test doc-to-gate
+
+## gate-capture-reset: start this run's gate capture empty
+# `make check` must never verify against a capture left by an earlier run: that is precisely the
+# stale second source of truth this design removes.
+.PHONY: gate-capture-reset
+gate-capture-reset:
+	@mkdir -p $(BUILD_DIR)
+	@: > $(GATE_CAPTURE)
+
+## doc-to-gate: DOC003 — every mechanism invariants.md names actually exists
+# It reads what the gates EMITTED rather than what their source contains, so no amount of quoting,
+# escaping or heredoc nesting can fake a gate into existence. See scripts/doc-to-gate.sh.
+#
+# It needs the Go toolchain, because five gates -- CLOCK001, RAND001, ROUTE001, SLEEP001 and SQL002
+# -- are internal/repogate rules that no shell run ever prints. `go test -list` is the toolchain's
+# own answer to "what tests exist", and without it those five would be reported as phantoms. That is
+# why this lives in CI's `build / test` job and NOT in `lint / repo`, which deliberately has no Go.
+.PHONY: doc-to-gate
+doc-to-gate:
+	@mkdir -p $(BUILD_DIR)
+	@$(GO) test -list '.*' $(PKG) >> $(GATE_CAPTURE)
+	@TOD_GATE_CAPTURE=$(GATE_CAPTURE) bash scripts/doc-to-gate.sh
 
 ## clean: remove build output
 .PHONY: clean
