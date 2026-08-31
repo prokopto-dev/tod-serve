@@ -75,6 +75,16 @@ func TestRouteRegistry_ConditionalRead_MatchesWhatTheRouteActuallyDoes(t *testin
 			return api.BasePath + "/circles/" + circleID.String() + "/tods",
 				request{Token: token}
 		},
+		api.OpGetInstanceSettings: func(t *testing.T, h *harness) (string, request) {
+			t.Helper()
+			// Driven against a REAL instance row and a real grant. Without the row the operation
+			// answers 409 and the revalidation below would compare two refusals, which is the
+			// "green over nothing" this file exists to refuse.
+			h.seedInstance(false)
+			session, owner := h.adminSession(t)
+			h.grantInstance(owner, authz.PermissionInstanceSecurityManage)
+			return api.BasePath + "/admin/instance", request{Session: session}
+		},
 		api.OpGetTargetState: func(t *testing.T, h *harness) (string, request) {
 			t.Helper()
 			circleID := h.seedCircle("Riot")

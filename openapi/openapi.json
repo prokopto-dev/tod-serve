@@ -1171,6 +1171,117 @@
         ],
         "type": "object"
       },
+      "InstanceSettingChange": {
+        "additionalProperties": false,
+        "properties": {
+          "by_console": {
+            "type": "boolean"
+          },
+          "changed_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "changed_by_identity_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "new_value": {
+            "type": "string"
+          },
+          "old_value": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "setting": {
+            "description": "Which instance setting a ledger row is about.",
+            "enum": [
+              "self_service_circle_creation",
+              "name",
+              "timezone"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "setting",
+          "old_value",
+          "new_value",
+          "changed_by_identity_id",
+          "by_console",
+          "reason",
+          "changed_at"
+        ],
+        "type": "object"
+      },
+      "InstanceSettingsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "changes": {
+            "description": "Every recorded change, newest first",
+            "items": {
+              "$ref": "#/components/schemas/InstanceSettingChange"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "public_url": {
+            "description": "Read-only: it must keep matching every registered redirect URI. Sending it is 422 field_immutable",
+            "type": "string"
+          },
+          "revision": {
+            "description": "The settings ledger's chain head. Empty on an instance nothing has changed",
+            "type": "string"
+          },
+          "self_service_circle_creation": {
+            "description": "The instance's stated policy on who may create a circle. Published, not yet enforced: createCircle still requires instance.circle.create",
+            "type": "boolean"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "updated_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "changes",
+          "as_of",
+          "name",
+          "public_url",
+          "timezone",
+          "self_service_circle_creation",
+          "updated_at",
+          "revision"
+        ],
+        "type": "object"
+      },
       "Invite": {
         "additionalProperties": false,
         "properties": {
@@ -5032,6 +5143,33 @@
         },
         "type": "object"
       },
+      "UpdateInstanceSettingsInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 80,
+            "type": "string"
+          },
+          "public_url": {
+            "description": "Rejected with 422 field_immutable: it must keep matching every registered redirect URI",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why, recorded in the hash-chained ledger and shown in every listing",
+            "maxLength": 280,
+            "type": "string"
+          },
+          "self_service_circle_creation": {
+            "description": "Let any authenticated principal create a circle",
+            "type": "boolean"
+          },
+          "timezone": {
+            "description": "IANA timezone, display only",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "UpdateMemberInputBody": {
         "additionalProperties": false,
         "properties": {
@@ -5281,7 +5419,7 @@
               "requires_step_up": true,
               "roles": [],
               "scopes": [],
-              "summary": "Add, change or remove the instance's identity providers"
+              "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
             }
           ],
           "requires_step_up": true
@@ -5394,7 +5532,7 @@
               "requires_step_up": true,
               "roles": [],
               "scopes": [],
-              "summary": "Add, change or remove the instance's identity providers"
+              "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
             }
           ],
           "requires_step_up": true
@@ -5511,7 +5649,7 @@
               "requires_step_up": true,
               "roles": [],
               "scopes": [],
-              "summary": "Add, change or remove the instance's identity providers"
+              "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
             }
           ],
           "requires_step_up": true
@@ -5672,7 +5810,272 @@
               "requires_step_up": true,
               "roles": [],
               "scopes": [],
-              "summary": "Add, change or remove the instance's identity providers"
+              "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      }
+    },
+    "/api/v1/admin/instance": {
+      "get": {
+        "operationId": "getInstanceSettings",
+        "parameters": [
+          {
+            "description": "Revalidate a cached copy",
+            "in": "header",
+            "name": "If-None-Match",
+            "schema": {
+              "description": "Revalidate a cached copy",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceSettingsResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The cached copy is still current. No body; the ETag is repeated so the next revalidation has something to send.",
+            "headers": {
+              "ETag": {
+                "description": "The entity tag of the representation that was not modified",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "The instance-wide settings, and the hash-chained ledger of every change to them",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": true,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "instance.security.manage",
+              "realm": "instance",
+              "requires_step_up": true,
+              "roles": [],
+              "scopes": [],
+              "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
+            }
+          ],
+          "requires_step_up": true
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
+      },
+      "patch": {
+        "operationId": "updateInstanceSettings",
+        "parameters": [
+          {
+            "description": "The ETag a previous read returned",
+            "in": "header",
+            "name": "If-Match",
+            "schema": {
+              "description": "The ETag a previous read returned",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateInstanceSettingsInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceSettingsResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition Failed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition Required"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Change the instance-wide settings, recording each change in the ledger",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": true,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": true,
+        "x-tod-permission": {
+          "kind": "permission",
+          "any_of": [
+            {
+              "key": "instance.security.manage",
+              "realm": "instance",
+              "requires_step_up": true,
+              "roles": [],
+              "scopes": [],
+              "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
             }
           ],
           "requires_step_up": true

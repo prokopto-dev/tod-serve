@@ -810,6 +810,26 @@ next request. Tell your officers that once, out loud.
 
 ---
 
+## Changing instance policy afterwards
+
+The wizard's answers are not final. **Console → Instance admin → Instance policy** reads and
+writes them, behind `instance.security.manage` and a re-authenticated session — the same door the
+identity providers sit behind, because whoever can add a `local` provider can already let anybody
+in.
+
+| Setting | Changeable | What it decides |
+|---|---|---|
+| **Self-service circle creation** | Yes | This instance's stated answer to "who may create a circle here". It is what `/meta` publishes and what a client reads to decide whether to offer the option. **It is published, not yet enforced:** `createCircle` still requires `instance.circle.create`, whichever way this is set |
+| **Name** | Yes | What `/meta`, the join page and the console call this instance |
+| **Timezone** | Yes | Display only. Every countdown anywhere is a signed offset from a response's `as_of`, never a local clock |
+| **Public URL** | **No** | It must match the redirect URI registered with each provider *exactly*, and it is read at startup from `$TOD_PUBLIC_URL`. Changing it means changing that variable, re-registering the URI with the provider, and restarting — [A4](#a4-decide-the-origin-now-not-later). The API refuses the field rather than accepting a change that would break sign-in at some later restart |
+
+Every change is written to `instance_setting_change`: append-only, hash-chained, and rendered under
+the form, so "who turned self-service on, and when" is a question the console answers. Nothing
+prunes it.
+
+---
+
 ## Starting over
 
 For an instance that is half-configured, misconfigured, or that you want to rebuild from zero.

@@ -25,7 +25,15 @@ type ServerMeta struct {
 	// Configured says whether an instance row exists. A binary pointed at a fresh database answers
 	// honestly rather than pretending to be an unnamed instance.
 	Configured bool `json:"configured"`
-	// SelfServiceCircleCreation says whether a caller may create a circle without an operator.
+	// SelfServiceCircleCreation is the instance's stated policy on who may create a circle, and
+	// it is what a client reads to decide whether to offer the option at all.
+	//
+	// **It is published, not enforced, and the gap is stated rather than implied.**
+	// `createCircle` declares `instance.circle.create` in the route registry unconditionally, and
+	// the middleware checks that before any handler runs — nothing on that path reads this row.
+	// So turning it on moves this field and does not widen who the API accepts a circle from.
+	// `TestCreateCircle_SelfServiceOn_StillRequiresTheInstanceGrant` pins that, so whoever wires
+	// the enforcement meets a red test rather than a field they assumed already worked.
 	SelfServiceCircleCreation bool `json:"self_service_circle_creation"`
 	// SetupAvailable says whether first-run setup can still be run: `TOD_SETUP_TOKEN` is set AND
 	// no identity administers this instance yet. It is what the console routes on.

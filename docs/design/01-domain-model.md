@@ -42,6 +42,7 @@ it is a reviewed decision.
 | `identity` | append-mostly | `(provider_id, subject)` → a person, instance-wide. Carries `blocked_at`. |
 | `identity_link` | append-only | Officer-asserted equivalence between two **verifiable** identities. |
 | `instance_grant` | append-only | One instance-level authorization **decision** — `granted` or `revoked` — on an identity. Hash-chained; it is its own audit record, because `audit_log.circle_id` is `NOT NULL`. [ADR-0012](../adr/0012-instance-grants-are-a-capability-ledger.md) |
+| `instance_setting_change` | append-only | One change to an instance-wide policy switch: which `setting`, its `old_value` and `new_value`, who and when. Hash-chained, and its own audit record for the same reason `instance_grant` is. [ADR-0020](../adr/0020-instance-settings-are-mutable-with-a-change-ledger.md). `public_url` is not a value `setting` can hold — it is immutable over the API, because it must keep matching every registered redirect URI. |
 | `auth_flow` | mutable, prunable | One in-flight OAuth authorization: `state`, the **server-side** PKCE verifier, TTL. |
 | `credential_ticket` | mutable, prunable | A verified subject, single-use, 120-second TTL, between the OAuth callback and `/join` or `/sessions`. |
 | `raid_target` | mutable | Catalogue: mob identity. Server-agnostic. |

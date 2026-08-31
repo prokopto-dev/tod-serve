@@ -188,7 +188,7 @@ func newE2EServerWith(
 	server, err := api.New(api.Config{
 		Version: "0.0.0-e2e", Store: db, Auth: svc.authn, Sessions: svc.codec,
 		Circles: svc.circles, Members: svc.members, Invites: svc.invites,
-		Identities: svc.identity, Catalogue: svc.catalogue,
+		Identities: svc.identity, Catalogue: svc.catalogue, InstanceSettings: svc.settings,
 		Tods: svc.tods, States: svc.states, Invalidator: svc.states,
 		Clock: svc.clock, Log: log, IDs: svc.ids,
 		Setup: svc.setup, SetupToken: api.SetupConfig{Token: setupToken},

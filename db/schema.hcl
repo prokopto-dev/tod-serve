@@ -499,6 +499,110 @@ table "instance_grant" {
   strict = true
 }
 
+// instance_setting_change - the record of who moved an instance-wide policy switch, and when.
+// ADR-0020.
+//
+// Instance-scoped by construction, for exactly instance_grant's reason: the row is about the
+// singleton `instance` row and the whole instance, so a `circle_id` would be a false statement
+// rather than a missing one. It is on the canonical section 9 allowlist and in INSTANCE_SCOPED in
+// scripts/repo-gates.sh, which one test compares.
+//
+// APPEND-ONLY AND HASH-CHAINED, because `audit_log.circle_id` is NOT NULL and an instance policy
+// change belongs to no circle. That is the same wall ADR-0012 hit, and this is the same answer:
+// rather than skip the audit because the table shape is inconvenient, the ledger is its own audit
+// record. `instance_grant` could not hold these rows either - it is keyed on (identity,
+// permission) and answers "who may do what", while this answers "what did somebody change".
+//
+// The `instance` row itself stays MUTABLE, and the pair is the point: current state is one cheap
+// read for `/meta` and every authorization check, and the history of how it got there is a
+// separate, unrewritable list. A change recorded only as a new row would make "may a stranger
+// create a circle" a fold over a log on the hot path.
+//
+// `setting` is CHECKed against the enum generated from internal/schemaenum, and that list is the
+// settings an endpoint may MOVE. `public_url` is absent from it deliberately: it must keep
+// matching the redirect URI registered with every identity provider, a mismatch is a sign-in that
+// lands nowhere and leaves no evidence here, so it is immutable over the API - and a row claiming
+// it changed is unrepresentable rather than merely unwritten.
+//
+// `changed_by_identity_id` is NULLABLE and NULL reads as the operator at the console, exactly as
+// `instance_grant.decided_by_identity_id` does: first-run setup writes the instance row before any
+// identity exists, and a self-reference would be a different fact.
+table "instance_setting_change" {
+  schema = schema.main
+  column "id" {
+    null = false
+    type = text
+  }
+  column "setting" {
+    null = false
+    type = text
+  }
+  // The values are rendered as TEXT whatever the column's type is, because one ledger holds a
+  // boolean, a name and a timezone. `0` and `1` are how the boolean reads in the `instance` row,
+  // so the ledger says what the database says.
+  column "old_value" {
+    null = false
+    type = text
+  }
+  column "new_value" {
+    null = false
+    type = text
+  }
+  column "changed_by_identity_id" {
+    null = true
+    type = text
+  }
+  column "reason" {
+    null    = false
+    type    = text
+    default = ""
+  }
+  column "prev_hash" {
+    null = true
+    type = blob
+  }
+  column "hash" {
+    null = false
+    type = blob
+  }
+  column "changed_at" {
+    null = false
+    type = integer
+  }
+  primary_key {
+    columns = [column.id]
+  }
+  foreign_key "fk_instance_setting_change_identity" {
+    columns     = [column.changed_by_identity_id]
+    ref_columns = [table.identity.column.id]
+  }
+  // One row may name one predecessor, and one row per hash: the chain's tail is DERIVED as the row
+  // whose hash nothing names, never `ORDER BY id`. A ULID is monotonic within one generator only,
+  // and two writers inside one millisecond can mint out of order - which locked `instance_grant`
+  // permanently once, before its tail was derived this way.
+  index "ux_instance_setting_change_chain" {
+    unique  = true
+    columns = [column.prev_hash]
+    where   = "prev_hash IS NOT NULL"
+  }
+  index "ux_instance_setting_change_hash" {
+    unique  = true
+    columns = [column.hash]
+  }
+  index "ix_instance_setting_change_changed_at" {
+    columns = [column.changed_at]
+  }
+  check "ck_instance_setting_change_setting" {
+    expr = local.check_instance_setting_change_setting
+  }
+  // A row where nothing moved is a row a reader has to filter before the ledger means anything,
+  // which is the same reason `instancegrant.Decide` refuses a decision the ledger already records.
+  check "ck_instance_setting_change_moved" {
+    expr = "old_value <> new_value"
+  }
+  strict = true
+}
+
 // auth_flow — one in-flight browser OAuth authorization. Short-lived, capped per caller, swept on
 // expiry: an unredeemed flow is litter, not history, and nothing reads it after `expires_at`.
 //

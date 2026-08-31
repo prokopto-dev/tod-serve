@@ -30,6 +30,10 @@ const (
 	NameCircleRevocationStrength = "circle.revocation_strength"
 	NameIdentityLinkMethod       = "identity_link.method"
 	NameInstanceGrantDecision    = "instance_grant.decision"
+	// NameInstanceSettingChange is the SETTING one ledger row is about, not a value it holds.
+	// The instance row is mutable and the record of what changed it is not, so the enum names
+	// the columns an operator may move rather than the states one column takes.
+	NameInstanceSettingChange = "instance_setting_change.setting"
 )
 
 // The values themselves. Untyped constants on purpose: a domain package declares its own type
@@ -119,6 +123,14 @@ const (
 
 	InstanceGrantDecisionGranted = "granted"
 	InstanceGrantDecisionRevoked = "revoked"
+
+	// The instance settings a route may move, and therefore the ones the ledger can be about.
+	// `public_url` is deliberately absent: it must keep matching the redirect URI registered
+	// with every identity provider, so it is immutable over the API and the CHECK is what makes
+	// a row claiming otherwise unrepresentable.
+	InstanceSettingSelfServiceCircleCreation = "self_service_circle_creation"
+	InstanceSettingName                      = "name"
+	InstanceSettingTimezone                  = "timezone"
 )
 
 // All returns the catalogue, in the order canonical conventions §5 lists it.
@@ -235,6 +247,13 @@ func All() []Enum {
 			Name: NameInstanceGrantDecision,
 			Values: []string{
 				InstanceGrantDecisionGranted, InstanceGrantDecisionRevoked,
+			},
+		},
+		{
+			Name: NameInstanceSettingChange,
+			Values: []string{
+				InstanceSettingSelfServiceCircleCreation, InstanceSettingName,
+				InstanceSettingTimezone,
 			},
 		},
 	}

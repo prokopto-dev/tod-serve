@@ -338,7 +338,7 @@ fi
 # TestInstanceScopedAllowlist_MatchesRepoGates parses this line and that document and compares them
 # in both directions; two hand-maintained copies of one fact is exactly the drift gated against
 # everywhere else, and the copy that silently grows is the one that stops a table being checked.
-INSTANCE_SCOPED='tod_meta|instance|identity_provider|identity|identity_link|instance_grant|auth_flow|credential_ticket|raid_target|raid_target_alias|raid_target_timer|api_token|session_revocation|idempotency_record|event_outbox'
+INSTANCE_SCOPED='tod_meta|instance|identity_provider|identity|identity_link|instance_grant|instance_setting_change|auth_flow|credential_ticket|raid_target|raid_target_alias|raid_target_timer|api_token|session_revocation|idempotency_record|event_outbox'
 #
 # This gate reads PER QUERY, not per file: a file whose first query names circle_id and whose
 # eighth does not is exactly the leak the rule exists to stop, and a `grep -q` over the file would

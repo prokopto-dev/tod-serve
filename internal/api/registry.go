@@ -81,6 +81,8 @@ const (
 	OpPutCircleTimerOverride    OperationID = "putCircleTimerOverride"
 	OpDeleteCircleTimerOverride OperationID = "deleteCircleTimerOverride"
 
+	OpGetInstanceSettings        OperationID = "getInstanceSettings"
+	OpUpdateInstanceSettings     OperationID = "updateInstanceSettings"
 	OpListAdminIdentityProviders OperationID = "listAdminIdentityProviders"
 	OpCreateIdentityProvider     OperationID = "createIdentityProvider"
 	OpUpdateIdentityProvider     OperationID = "updateIdentityProvider"
@@ -663,6 +665,25 @@ func routes() []Route {
 		},
 
 		// --- Instance administration ---
+		{
+			ID: OpGetInstanceSettings, Method: http.MethodGet, Path: "/admin/instance",
+			Versioned: true, Auth: AuthPermission,
+			Permissions:     []authz.Permission{authz.PermissionInstanceSecurityManage},
+			ETag:            true,
+			ConditionalRead: true,
+			Summary:         "The instance-wide settings, and the hash-chained ledger of every change to them",
+		},
+		{
+			ID: OpUpdateInstanceSettings, Method: http.MethodPatch, Path: "/admin/instance",
+			Versioned: true, Auth: AuthPermission,
+			Permissions: []authz.Permission{authz.PermissionInstanceSecurityManage},
+			// `If-Match` rather than `Idempotency-Key`, and it is what makes a retry safe: the
+			// second attempt carries the tag of the state the first one replaced, so it is refused
+			// with 412 rather than applied twice. Nothing is APPENDED to the domain here — the
+			// ledger row is the audit record OF the change, not the change.
+			IfMatch: true, ETag: true,
+			Summary: "Change the instance-wide settings, recording each change in the ledger",
+		},
 		{
 			ID: OpListAdminIdentityProviders, Method: http.MethodGet,
 			Path: "/admin/identity-providers", Versioned: true, Auth: AuthPermission,

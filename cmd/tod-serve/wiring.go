@@ -18,6 +18,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/identity/identitysql"
 	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
+	"github.com/prokopto-dev/tod-serve/internal/instancesettings"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
 	"github.com/prokopto-dev/tod-serve/internal/membership"
 	"github.com/prokopto-dev/tod-serve/internal/projection"
@@ -45,6 +46,7 @@ type services struct {
 	tods      *tod.Service
 	states    *projection.Service
 	setup     *setup.Service
+	settings  *instancesettings.Service
 }
 
 // identityConfig builds the configuration `identity.New` is given.
@@ -210,10 +212,21 @@ func wire(
 		return nil, err
 	}
 
+	// The instance settings the wizard writes once, and the ledger of every change to them
+	// afterwards. It composes nothing: the instance row is a singleton this service owns outright,
+	// and the ledger it appends to belongs to no circle, which is why it is its own audit record.
+	settings, err := instancesettings.New(instancesettings.Config{
+		Store: db, Clock: clk, IDs: ids, Log: log,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	return &services{
 		store: db, clock: clk, ids: ids, log: log, minter: minter, codec: codec,
 		authn: authn, grants: grants, identity: identities, circles: circles, invites: invites,
 		members: members, catalogue: catalogues, tods: tods, states: states, setup: first,
+		settings: settings,
 	}, nil
 }
 

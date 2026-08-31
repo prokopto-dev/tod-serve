@@ -35,7 +35,7 @@ A permission with no scope is session-only: no token reaches it at any scope. A 
 | `token.mint` | circle | `owner` | — | yes | Create a service membership and mint its token |
 | `token.revoke` | circle | `owner` | — | yes | Revoke another principal's token |
 | `instance.circle.create` | instance | — | — | yes | Create a circle on this instance |
-| `instance.security.manage` | instance | — | — | yes | Add, change or remove the instance's identity providers |
+| `instance.security.manage` | instance | — | — | yes | Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation |
 | `instance.owner` | instance | — | — | yes | Instance ownership: whatever an instance administrator can do that has no narrower key |
 
 ## The role matrix

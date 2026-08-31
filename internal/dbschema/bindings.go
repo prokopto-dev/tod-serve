@@ -91,6 +91,12 @@ func Bindings() []Binding {
 		{Table: "instance_grant", Column: "permission", Enum: authz.InstanceGrantEnumName},
 		{Table: "instance_grant", Column: "decision", Enum: schemaenum.NameInstanceGrantDecision},
 
+		// The enum is the set of settings a route may MOVE, so the CHECK is what keeps the ledger
+		// from recording a change to something no endpoint can change — `public_url` above all,
+		// which is immutable over the API because it has to keep matching every registered
+		// redirect URI.
+		{Table: "instance_setting_change", Column: "setting", Enum: schemaenum.NameInstanceSettingChange},
+
 		// An invite grants a role, so it draws on the membership role enum; `CHECK (role <> 'owner')`
 		// sits next to it in the DDL and is shape rather than catalogue.
 		{Table: "invite", Column: "role", Enum: schemaenum.NameMembershipRole},
