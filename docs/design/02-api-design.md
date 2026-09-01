@@ -381,15 +381,26 @@ The operator's side is [discord-bot.md](../operations/discord-bot.md).
 
 | Method | Path | OperationID | Permission | Scope |
 |---|---|---|---|---|
-| GET | `/circles/{circle_id}/discord-channels` | `listCircleDiscordChannels` | `circle.security.manage` | — step-up |
-| PUT | `/circles/{circle_id}/discord-channels/{discord_channel_id}` | `bindCircleDiscordChannel` | `circle.security.manage` | — step-up |
-| DELETE | `/circles/{circle_id}/discord-channels/{discord_channel_id}` | `unbindCircleDiscordChannel` | `circle.security.manage` | — step-up |
+| GET | `/circles/{circle_id}/discord-channels` | `listCircleDiscordChannels` | `circle.security.manage` | — step-up:sensitive |
+| PUT | `/circles/{circle_id}/discord-channels/{discord_channel_id}` | `bindCircleDiscordChannel` | `circle.security.manage` | — step-up:sensitive |
+| DELETE | `/circles/{circle_id}/discord-channels/{discord_channel_id}` | `unbindCircleDiscordChannel` | `circle.security.manage` | — step-up:sensitive |
 | POST | `/integrations/discord/interactions` | `handleDiscordInteraction` | `X-Signature-Ed25519` | — |
 
 The three binding operations carry **`circle.security.manage`**, the same key as
 `setCircleProviders`, because a binding is the same kind of decision: it changes who can see the
-circle's data, not what the circle is called. They are in the capability floor, so no token reaches
-them at any scope and the session has to be recently re-authenticated.
+circle's data, not what the circle is called. That key is **floored and graded
+`step-up:sensitive`** ([ADR-0024](../adr/0024-step-up-is-graded-and-re-authentication-is-not-a-sign-in.md)): no token
+reaches these at any scope, and the session has to have proved its identity within the sensitive
+window. Both halves are the right ones here — a binding decides who can read a circle's board, which
+is the "changes WHO CAN DO WHAT" test the sensitive tier is for, and it is not the `routine` tier's
+"a nuisance and an audit row".
+
+**`handleDiscordInteraction` is graded `none`, and that is forced rather than chosen.** It carries
+no catalogue permission at the edge — the invoker's permissions are checked per command, inside —
+so there is no tier to derive, and there could be no useful one: a step-up is a browser
+re-authentication, and Discord has no browser to send. It is also why no command in the surface
+names a floored permission; `TestCommands_TheWeakestRoleHoldingThePermission_CanRunTheCommand`
+drives each with the weakest role that holds its key, which would fail the day one did.
 
 `bindCircleDiscordChannel` both creates and replaces, with `putCircleTimerOverride`'s precondition
 rule: `If-Match: *` is "and it must NOT exist", and `*` on an existing binding is refused with

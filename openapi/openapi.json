@@ -7453,6 +7453,8 @@
               "key": "circle.security.manage",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [
                 "owner"
               ],
@@ -7460,7 +7462,8 @@
               "summary": "Change which identity providers the circle accepts, which changes its revocation strength"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -7582,6 +7585,8 @@
               "key": "circle.security.manage",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [
                 "owner"
               ],
@@ -7589,7 +7594,8 @@
               "summary": "Change which identity providers the circle accepts, which changes its revocation strength"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -7755,6 +7761,8 @@
               "key": "circle.security.manage",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [
                 "owner"
               ],
@@ -7762,7 +7770,8 @@
               "summary": "Change which identity providers the circle accepts, which changes its revocation strength"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -11361,7 +11370,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "discord_signature",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false

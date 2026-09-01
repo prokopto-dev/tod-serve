@@ -79,6 +79,13 @@ export type AuthorizationStart = {
   expires_at: string
 }
 
+export type BindCircleDiscordChannelInputBody = {
+  /** Permit replies the whole channel can read. Defaults to false, and that default is in the DDL: Discord has no channel-membership API, so nobody can enumerate who would see one */
+  allow_visible?: boolean
+  /** The guild the channel is in. An interaction whose guild is not this one does not resolve */
+  discord_guild_id: string
+}
+
 export type BoardEntry = {
   change_reason: string | null
   /** RFC 3339 with microsecond precision, always UTC. */
@@ -288,6 +295,42 @@ export type CredentialBody = {
   token?: string
 }
 
+export type DiscordChannelBinding = {
+  /** Whether a reply here may be posted where the channel can read it. Discord has no channel-membership API, so this server cannot know who that is */
+  allow_visible: boolean
+  /** A ULID: 26 characters of Crockford base32, lexicographically time-ordered. */
+  circle_id: string
+  /** RFC 3339 with microsecond precision, always UTC. */
+  created_at: string
+  /** A ULID: 26 characters of Crockford base32, lexicographically time-ordered. */
+  created_by_membership_id: string
+  /** The Discord channel. One channel resolves to at most one circle */
+  discord_channel_id: string
+  /** The guild the binding was made in. An interaction from another guild does not resolve */
+  discord_guild_id: string
+  /** RFC 3339 with microsecond precision, always UTC. */
+  updated_at: string
+}
+
+export type DiscordChannelBindingResponse = {
+  /** Whether a reply here may be posted where the channel can read it. Discord has no channel-membership API, so this server cannot know who that is */
+  allow_visible: boolean
+  /** RFC 3339 with microsecond precision, always UTC. */
+  as_of: string
+  /** A ULID: 26 characters of Crockford base32, lexicographically time-ordered. */
+  circle_id: string
+  /** RFC 3339 with microsecond precision, always UTC. */
+  created_at: string
+  /** A ULID: 26 characters of Crockford base32, lexicographically time-ordered. */
+  created_by_membership_id: string
+  /** The Discord channel. One channel resolves to at most one circle */
+  discord_channel_id: string
+  /** The guild the binding was made in. An interaction from another guild does not resolve */
+  discord_guild_id: string
+  /** RFC 3339 with microsecond precision, always UTC. */
+  updated_at: string
+}
+
 export type Evidence = {
   distinct_reporter_count: number
   log_line_count: number
@@ -340,6 +383,18 @@ export type InstanceSettingsResponse = {
   timezone: string
   /** RFC 3339 with microsecond precision, always UTC. */
   updated_at: string
+}
+
+export type InteractionReply = {
+  /** RFC 3339 with microsecond precision, always UTC. */
+  as_of: string
+  data?: InteractionReplyData
+  type: number
+}
+
+export type InteractionReplyData = {
+  content: string
+  flags: number
 }
 
 export type Invite = {
@@ -578,6 +633,14 @@ export type PageCircle = {
   as_of: string
   has_more: boolean
   items: Array<Circle> | null
+  next_cursor: string
+}
+
+export type PageDiscordChannelBinding = {
+  /** RFC 3339 with microsecond precision, always UTC. */
+  as_of: string
+  has_more: boolean
+  items: Array<DiscordChannelBinding> | null
   next_cursor: string
 }
 
@@ -1264,6 +1327,12 @@ export type TokenView = {
   token_prefix: string
 }
 
+export type UnbindCircleDiscordChannelOutputBody = {
+  /** RFC 3339 with microsecond precision, always UTC. */
+  as_of: string
+  discord_channel_id: string
+}
+
 export type UpdateCircleInputBody = {
   description?: string
   min_reporters_to_supersede?: number
@@ -1340,6 +1409,7 @@ export type Window = {
 /** OperationId is every operation the published document carries. */
 export type OperationId =
   | 'authenticateIdentity'
+  | 'bindCircleDiscordChannel'
   | 'createAuthorizationURL'
   | 'createCircle'
   | 'createIdentityProvider'
@@ -1359,8 +1429,10 @@ export type OperationId =
   | 'getSetupState'
   | 'getTargetState'
   | 'getTodReport'
+  | 'handleDiscordInteraction'
   | 'listAdminIdentityProviders'
   | 'listCircleAudit'
+  | 'listCircleDiscordChannels'
   | 'listCircles'
   | 'listCircleTimerOverrides'
   | 'listIdentityProviders'
@@ -1386,6 +1458,7 @@ export type OperationId =
   | 'setCircleProviders'
   | 'signOut'
   | 'stepUpSession'
+  | 'unbindCircleDiscordChannel'
   | 'updateCircle'
   | 'updateIdentityProvider'
   | 'updateInstanceSettings'
@@ -1434,6 +1507,20 @@ export const OPERATIONS = {
     idempotency: 'handler',
     etag: false,
     ifMatch: false,
+  },
+  bindCircleDiscordChannel: {
+    id: 'bindCircleDiscordChannel',
+    method: 'PUT',
+    path: '/api/v1/circles/{circle_id}/discord-channels/{discord_channel_id}',
+    pathParams: ['circle_id', 'discord_channel_id'],
+    queryParams: [],
+    scopes: [],
+    sessionOnly: true,
+    stepUp: true,
+    circleScoped: true,
+    idempotency: '',
+    etag: true,
+    ifMatch: true,
   },
   createAuthorizationURL: {
     id: 'createAuthorizationURL',
@@ -1701,6 +1788,20 @@ export const OPERATIONS = {
     etag: false,
     ifMatch: false,
   },
+  handleDiscordInteraction: {
+    id: 'handleDiscordInteraction',
+    method: 'POST',
+    path: '/api/v1/integrations/discord/interactions',
+    pathParams: [],
+    queryParams: [],
+    scopes: [],
+    sessionOnly: false,
+    stepUp: false,
+    circleScoped: false,
+    idempotency: '',
+    etag: false,
+    ifMatch: false,
+  },
   listAdminIdentityProviders: {
     id: 'listAdminIdentityProviders',
     method: 'GET',
@@ -1724,6 +1825,20 @@ export const OPERATIONS = {
     scopes: [],
     sessionOnly: true,
     stepUp: false,
+    circleScoped: true,
+    idempotency: '',
+    etag: false,
+    ifMatch: false,
+  },
+  listCircleDiscordChannels: {
+    id: 'listCircleDiscordChannels',
+    method: 'GET',
+    path: '/api/v1/circles/{circle_id}/discord-channels',
+    pathParams: ['circle_id'],
+    queryParams: [],
+    scopes: [],
+    sessionOnly: true,
+    stepUp: true,
     circleScoped: true,
     idempotency: '',
     etag: false,
@@ -2079,6 +2194,20 @@ export const OPERATIONS = {
     etag: false,
     ifMatch: false,
   },
+  unbindCircleDiscordChannel: {
+    id: 'unbindCircleDiscordChannel',
+    method: 'DELETE',
+    path: '/api/v1/circles/{circle_id}/discord-channels/{discord_channel_id}',
+    pathParams: ['circle_id', 'discord_channel_id'],
+    queryParams: [],
+    scopes: [],
+    sessionOnly: true,
+    stepUp: true,
+    circleScoped: true,
+    idempotency: '',
+    etag: false,
+    ifMatch: false,
+  },
   updateCircle: {
     id: 'updateCircle',
     method: 'PATCH',
@@ -2156,6 +2285,16 @@ export interface AuthenticateIdentityInput {
   body: AuthenticateIdentityInputBody
 }
 export type AuthenticateIdentityResult = Joined
+
+/** Bind a Discord channel to this circle, and say whether replies there may be visible */
+export interface BindCircleDiscordChannelInput {
+  /** The circle */
+  circle_id: string
+  /** The Discord channel id, 1 to 20 digits */
+  discord_channel_id: string
+  body: BindCircleDiscordChannelInputBody
+}
+export type BindCircleDiscordChannelResult = DiscordChannelBindingResponse
 
 /** Start a browser OAuth flow. Takes no circle_id, by design */
 export interface CreateAuthorizationURLInput {
@@ -2285,6 +2424,10 @@ export interface GetTodReportInput {
 }
 export type GetTodReportResult = TodReportResponse
 
+/** Discord interactions endpoint. Verifies an Ed25519 signature; the circle comes from the channel binding */
+export type HandleDiscordInteractionInput = EmptyInput
+export type HandleDiscordInteractionResult = InteractionReply
+
 /** The instance's identity providers, secrets excluded */
 export type ListAdminIdentityProvidersInput = EmptyInput
 export type ListAdminIdentityProvidersResult = PageAdminIdentityProvider
@@ -2299,6 +2442,13 @@ export interface ListCircleAuditInput {
   limit?: number
 }
 export type ListCircleAuditResult = PageRecord
+
+/** The Discord channels bound to this circle, and which of them may be replied to visibly */
+export interface ListCircleDiscordChannelsInput {
+  /** The circle */
+  circle_id: string
+}
+export type ListCircleDiscordChannelsResult = PageDiscordChannelBinding
 
 /** The circles I am a member of. There is no list-all operation at any permission level */
 export type ListCirclesInput = EmptyInput
@@ -2532,6 +2682,15 @@ export interface StepUpSessionInput {
 }
 export type StepUpSessionResult = StepUpResponse
 
+/** Remove a channel binding. It stops the next reply and unsays nothing already posted */
+export interface UnbindCircleDiscordChannelInput {
+  /** The circle */
+  circle_id: string
+  /** The Discord channel id */
+  discord_channel_id: string
+}
+export type UnbindCircleDiscordChannelResult = UnbindCircleDiscordChannelOutputBody
+
 /** Rename the circle or change its settings. `server` is immutable */
 export interface UpdateCircleInput {
   /** The circle */
@@ -2582,6 +2741,8 @@ export type UpdateRaidTargetResult = TargetResponse
 export const api = {
   authenticateIdentity: (input: AuthenticateIdentityInput, opts?: CallOptions): Promise<Result<AuthenticateIdentityResult>> =>
     send(OPERATIONS.authenticateIdentity, input, opts),
+  bindCircleDiscordChannel: (input: BindCircleDiscordChannelInput, opts?: CallOptions): Promise<Result<BindCircleDiscordChannelResult>> =>
+    send(OPERATIONS.bindCircleDiscordChannel, input, opts),
   createAuthorizationURL: (input: CreateAuthorizationURLInput, opts?: CallOptions): Promise<Result<CreateAuthorizationURLResult>> =>
     send(OPERATIONS.createAuthorizationURL, input, opts),
   createCircle: (input: CreateCircleInput, opts?: CallOptions): Promise<Result<CreateCircleResult>> =>
@@ -2620,10 +2781,14 @@ export const api = {
     send(OPERATIONS.getTargetState, input, opts),
   getTodReport: (input: GetTodReportInput, opts?: CallOptions): Promise<Result<GetTodReportResult>> =>
     send(OPERATIONS.getTodReport, input, opts),
+  handleDiscordInteraction: (input: HandleDiscordInteractionInput, opts?: CallOptions): Promise<Result<HandleDiscordInteractionResult>> =>
+    send(OPERATIONS.handleDiscordInteraction, input, opts),
   listAdminIdentityProviders: (input: ListAdminIdentityProvidersInput, opts?: CallOptions): Promise<Result<ListAdminIdentityProvidersResult>> =>
     send(OPERATIONS.listAdminIdentityProviders, input, opts),
   listCircleAudit: (input: ListCircleAuditInput, opts?: CallOptions): Promise<Result<ListCircleAuditResult>> =>
     send(OPERATIONS.listCircleAudit, input, opts),
+  listCircleDiscordChannels: (input: ListCircleDiscordChannelsInput, opts?: CallOptions): Promise<Result<ListCircleDiscordChannelsResult>> =>
+    send(OPERATIONS.listCircleDiscordChannels, input, opts),
   listCircles: (input: ListCirclesInput, opts?: CallOptions): Promise<Result<ListCirclesResult>> =>
     send(OPERATIONS.listCircles, input, opts),
   listCircleTimerOverrides: (input: ListCircleTimerOverridesInput, opts?: CallOptions): Promise<Result<ListCircleTimerOverridesResult>> =>
@@ -2674,6 +2839,8 @@ export const api = {
     send(OPERATIONS.signOut, input, opts),
   stepUpSession: (input: StepUpSessionInput, opts?: CallOptions): Promise<Result<StepUpSessionResult>> =>
     send(OPERATIONS.stepUpSession, input, opts),
+  unbindCircleDiscordChannel: (input: UnbindCircleDiscordChannelInput, opts?: CallOptions): Promise<Result<UnbindCircleDiscordChannelResult>> =>
+    send(OPERATIONS.unbindCircleDiscordChannel, input, opts),
   updateCircle: (input: UpdateCircleInput, opts?: CallOptions): Promise<Result<UpdateCircleResult>> =>
     send(OPERATIONS.updateCircle, input, opts),
   updateIdentityProvider: (input: UpdateIdentityProviderInput, opts?: CallOptions): Promise<Result<UpdateIdentityProviderResult>> =>
