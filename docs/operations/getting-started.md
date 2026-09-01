@@ -825,6 +825,45 @@ next request. Tell your officers that once, out loud.
 
 ---
 
+## The Discord bot, and why the wizard does not mention it
+
+`/tod` in a Discord channel is a **separate install from Discord sign-in**, on the same registered
+application: [the bot runbook](discord-bot.md) is the whole of it. It is deliberately **outside**
+first-run setup, and it comes **after** the walkthrough above rather than being missing from it.
+
+Where it goes in the sequence:
+
+| | |
+|---|---|
+| Before the wizard | Nothing. The bot has nothing to point at yet |
+| [A8](#a8-run-the-wizard) / [B8](#b8-run-the-wizard-redeem-the-code) — the wizard | Nothing. A bot step here would have nothing to write and nowhere to bind |
+| [A10](#a10-delete-tod_setup_token--do-not-skip-this) / [B9](#b9-delete-tod_setup_token--do-not-skip-this) — the door shut, one owner exists | **Start here.** [discord-bot.md §1–§4](discord-bot.md): add a bot to the application, install it per guild, set `TOD_DISCORD_PUBLIC_KEY`, register the slash commands |
+| Once a circle has members | [discord-bot.md §5](discord-bot.md#5-bind-a-channel-to-a-circle): bind a channel, in **Console → Circle Settings → Discord channels**. Read [§6](discord-bot.md#6-what-a-bound-channel-discloses) first — binding a channel and letting the whole channel read the replies are two switches, and the second one is a disclosure decision |
+
+**Why it is not a wizard step**, in three parts, none of them a matter of taste:
+
+- **There would be nothing to bind to.** A binding needs `circle.security.manage` in a circle, and
+  the wizard runs on an instance where no membership exists. The first one is created by redeeming
+  the owner code in [A9](#a9-redeem-the-owner-code) — which is the very act that *closes* the setup
+  window, because the window is derived from "no identity administers this instance"
+  ([ADR-0016](../adr/0016-first-run-setup-is-an-env-token-and-a-derived-window.md)). A binding step
+  inside the wizard would be unreachable by construction, not merely awkward.
+- **The wizard writes rows, and two of the three bot values are not rows.**
+  `TOD_DISCORD_PUBLIC_KEY` is an environment variable read at startup, so setting it is an edit to
+  `.env` and a restart — something no form on this instance can do. The bot token is not stored
+  here **at all**: registering the slash commands is an outbound HTTPS request, [law
+  6](../../AGENTS.md) confines outbound HTTP to `internal/identity`, so the binary prints the body
+  and you send it from your own machine.
+- **Discord verifies the endpoint before it will save it.** It POSTs a signed `PING` to
+  `$TOD_PUBLIC_URL` and refuses the field unless a well-signed `PONG` comes back. The instance has
+  to be *up and publicly reachable* first — which is what the wizard produces, not what it
+  consumes.
+
+The wizard's job is to make the instance reachable and give it a first owner. The bot needs both of
+those to already be true.
+
+---
+
 ## Changing instance policy afterwards
 
 The wizard's answers are not final. **Console → Instance admin → Instance policy** reads and
@@ -1115,5 +1154,6 @@ echo | openssl s_client -connect <YOUR_DOMAIN>:443 -servername <YOUR_DOMAIN> 2>/
 | [Backups and restoring](backup.md) | The only undo there is. Read it before you need it |
 | [Deployment runbook](deployment.md) | The GitHub Actions pipeline: approved deploys, snapshots, rollbacks, and what is deliberately not covered |
 | [Registering the Discord application](discord-app.md) | Your own app, the three scopes, and what a removed role does not do |
+| [The Discord bot](discord-bot.md) | `/tod` in a channel — and what a bound channel discloses, which is the part to read first |
 | [Permissions](../reference/permissions.md) | Roles, scopes, and what a personal access token can reach |
 | [Invariants](../concepts/invariants.md) | Every rule in this project and the mechanism that enforces it |

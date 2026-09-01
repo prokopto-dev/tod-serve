@@ -48,7 +48,7 @@ import { DiscordMark } from '../components/ProviderButton'
 import { RevocationBanner } from '../components/RevocationBanner'
 import { Banner, Button, Card, Empty, Field, Input, Mono, Spinner } from '../components/ui'
 import { isSnowflake, parseChannelReference, rebindFor, SNOWFLAKE_HINT } from '../lib/discord'
-import { instant } from '../lib/format'
+import { instant, plural } from '../lib/format'
 import { choicesFor, gateState, saveSet, type Choice, type GateState } from '../lib/gate'
 import { forgetCircle } from '../lib/storage'
 
@@ -129,7 +129,7 @@ export function CircleSettings() {
         />
       )}
 
-      {data && canSecurity && <DiscordChannelsCard circle={data} onError={setError} />}
+      {data && canSecurity && <DiscordChannelsCard circle={data} />}
 
       {principal.can('instance.circle.create') && <AnotherCircleCard />}
 
@@ -511,13 +511,7 @@ function GateSummary({ state, roleCount }: { state: GateState; roleCount: number
  * They are rendered beside the controls rather than summarised in a subtitle, because the decision
  * they qualify is taken here and a document cannot be read at the moment somebody ticks a box.
  */
-function DiscordChannelsCard({
-  circle,
-  onError,
-}: {
-  circle: Circle
-  onError: (error: Error | null) => void
-}) {
+function DiscordChannelsCard({ circle }: { circle: Circle }) {
   const principal = usePrincipal()
   const stepUp = useStepUp()
   const bindings = useResource(
@@ -600,18 +594,13 @@ function DiscordChannelsCard({
         )}
 
         {items.map((binding) => (
-          <BindingRow
-            key={binding.discord_channel_id}
-            binding={binding}
-            onDone={bindings.reload}
-            onError={onError}
-          />
+          <BindingRow key={binding.discord_channel_id} binding={binding} onDone={bindings.reload} />
         ))}
 
         {visible.length > 0 && (
           <Banner
             tone="warn"
-            title={`${visible.length} of these channels may be replied to visibly`}
+            title={`${plural(visible.length, 'channel')} here may be replied to visibly`}
           >
             Everyone who can read {visible.length === 1 ? 'that channel' : 'those channels'} sees
             those replies, for as long as Discord keeps them. Nothing on this instance can tell you
@@ -619,7 +608,7 @@ function DiscordChannelsCard({
           </Banner>
         )}
 
-        <BindChannelForm circle={circle} onDone={bindings.reload} onError={onError} />
+        <BindChannelForm circle={circle} onDone={bindings.reload} />
       </div>
     </Card>
   )
@@ -670,19 +659,23 @@ function ProofNotice({ proved, onProve }: { proved: boolean; onProve: () => void
  * refused with `412`, which is the concurrency rule doing its job rather than a bug to work around:
  * it is what stops an officer reversing a disclosure decision they have not read. See [rebindFor]
  * for what the two-step costs and why a failure between the halves cannot fail open.
+ *
+ * **Timer overrides have the identical gap and this screen answers it differently on purpose.**
+ * There the console offers no in-place edit at all and tells the officer to remove the override and
+ * add it again, because re-creating one means re-entering a whole form that only they hold. Here
+ * the console already holds everything the second request needs — the channel id and the guild id
+ * are on the row it just listed — so asking somebody to re-type two twenty-digit ids would not be
+ * caution, it would be a transposition risk introduced on a disclosure decision. Neither offers a
+ * button that cannot send the right precondition, which is the rule both are keeping.
  */
-function BindingRow({
-  binding,
-  onDone,
-  onError,
-}: {
-  binding: DiscordChannelBinding
-  onDone: () => void
-  onError: (error: Error | null) => void
-}) {
+function BindingRow({ binding, onDone }: { binding: DiscordChannelBinding; onDone: () => void }) {
   const [busy, setBusy] = useState(false)
   const [confirming, setConfirming] = useState<'visible' | 'unbind' | null>(null)
   const [unbound, setUnbound] = useState(false)
+  // Held here rather than handed to the screen header: the way out of a `step_up_required` is
+  // rendered ON the failure, and a failure rendered at the top of a long page is an affordance the
+  // officer has to go and find after pressing a button at the bottom of it.
+  const [error, setError] = useState<Error | null>(null)
 
   // Narrowing is one press; widening is two. The asymmetry is the point: turning the switch off
   // reduces what this channel discloses, and a confirmation on the safe direction only teaches
@@ -692,7 +685,7 @@ function BindingRow({
     setBusy(true)
     setConfirming(null)
     setUnbound(false)
-    onError(null)
+    setError(null)
     api
       .unbindCircleDiscordChannel({
         circle_id: binding.circle_id,
@@ -722,8 +715,7 @@ function BindingRow({
             throw err
           }),
       )
-      .then(() => onError(null))
-      .catch((err: unknown) => onError(toError(err)))
+      .catch((err: unknown) => setError(toError(err)))
       .finally(() => {
         setBusy(false)
         onDone()
@@ -733,13 +725,13 @@ function BindingRow({
   const unbind = () => {
     setBusy(true)
     setConfirming(null)
-    onError(null)
+    setError(null)
     api
       .unbindCircleDiscordChannel({
         circle_id: binding.circle_id,
         discord_channel_id: binding.discord_channel_id,
       })
-      .catch((err: unknown) => onError(toError(err)))
+      .catch((err: unknown) => setError(toError(err)))
       .finally(() => {
         setBusy(false)
         onDone()
@@ -765,6 +757,8 @@ function BindingRow({
         </div>
         <Disclosure allowVisible={binding.allow_visible} />
       </div>
+
+      {error && <ProblemNotice error={error} />}
 
       {unbound && (
         <Banner tone="warn" title="This channel is now unbound, and the change did not land">
@@ -880,20 +874,13 @@ function Disclosure({ allowVisible }: { allowVisible: boolean }) {
  * separately, and a transposed pair is accepted by every validation here and then resolves to
  * nothing at 2am. One paste that fills both cannot be transposed.
  */
-function BindChannelForm({
-  circle,
-  onDone,
-  onError,
-}: {
-  circle: Circle
-  onDone: () => void
-  onError: (error: Error | null) => void
-}) {
+function BindChannelForm({ circle, onDone }: { circle: Circle; onDone: () => void }) {
   const [pasted, setPasted] = useState('')
   const [channelID, setChannelID] = useState('')
   const [guildID, setGuildID] = useState('')
   const [allowVisible, setAllowVisible] = useState(false)
   const [parseError, setParseError] = useState<string | null>(null)
+  const [error, setError] = useState<Error | null>(null)
   const [busy, setBusy] = useState(false)
 
   const accept = (raw: string) => {
@@ -918,7 +905,7 @@ function BindChannelForm({
 
   const bind = () => {
     setBusy(true)
-    onError(null)
+    setError(null)
     api
       .bindCircleDiscordChannel(
         {
@@ -938,7 +925,7 @@ function BindChannelForm({
         setAllowVisible(false)
         onDone()
       })
-      .catch((err: unknown) => onError(toError(err)))
+      .catch((err: unknown) => setError(toError(err)))
       .finally(() => setBusy(false))
   }
 
@@ -946,6 +933,10 @@ function BindChannelForm({
     <div className="rounded border border-ink-700 bg-ink-850 p-3">
       <p className="text-xs font-semibold text-ink-100">Bind a channel</p>
       <div className="mt-2 space-y-3">
+        {/* The refusal, and the way out of it, next to the button that earned them — a
+            `step_up_required` renders its own "Prove it's you" here rather than at the top of the
+            page, where nobody who just pressed Bind is looking. */}
+        {error && <ProblemNotice error={error} />}
         <Field
           label="Paste the channel"
           hint="Right-click the channel → Copy Link fills both ids below. A Copy Channel ID, or a <#…> mention pasted out of a message, fills the channel only."
