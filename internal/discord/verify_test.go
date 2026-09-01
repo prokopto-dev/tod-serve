@@ -13,6 +13,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/discord"
+	"github.com/prokopto-dev/tod-serve/internal/tod"
 )
 
 // verifyNow is the instant every signature test is signed and checked at. A constant, because the
@@ -54,8 +55,11 @@ func TestVerify_AGenuineInteraction_IsAccepted(t *testing.T) {
 	body := []byte(`{"type":1,"id":"42"}`)
 	timestamp := strconv.FormatInt(verifyNow.Time().Unix(), 10)
 
-	require.NoError(t, verifierFor(t, key, verifyNow).
-		Verify(sign(t, key, timestamp, body), timestamp, body))
+	signedAt, err := verifierFor(t, key, verifyNow).
+		Verify(sign(t, key, timestamp, body), timestamp, body)
+	require.NoError(t, err)
+	require.Equal(t, verifyNow, signedAt,
+		"Verify returns the SIGNED instant, which is what a report records as died_at")
 }
 
 // **This is the test that matters.** A suite driving only valid signatures passes with the check
@@ -113,11 +117,12 @@ func TestVerify_AnUnsignedOrForgedInteraction_IsRefused(t *testing.T) {
 			body:      body,
 		},
 		{
-			// And the same in the other direction, so a captured request cannot be scheduled.
-			name: "signed six minutes from now",
+			// And the other direction, which is tighter: a captured request cannot be scheduled,
+			// and the instant cannot be one the report log would then refuse as being ahead.
+			name: "signed three minutes from now",
 			signature: sign(t, key,
-				strconv.FormatInt(verifyNow.Add(6*time.Minute).Time().Unix(), 10), body),
-			timestamp: strconv.FormatInt(verifyNow.Add(6*time.Minute).Time().Unix(), 10),
+				strconv.FormatInt(verifyNow.Add(3*time.Minute).Time().Unix(), 10), body),
+			timestamp: strconv.FormatInt(verifyNow.Add(3*time.Minute).Time().Unix(), 10),
 			body:      body,
 		},
 		{
@@ -130,17 +135,21 @@ func TestVerify_AnUnsignedOrForgedInteraction_IsRefused(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := verifierFor(t, key, verifyNow).Verify(tc.signature, tc.timestamp, tc.body)
+			at, err := verifierFor(t, key, verifyNow).Verify(tc.signature, tc.timestamp, tc.body)
 			require.ErrorIs(t, err, discord.ErrSignature,
 				"an unverified interaction is an unauthenticated write")
+			require.Zero(t, at, "a refused interaction must yield no instant to write with")
 		})
 	}
 }
 
-// The boundary of the freshness window, from both sides, so the constant means what it says. Five
-// minutes minus a second is accepted and five minutes plus a second is not: a test that only drove
-// "six minutes" would pass with a window of an hour.
-func TestVerify_TheFreshnessWindow_IsFiveMinutesEitherWay(t *testing.T) {
+// Both boundaries, one second either side of each, so the constants mean what they say. A test
+// that only drove "six minutes" would pass with a window of an hour.
+//
+// **The two halves are different numbers and are driven separately.** A symmetric window is what
+// let a signed instant be up to five minutes ahead — further ahead than the report log accepts a
+// `died_at` — so an interaction could verify and its write then be refused.
+func TestVerify_TheWindow_IsBoundedSeparatelyInEachDirection(t *testing.T) {
 	t.Parallel()
 	key := signingKey(t)
 	body := []byte(`{"type":1}`)
@@ -150,24 +159,48 @@ func TestVerify_TheFreshnessWindow_IsFiveMinutesEitherWay(t *testing.T) {
 		offset  time.Duration
 		refused bool
 	}{
-		{"just inside, in the past", -(discord.FreshnessWindow - time.Second), false},
-		{"just inside, in the future", discord.FreshnessWindow - time.Second, false},
-		{"just outside, in the past", -(discord.FreshnessWindow + time.Second), true},
-		{"just outside, in the future", discord.FreshnessWindow + time.Second, true},
+		{"just inside, in the past", -(discord.ReplayWindow - time.Second), false},
+		{"just outside, in the past", -(discord.ReplayWindow + time.Second), true},
+		{"just inside, in the future", discord.FutureSkewTolerance - time.Second, false},
+		{"just outside, in the future", discord.FutureSkewTolerance + time.Second, true},
+		{
+			// Inside the PAST window and outside the future one, which is the case a symmetric
+			// window got wrong.
+			name: "further ahead than the future half, nearer than the past half",
+			offset: discord.FutureSkewTolerance +
+				(discord.ReplayWindow-discord.FutureSkewTolerance)/2,
+			refused: true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			at := verifyNow.Add(tc.offset)
 			timestamp := strconv.FormatInt(at.Time().Unix(), 10)
-			err := verifierFor(t, key, verifyNow).
+			got, err := verifierFor(t, key, verifyNow).
 				Verify(sign(t, key, timestamp, body), timestamp, body)
 			if tc.refused {
 				require.ErrorIs(t, err, discord.ErrSignature)
 				return
 			}
 			require.NoError(t, err)
+			require.Equal(t, at, got)
 		})
 	}
+}
+
+// The future half of the window is the number the report log will accept, and the two are compared
+// rather than both written down and hoped over.
+//
+// `internal/discord` must not import `internal/tod` to verify a signature — the transport has no
+// business depending on the domain — so the constant is spelled in both places and THIS is the
+// mechanism that keeps them one number. A window wider than the tolerance verifies an interaction
+// whose write the database then refuses with `died_at_in_future`, which is a verified request the
+// instance rejects: the worst pair of answers available.
+func TestFreshness_TheFutureHalf_MatchesWhatTheReportLogAccepts(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, tod.FutureTolerance, discord.FutureSkewTolerance,
+		"the signature's future tolerance and the report log's clock-skew tolerance have "+
+			"drifted apart; an interaction can now verify and then fail to write")
 }
 
 // An instance with no `TOD_DISCORD_PUBLIC_KEY` refuses every interaction, and it refuses one
@@ -183,8 +216,8 @@ func TestVerify_AnUnconfiguredInstance_RefusesEverything(t *testing.T) {
 	v, err := discord.NewVerifier("", clk.Now)
 	require.NoError(t, err, "an unset key is a state, not a startup failure")
 	require.False(t, v.Configured())
-	require.ErrorIs(t, v.Verify(sign(t, key, timestamp, body), timestamp, body),
-		discord.ErrSignature)
+	_, verifyErr := v.Verify(sign(t, key, timestamp, body), timestamp, body)
+	require.ErrorIs(t, verifyErr, discord.ErrSignature)
 }
 
 // A key that is present and unusable is a CONSTRUCTION error: an operator who pasted half a key
@@ -221,6 +254,8 @@ func TestVerify_AReencodedBody_DoesNotVerify(t *testing.T) {
 	signature := sign(t, key, timestamp, asSent)
 
 	v := verifierFor(t, key, verifyNow)
-	require.NoError(t, v.Verify(signature, timestamp, asSent))
-	require.ErrorIs(t, v.Verify(signature, timestamp, reencoded), discord.ErrSignature)
+	_, err := v.Verify(signature, timestamp, asSent)
+	require.NoError(t, err)
+	_, err = v.Verify(signature, timestamp, reencoded)
+	require.ErrorIs(t, err, discord.ErrSignature)
 }

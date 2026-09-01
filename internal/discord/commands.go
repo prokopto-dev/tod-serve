@@ -63,7 +63,7 @@ type Command struct {
 	Visible bool
 	// Writes says the command appends to the domain. It exists so the route's missing
 	// `Idempotency-Key` is a stated fact with a test over it rather than an oversight — see
-	// TestDiscordInteraction_ARepeatedReport_AppendsOneRow.
+	// TestDiscordInteraction_AReplayedInteraction_AppendsOneRow.
 	Writes bool
 	// Options are the arguments, in the order Discord shows them. Required options come first;
 	// Discord refuses a registration that orders them otherwise.

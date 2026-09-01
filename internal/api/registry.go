@@ -740,7 +740,12 @@ func routes() []Route {
 			// once, the reply is the body of that response, and there is no client-side retry to
 			// replay. What stands in its place is `ux_tod_report_natural`, which makes a second
 			// report of the same kill by the same person a REPLAY rather than a second row —
-			// TestDiscordInteraction_ARepeatedReport_AppendsOneRow drives it.
+			// and the `died_at` it keys on comes from the SIGNED timestamp rather than from this
+			// server's clock, so a captured request replayed later collapses onto the first row
+			// instead of writing a second one at a different instant.
+			// TestDiscordInteraction_AReplayedInteraction_AppendsOneRow drives it, advancing the
+			// clock between the attempts — the version that did not advance it passed against
+			// exactly that bug.
 			Summary: "Discord interactions endpoint. Verifies an Ed25519 signature; the circle comes from the channel binding",
 		},
 

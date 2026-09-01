@@ -78,7 +78,7 @@ func TestCommands_EverySubcommand_IsDispatched(t *testing.T) {
 				}
 			}
 			reply, err := f.commander.Dispatch(
-				t.Context(), command(c.Name, boundChannel, guild, aliceSubject, args))
+				t.Context(), command(c.Name, boundChannel, guild, aliceSubject, args), fixtureNow)
 			require.NoError(t, err, "%s reached no handler", c.Name)
 			content := ephemeral(t, reply)
 			require.NotContains(t, content, "is not a command this instance answers",
@@ -93,7 +93,7 @@ func TestDispatch_APing_IsAnsweredWithAPong(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 
-	reply, err := f.commander.Dispatch(t.Context(), discord.Interaction{Type: discord.TypePing})
+	reply, err := f.commander.Dispatch(t.Context(), discord.Interaction{Type: discord.TypePing}, fixtureNow)
 	require.NoError(t, err)
 	require.Equal(t, discord.ResponsePong, reply.Type)
 	require.Nil(t, reply.Data, "a PONG carries no message")
@@ -112,7 +112,7 @@ func TestDispatch_AVisibleRequest_InAnUnpermittedChannel_StaysEphemeral(t *testi
 
 	reply, err := f.commander.Dispatch(t.Context(), command(
 		discord.CommandBoard, boundChannel, guild, aliceSubject,
-		map[string]any{discord.OptionVisible: true}))
+		map[string]any{discord.OptionVisible: true}), fixtureNow)
 	require.NoError(t, err)
 	content := ephemeral(t, reply)
 	require.Contains(t, content, "visible replies are not enabled for this channel")
@@ -130,7 +130,7 @@ func TestDispatch_AVisibleRequest_InAPermittedChannel_IsVisible(t *testing.T) {
 
 	reply, err := f.commander.Dispatch(t.Context(), command(
 		discord.CommandBoard, boundChannel, guild, aliceSubject,
-		map[string]any{discord.OptionVisible: true}))
+		map[string]any{discord.OptionVisible: true}), fixtureNow)
 	require.NoError(t, err)
 	require.NotNil(t, reply.Data)
 	require.Zero(t, reply.Data.Flags, "the binding allows it and the invoker asked for it")
@@ -146,7 +146,7 @@ func TestDispatch_APermittedChannel_WithoutAsking_IsStillEphemeral(t *testing.T)
 	f.bind(mine, boundChannel, guild, true, owner)
 
 	reply, err := f.commander.Dispatch(
-		t.Context(), command(discord.CommandBoard, boundChannel, guild, aliceSubject, nil))
+		t.Context(), command(discord.CommandBoard, boundChannel, guild, aliceSubject, nil), fixtureNow)
 	require.NoError(t, err)
 	ephemeral(t, reply)
 }
@@ -175,7 +175,7 @@ func TestDispatch_ACommandThatIsNeverVisible_IsNeverVisible(t *testing.T) {
 				}
 			}
 			reply, err := f.commander.Dispatch(
-				t.Context(), command(c.Name, boundChannel, guild, aliceSubject, args))
+				t.Context(), command(c.Name, boundChannel, guild, aliceSubject, args), fixtureNow)
 			require.NoError(t, err)
 			ephemeral(t, reply)
 		})
@@ -194,7 +194,7 @@ func TestDispatch_AGuildMemberWhoIsNotInTheCircle_IsAnsweredAsAStranger(t *testi
 	f.bind(mine, boundChannel, guild, true, owner)
 
 	reply, err := f.commander.Dispatch(
-		t.Context(), command(discord.CommandBoard, boundChannel, guild, bobSubject, nil))
+		t.Context(), command(discord.CommandBoard, boundChannel, guild, bobSubject, nil), fixtureNow)
 	require.NoError(t, err)
 	content := ephemeral(t, reply)
 	require.Contains(t, content, "not a member of the circle")
@@ -213,14 +213,14 @@ func TestDispatch_ARevokedMember_IsAnsweredAsAStranger(t *testing.T) {
 	f.bind(mine, boundChannel, guild, false, owner)
 
 	before, err := f.commander.Dispatch(
-		t.Context(), command(discord.CommandBoard, boundChannel, guild, bobSubject, nil))
+		t.Context(), command(discord.CommandBoard, boundChannel, guild, bobSubject, nil), fixtureNow)
 	require.NoError(t, err)
 	require.NotContains(t, ephemeral(t, before), "not a member of the circle")
 
 	f.revoke(mine, member, owner)
 
 	after, err := f.commander.Dispatch(
-		t.Context(), command(discord.CommandBoard, boundChannel, guild, bobSubject, nil))
+		t.Context(), command(discord.CommandBoard, boundChannel, guild, bobSubject, nil), fixtureNow)
 	require.NoError(t, err)
 	require.Contains(t, ephemeral(t, after), "not a member of the circle")
 }
@@ -239,7 +239,7 @@ func TestDispatch_ThePermission_IsTheInvokersAndNotTheBots(t *testing.T) {
 
 	reply, err := f.commander.Dispatch(t.Context(), command(
 		discord.CommandReport, boundChannel, guild, bobSubject,
-		map[string]any{discord.OptionTarget: "Vulak`Aerr"}))
+		map[string]any{discord.OptionTarget: "Vulak`Aerr"}), fixtureNow)
 	require.NoError(t, err)
 	require.Contains(t, ephemeral(t, reply), string(authz.PermissionTodReport),
 		"an observer reported a kill; the bot's own access was spent instead of theirs")
@@ -248,7 +248,7 @@ func TestDispatch_ThePermission_IsTheInvokersAndNotTheBots(t *testing.T) {
 	// role rather than about the command being broken.
 	reply, err = f.commander.Dispatch(t.Context(), command(
 		discord.CommandReport, boundChannel, guild, aliceSubject,
-		map[string]any{discord.OptionTarget: "Vulak`Aerr"}))
+		map[string]any{discord.OptionTarget: "Vulak`Aerr"}), fixtureNow)
 	require.NoError(t, err)
 	require.Contains(t, ephemeral(t, reply), "Recorded")
 }
@@ -262,7 +262,7 @@ func TestDispatch_AnUnboundChannel_OffersTheInvokersOwnCirclesAndPicksNone(t *te
 	f.seedMember(mine, aliceSubject, "Alice", string(authz.RoleOwner))
 
 	reply, err := f.commander.Dispatch(
-		t.Context(), command(discord.CommandBoard, otherChannel, guild, aliceSubject, nil))
+		t.Context(), command(discord.CommandBoard, otherChannel, guild, aliceSubject, nil), fixtureNow)
 	require.NoError(t, err)
 	content := ephemeral(t, reply)
 	require.Contains(t, content, "not bound to a circle")
@@ -281,7 +281,7 @@ func TestDispatch_AChannelIdFromAnotherGuild_DoesNotResolve(t *testing.T) {
 	f.bind(mine, boundChannel, guild, true, owner)
 
 	reply, err := f.commander.Dispatch(
-		t.Context(), command(discord.CommandBoard, boundChannel, otherGuild, aliceSubject, nil))
+		t.Context(), command(discord.CommandBoard, boundChannel, otherGuild, aliceSubject, nil), fixtureNow)
 	require.NoError(t, err)
 	require.Contains(t, ephemeral(t, reply), "bound in a different Discord server")
 }
@@ -297,7 +297,7 @@ func TestDispatch_ATombstonedCircle_ResolvesToNothing(t *testing.T) {
 	f.tombstone(mine)
 
 	reply, err := f.commander.Dispatch(
-		t.Context(), command(discord.CommandBoard, boundChannel, guild, aliceSubject, nil))
+		t.Context(), command(discord.CommandBoard, boundChannel, guild, aliceSubject, nil), fixtureNow)
 	require.NoError(t, err)
 	require.Contains(t, ephemeral(t, reply), "not bound to a circle")
 }
@@ -316,7 +316,7 @@ func TestDispatch_Circles_NamesTheBoundCircleOnlyToItsMembers(t *testing.T) {
 	f.seedMember(other, bobSubject, "Bob", string(authz.RoleMember))
 
 	reply, err := f.commander.Dispatch(
-		t.Context(), command(discord.CommandCircles, boundChannel, guild, bobSubject, nil))
+		t.Context(), command(discord.CommandCircles, boundChannel, guild, bobSubject, nil), fixtureNow)
 	require.NoError(t, err)
 	content := ephemeral(t, reply)
 	require.NotContains(t, content, "Ancient Blood")
@@ -334,7 +334,7 @@ func TestDispatch_AnUnknownSubcommand_IsRefused(t *testing.T) {
 	f.bind(mine, boundChannel, guild, true, owner)
 
 	reply, err := f.commander.Dispatch(
-		t.Context(), command("nuke", boundChannel, guild, aliceSubject, nil))
+		t.Context(), command("nuke", boundChannel, guild, aliceSubject, nil), fixtureNow)
 	require.NoError(t, err)
 	require.Contains(t, ephemeral(t, reply), "not a command this instance answers")
 }
@@ -348,7 +348,7 @@ func TestDispatch_ACommandWithNoSubcommand_IsRefused(t *testing.T) {
 		ID: "x", Type: discord.TypeApplicationCommand, GuildID: guild, ChannelID: boundChannel,
 		Data: &discord.CommandData{Name: discord.RootCommand},
 	}
-	reply, err := f.commander.Dispatch(t.Context(), in)
+	reply, err := f.commander.Dispatch(t.Context(), in, fixtureNow)
 	require.NoError(t, err)
 	require.Contains(t, ephemeral(t, reply), "not one this application registered")
 }
@@ -417,7 +417,7 @@ func TestDispatch_TwoCirclesOnOneServer_AreDistinguishedByTheChannelBinding(t *t
 	f.bind(guildCircle, boundChannel, guild, false, guildOwner)
 
 	reply, err := f.commander.Dispatch(
-		t.Context(), command(discord.CommandCircles, boundChannel, guild, aliceSubject, nil))
+		t.Context(), command(discord.CommandCircles, boundChannel, guild, aliceSubject, nil), fixtureNow)
 	require.NoError(t, err)
 	content := ephemeral(t, reply)
 
@@ -443,7 +443,7 @@ func TestDispatch_AnUnboundChannel_NamesTheServerOfEveryCircleItOffers(t *testin
 	f.seedMemberFor(second, aliceSubject, "Alice", string(authz.RoleMember))
 
 	reply, err := f.commander.Dispatch(
-		t.Context(), command(discord.CommandBoard, otherChannel, guild, aliceSubject, nil))
+		t.Context(), command(discord.CommandBoard, otherChannel, guild, aliceSubject, nil), fixtureNow)
 	require.NoError(t, err)
 	content := ephemeral(t, reply)
 
@@ -486,7 +486,7 @@ func TestCommands_TheWeakestRoleHoldingThePermission_CanRunTheCommand(t *testing
 				}
 			}
 			reply, err := f.commander.Dispatch(
-				t.Context(), command(c.Name, boundChannel, guild, subject, args))
+				t.Context(), command(c.Name, boundChannel, guild, subject, args), fixtureNow)
 			require.NoError(t, err)
 			content := ephemeral(t, reply)
 			require.NotContains(t, content, "does not hold",

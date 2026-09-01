@@ -118,7 +118,9 @@ func NewCommander(cfg CommanderConfig) (*Commander, error) {
 // interaction that answers with an HTTP error shows the invoker "the application did not respond",
 // which is indistinguishable from the instance being down. The one exception is an infrastructure
 // failure, which is returned so the edge can render a problem and log it.
-func (c *Commander) Dispatch(ctx context.Context, in Interaction) (InteractionReply, error) {
+func (c *Commander) Dispatch(
+	ctx context.Context, in Interaction, signedAt core.Micros,
+) (InteractionReply, error) {
 	now := c.clock.Now()
 	if in.Type == TypePing {
 		return Pong(now), nil
@@ -175,7 +177,7 @@ func (c *Commander) Dispatch(ctx context.Context, in Interaction) (InteractionRe
 			"Your role in this circle does not hold `%s`.", command.Permission)), nil
 	}
 
-	content, allowVisible, err := c.run(ctx, command, invocation, binding, principal, now)
+	content, allowVisible, err := c.run(ctx, command, invocation, binding, principal, signedAt)
 	if err != nil {
 		return c.refusal(err, now)
 	}
@@ -197,17 +199,20 @@ func (c *Commander) Dispatch(ctx context.Context, in Interaction) (InteractionRe
 
 // run performs the command. The second result says whether the ANSWER may ever be visible, which
 // is a property of what was produced rather than of what was asked for.
+//
+// `signedAt` is the instant the interaction was SIGNED at, from [Verifier.Verify], and not a clock
+// reading. Only `report` uses it, and [Commander.report] says why.
 func (c *Commander) run(
 	ctx context.Context, command Command, in Invocation, binding Binding,
-	principal auth.Principal, now core.Micros,
+	principal auth.Principal, signedAt core.Micros,
 ) (string, bool, error) {
 	switch command.Name {
 	case CommandBoard:
-		return c.board(ctx, binding.CircleID, now)
+		return c.board(ctx, binding.CircleID)
 	case CommandStatus:
-		return c.status(ctx, in, binding.CircleID, principal, now)
+		return c.status(ctx, in, binding.CircleID, principal)
 	case CommandReport:
-		return c.report(ctx, in, binding.CircleID, principal, now)
+		return c.report(ctx, in, binding.CircleID, principal, signedAt)
 	default:
 		// Unreachable through [Dispatch], which looked the command up in the same catalogue this
 		// switch covers. TestCommands_EverySubcommand_IsDispatched is what keeps it that way.
@@ -220,9 +225,7 @@ func (c *Commander) run(
 // drops rows counts them somewhere visible.
 const boardEntries = 10
 
-func (c *Commander) board(
-	ctx context.Context, circleID core.CircleID, now core.Micros,
-) (string, bool, error) {
+func (c *Commander) board(ctx context.Context, circleID core.CircleID) (string, bool, error) {
 	entries, _, err := c.boards.Board(ctx, circleID, projection.BoardFilter{})
 	if err != nil {
 		return "", false, err
@@ -277,8 +280,7 @@ func windowSortKey(e projection.BoardEntry) int64 {
 }
 
 func (c *Commander) status(
-	ctx context.Context, in Invocation, circleID core.CircleID,
-	principal auth.Principal, now core.Micros,
+	ctx context.Context, in Invocation, circleID core.CircleID, principal auth.Principal,
 ) (string, bool, error) {
 	name, ok := in.String(OptionTarget)
 	if !ok || name == "" {
@@ -323,21 +325,39 @@ func (c *Commander) status(
 // correction, and the API's own `died_at_too_old` refusal is the same rule with a longer arm.
 const maxBackdateMinutes = 24 * 60
 
+// report appends one kill.
+//
+// **`died_at` is derived from the instant the interaction was SIGNED at, never from this server's
+// clock, and that is what makes a repeated interaction a replay rather than a second row.**
+//
+// The route requires no `Idempotency-Key` — Discord does not send one, and there is no client-side
+// retry to replay — so the thing standing in for it is `ux_tod_report_natural`, which is
+// `(circle, target, reporter, died_at)`. That index only collapses a repeat if `died_at` is the
+// SAME on both, and a clock reading is not: the same signed bytes replayed ninety seconds later
+// produced a second report ninety seconds apart, with the natural key never consulted because the
+// key differed. The signed timestamp is inside what the Ed25519 signature covers, so it cannot be
+// moved by whoever kept the request, and it is the better answer on its own merits — the instant
+// recorded is when the person pressed enter rather than when this handler happened to run.
+//
+// `TestDiscordInteraction_AReplayedInteraction_AppendsOneRow` is the gate, and it ADVANCES THE
+// CLOCK between the two attempts. The version that did not advance it passed against the bug.
 func (c *Commander) report(
 	ctx context.Context, in Invocation, circleID core.CircleID,
-	principal auth.Principal, now core.Micros,
+	principal auth.Principal, signedAt core.Micros,
 ) (string, bool, error) {
 	name, ok := in.String(OptionTarget)
 	if !ok || name == "" {
 		return "", false, apierr.New(apierr.CodeValidationFailed, "name a target")
 	}
-	diedAt := now
+	diedAt := signedAt
 	if minutes, ok := in.Int(OptionMinutesAgo); ok {
 		if minutes < 0 || minutes > maxBackdateMinutes {
 			return "", false, apierr.Newf(apierr.CodeValidationFailed,
 				"minutes_ago is between 0 and %d", maxBackdateMinutes)
 		}
-		diedAt = now.Add(-time.Duration(minutes) * time.Minute)
+		// Offset from the SIGNED instant too, so a backdated report replays for the same reason
+		// an immediate one does.
+		diedAt = signedAt.Add(-time.Duration(minutes) * time.Minute)
 	}
 
 	// Resolved HERE rather than left to `createTodReport`'s own `target_name`, although both run
@@ -382,7 +402,7 @@ func (c *Commander) report(
 		verb = "Already recorded"
 	}
 	return fmt.Sprintf("%s: **%s** died %s (%s).",
-		verb, resolved.Target.Name, renderAge(created.Report.DiedAt, now),
+		verb, resolved.Target.Name, renderAge(created.Report.DiedAt, c.clock.Now()),
 		renderInstant(created.Report.DiedAt)), false, nil
 }
 

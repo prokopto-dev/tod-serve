@@ -124,9 +124,11 @@ wrong interactions URL and find out at 2am. If it will not save, in decreasing o
    refuses every interaction, including Discord's own `PING`.
 2. The instance is not reachable at `$TOD_PUBLIC_URL` from the public internet.
 3. You pasted the console URL, or the callback URL, instead of the one above.
-4. The instance's clock is more than five minutes out. Signatures carry a timestamp and this server
-   refuses one outside that window in either direction, because Ed25519 says *who* signed and never
-   *when* — without the window a single captured interaction is replayable for ever.
+4. The instance's clock is out. Signatures carry a timestamp and this server refuses one outside
+   its window, because Ed25519 says *who* signed and never *when* — without a window a single
+   captured interaction is replayable for ever. The window is **not symmetric**: five minutes into
+   the past, and only **two minutes** into the future, which is the clock-skew tolerance the report
+   log itself accepts. A clock running fast is therefore the tighter constraint of the two.
 
 ## 3. Give the instance the public key
 

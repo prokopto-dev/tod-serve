@@ -136,11 +136,14 @@ func (b *Builder) routeMiddleware(r Route) func(huma.Context, func(huma.Context)
 		// check missing. `TestDiscordRoutes_EveryRoute_RefusesAnUnsignedBody` walks
 		// [DiscordRoutes] rather than a list.
 		if r.Auth == AuthDiscordSignature {
-			if err := b.checkDiscordSignature(ctx); err != nil {
+			verified, err := b.checkDiscordSignature(ctx)
+			if err != nil {
 				b.writeProblem(ctx, err)
 				return
 			}
-			b.dispatch(ctx, r, auth.Principal{}, next)
+			// The verified instant travels on the context the handler is given, so what a
+			// `/tod report` records as `died_at` provably came from a checked signature.
+			b.dispatch(verified, r, auth.Principal{}, next)
 			return
 		}
 

@@ -413,7 +413,7 @@ circle the channel binding resolved to → **that** principal's permissions. The
 credential of its own, so there is nothing for a confused deputy to spend.
 
 **Every refusal is one `401`** — a missing header, a malformed one, a wrong key, an edited body, a
-timestamp outside a five-minute window, and an instance with no public key configured. That is two
+a timestamp outside the window, and an instance with no public key configured. That is two
 rules at once: an unverified interaction is an unauthenticated write, so telling a forger which part
 was wrong tells them what to fix — and Discord's own endpoint validation POSTs a deliberately
 invalid signature when an operator saves the URL and will not accept an endpoint that answers
@@ -434,7 +434,19 @@ Discord does not send one — it POSTs an interaction once, the reply is the bod
 and there is no client-side retry to replay. What stands in its place is `ux_tod_report_natural`:
 the same reporter cannot lodge the same kill twice, so a repeated command is a **replay**, and the
 reply says "already recorded" rather than pretending a second row was appended.
-`TestDiscordInteraction_ARepeatedReport_AppendsOneRow` is the gate.
+
+**That index keys on `died_at`, so `died_at` cannot be a clock reading.** It is the instant the
+interaction was **signed** at — inside what the Ed25519 signature covers, and therefore identical on
+every replay of the same captured request. A clock reading gave the two attempts different keys, and
+the same bytes replayed ninety seconds later wrote a second report ninety seconds apart.
+`Verifier.Verify` returns the verified instant and the middleware carries it on the context, so a
+handler has nothing else to reach for. `TestDiscordInteraction_AReplayedInteraction_AppendsOneRow`
+is the gate and it advances the clock between attempts.
+
+The signature window is **asymmetric** for the same reason: five minutes into the past bounds how
+long a captured request stays useful, and `120` seconds into the future is `tod.FutureTolerance` and
+the `CHECK (died_at <= reported_at + 120000000)` behind it — a wider future half would verify an
+interaction whose write the database then refuses.
 
 The response body is Discord's interaction-callback shape with `as_of` beside it. Discord ignores
 the extra member; exempting the one route whose body somebody else designed would be a second answer

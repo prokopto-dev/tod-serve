@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -150,11 +151,22 @@ func TestDiscordInteraction_ACrossCircleTarget_IsAnsweredAsAbsent(t *testing.T) 
 	require.Contains(t, other, "1 report(s)")
 }
 
-// The route declares `CreatesState: false` and therefore requires no `Idempotency-Key` — Discord
-// does not send one. **This is the mechanism that stands in its place.** The same command run
-// twice appends ONE row, because `ux_tod_report_natural` makes the second a replay, and the reply
-// says so rather than pretending a second report was recorded.
-func TestDiscordInteraction_ARepeatedReport_AppendsOneRow(t *testing.T) {
+// **A REPLAYED interaction appends one row, and the clock moves in between.**
+//
+// The route declares `CreatesState: false` and requires no `Idempotency-Key` — Discord sends none,
+// and there is no client-side retry to replay — so `ux_tod_report_natural` stands in its place. It
+// is `(circle, target, reporter, died_at)`, which collapses a repeat only if `died_at` is the same
+// on both attempts. **It was not**: `died_at` came from this server's clock, so the same captured
+// bytes replayed ninety seconds later wrote a second report ninety seconds apart and the natural
+// key was never consulted. `died_at` now comes from the instant the interaction was SIGNED at,
+// which is inside what the signature covers and therefore cannot be moved by whoever kept the
+// request.
+//
+// **The clock advance is the whole test.** The version of this without it passed against the bug —
+// a frozen clock makes "the two instants are equal" true for free, which is the assertion that
+// needed proving. Ninety seconds is inside [discord.ReplayWindow], so the replay is one this
+// endpoint still accepts as well-signed; it is the write that has to refuse to duplicate.
+func TestDiscordInteraction_AReplayedInteraction_AppendsOneRow(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.seedTarget("Vulak`Aerr", "Temple of Veeshan")
@@ -162,17 +174,105 @@ func TestDiscordInteraction_ARepeatedReport_AppendsOneRow(t *testing.T) {
 	owner := h.seedDiscordMember(blue, authz.RoleOwner, blueSubject)
 	h.seedBinding(blue, blueChannel, sharedGuild, owner, false)
 
-	args := map[string]any{discord.OptionTarget: "Vulak`Aerr"}
-	first := h.interact(t, blueChannel, sharedGuild, blueSubject, discord.CommandReport, args)
+	// Signed ONCE. Both attempts send byte-for-byte the same request, which is what a replay is.
+	headers, body := signedInteraction(t, h.clock.Now(),
+		reportPayload("interaction-replay", blueChannel, sharedGuild, blueSubject, nil))
+
+	first := h.replay(t, headers, body)
 	require.Contains(t, first, "Recorded")
 
-	second := h.interact(t, blueChannel, sharedGuild, blueSubject, discord.CommandReport, args)
+	h.advance(90 * time.Second)
+
+	second := h.replay(t, headers, body)
 	require.Contains(t, second, "Already recorded",
-		"a repeated report claimed to append a second row")
+		"a replayed interaction claimed to append a second row")
 
 	reports, _, err := h.tods.List(t.Context(), tod.ListRequest{CircleID: blue, Limit: 50})
 	require.NoError(t, err)
-	require.Len(t, reports, 1, "the report log grew twice for one kill")
+	require.Len(t, reports, 1, "the report log grew twice for one captured request")
+	require.Equal(t, fixtureNow, reports[0].DiedAt,
+		"died_at must be the SIGNED instant; a clock reading is what let the replay through")
+}
+
+// A backdated report replays for the same reason an immediate one does: `minutes_ago` offsets from
+// the signed instant rather than from the clock, so the two attempts compute one `died_at`.
+func TestDiscordInteraction_AReplayedBackdatedReport_AppendsOneRow(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedTarget("Vulak`Aerr", "Temple of Veeshan")
+	blue := h.seedCircle("Blue")
+	owner := h.seedDiscordMember(blue, authz.RoleOwner, blueSubject)
+	h.seedBinding(blue, blueChannel, sharedGuild, owner, false)
+
+	headers, body := signedInteraction(t, h.clock.Now(), reportPayload(
+		"interaction-backdated", blueChannel, sharedGuild, blueSubject,
+		map[string]any{discord.OptionMinutesAgo: 20}))
+
+	require.Contains(t, h.replay(t, headers, body), "Recorded")
+	h.advance(2 * time.Minute)
+	require.Contains(t, h.replay(t, headers, body), "Already recorded")
+
+	reports, _, err := h.tods.List(t.Context(), tod.ListRequest{CircleID: blue, Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, reports, 1)
+	require.Equal(t, fixtureNow.Add(-20*time.Minute), reports[0].DiedAt)
+}
+
+// Two DISTINCT interactions are two observations and are not collapsed. They carry different
+// signed instants, so the natural key does not match — which is correct: somebody running the
+// command twice a minute apart has reported two times of death, and the derivation clusters them
+// rather than this layer deciding one of them did not happen.
+//
+// It is the other direction of the test above, and without it that one passes against a handler
+// that refused every second report outright.
+func TestDiscordInteraction_TwoDistinctReports_AreBothRecorded(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedTarget("Vulak`Aerr", "Temple of Veeshan")
+	blue := h.seedCircle("Blue")
+	owner := h.seedDiscordMember(blue, authz.RoleOwner, blueSubject)
+	h.seedBinding(blue, blueChannel, sharedGuild, owner, false)
+
+	first, firstBody := signedInteraction(t, h.clock.Now(),
+		reportPayload("interaction-one", blueChannel, sharedGuild, blueSubject, nil))
+	require.Contains(t, h.replay(t, first, firstBody), "Recorded")
+
+	h.advance(time.Minute)
+	second, secondBody := signedInteraction(t, h.clock.Now(),
+		reportPayload("interaction-two", blueChannel, sharedGuild, blueSubject, nil))
+	require.Contains(t, h.replay(t, second, secondBody), "Recorded")
+
+	reports, _, err := h.tods.List(t.Context(), tod.ListRequest{CircleID: blue, Limit: 50})
+	require.NoError(t, err)
+	require.Len(t, reports, 2, "two separate observations were collapsed into one")
+}
+
+// An interaction signed further ahead than the report log will accept a `died_at` is refused at
+// the SIGNATURE rather than accepted and then rejected by the write.
+//
+// A member whose clock is three minutes fast would otherwise get a well-formed `401`-free
+// signature check followed by a `422 died_at_in_future` from the database — a verified request the
+// instance then refuses, which is the worst pair of answers available.
+func TestDiscordInteraction_SignedFurtherAheadThanTheReportLogAccepts_IsRefused(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.seedTarget("Vulak`Aerr", "Temple of Veeshan")
+	blue := h.seedCircle("Blue")
+	owner := h.seedDiscordMember(blue, authz.RoleOwner, blueSubject)
+	h.seedBinding(blue, blueChannel, sharedGuild, owner, false)
+
+	ahead := h.clock.Now().Add(discord.FutureSkewTolerance + time.Second)
+	headers, body := signedInteraction(t, ahead,
+		reportPayload("interaction-ahead", blueChannel, sharedGuild, blueSubject, nil))
+
+	got := h.do(request{
+		Method: http.MethodPost, Path: interactionsPath, Body: string(body), Headers: headers,
+	})
+	require.Equal(t, http.StatusUnauthorized, got.Status, got.Body)
+
+	reports, _, err := h.tods.List(t.Context(), tod.ListRequest{CircleID: blue, Limit: 50})
+	require.NoError(t, err)
+	require.Empty(t, reports)
 }
 
 // A bind naming a channel that already belongs to a live circle is refused, and the refusal names
@@ -309,6 +409,46 @@ func (h *harness) serverOf(circleID core.CircleID) string {
 	row, err := h.store.Queries().GetCircle(h.t.Context(), circleID.String())
 	require.NoError(h.t, err)
 	return row.Server
+}
+
+// reportPayload is one `/tod report` interaction, as Discord sends it.
+//
+// It takes the interaction ID so a test can send the SAME one twice — a replay — or two different
+// ones, which are two observations.
+func reportPayload(
+	id, channelID, guildID, subject string, extra map[string]any,
+) map[string]any {
+	options := []map[string]any{{"name": discord.OptionTarget, "value": "Vulak`Aerr"}}
+	for k, v := range extra {
+		options = append(options, map[string]any{"name": k, "value": v})
+	}
+	return map[string]any{
+		"type": 2, "id": id, "guild_id": guildID, "channel_id": channelID,
+		"member": map[string]any{"user": map[string]any{"id": subject, "username": "someone"}},
+		"data": map[string]any{
+			"name": discord.RootCommand,
+			"options": []map[string]any{{
+				"name": discord.CommandReport, "type": discord.OptionTypeSubCommand,
+				"options": options,
+			}},
+		},
+	}
+}
+
+// replay sends bytes that were signed earlier, verbatim. It is the difference between this and
+// [harness.interact], which signs afresh at the current instant: a replay is the same request
+// arriving twice, and signing again would be a second interaction.
+func (h *harness) replay(t *testing.T, headers map[string]string, body []byte) string {
+	t.Helper()
+	got := h.do(request{
+		Method: http.MethodPost, Path: interactionsPath, Body: string(body), Headers: headers,
+	})
+	require.Equal(t, http.StatusOK, got.Status, got.Body)
+
+	var reply discord.InteractionReply
+	require.NoError(t, json.Unmarshal([]byte(got.Body), &reply))
+	require.NotNil(t, reply.Data)
+	return reply.Data.Content
 }
 
 func bindingsPath(circleID core.CircleID) string {

@@ -215,7 +215,15 @@ func (s *Server) registerDiscord() error {
 					return nil, apierr.Wrap(apierr.CodeMalformedRequest, err,
 						"the interaction payload could not be read")
 				}
-				reply, err := s.cfg.DiscordCommands.Dispatch(ctx, interaction)
+				signedAt, ok := SignedAtFrom(ctx)
+				if !ok {
+					// Unreachable through the middleware, which puts it there before any handler
+					// runs. A 500 rather than a clock reading: falling back to `time.Now` here is
+					// exactly the bug this plumbing exists to remove, and it would come back
+					// silently.
+					return nil, apierr.New(apierr.CodeInternalError, "")
+				}
+				reply, err := s.cfg.DiscordCommands.Dispatch(ctx, interaction, signedAt)
 				if err != nil {
 					return nil, err
 				}
@@ -274,19 +282,36 @@ func (s *Server) requireBindingIfMatch(
 // It reads the RAW buffered body. `withBufferedBody` runs outside the framework and stores the
 // bytes as they arrived, which is what Discord signed — re-encoding a decoded payload changes
 // member order and whitespace and would refuse every genuine interaction.
-func (b *Builder) checkDiscordSignature(ctx huma.Context) error {
+func (b *Builder) checkDiscordSignature(ctx huma.Context) (huma.Context, error) {
 	if b.cfg.DiscordVerifier == nil {
-		return apierr.New(apierr.CodeUnauthenticated, "the interaction signature is not valid")
+		return ctx, apierr.New(apierr.CodeUnauthenticated, "the interaction signature is not valid")
 	}
 	body := bodyFrom(ctx.Context())
-	err := b.cfg.DiscordVerifier.Verify(
+	signedAt, err := b.cfg.DiscordVerifier.Verify(
 		ctx.Header(DiscordSignatureHeader), ctx.Header(DiscordTimestampHeader), body)
 	if err != nil {
 		b.cfg.Log.WarnContext(ctx.Context(), "refused a Discord interaction",
 			slog.String("reason", "signature"))
-		return apierr.New(apierr.CodeUnauthenticated, "the interaction signature is not valid")
+		return ctx, apierr.New(apierr.CodeUnauthenticated, "the interaction signature is not valid")
 	}
-	return nil
+	// Carried on the context rather than left for the handler to re-parse out of the header.
+	// A `/tod report` records this instant as `died_at`, so it has to be one that provably came
+	// from a VERIFIED signature — re-reading the header would let an unverified value reach the
+	// report log the day somebody moved this check.
+	return huma.WithValue(ctx, signedAtKey{}, signedAt), nil
+}
+
+type signedAtKey struct{}
+
+// SignedAtFrom returns the instant a verified interaction was signed at.
+//
+// The second result is false on any route that is not signature-authenticated, which is every
+// route but one. A handler on the interactions route can rely on it: the middleware refused the
+// request before the handler ran if the signature did not verify, so there is no
+// "verified route with no signed instant" state to think about.
+func SignedAtFrom(ctx context.Context) (core.Micros, bool) {
+	at, ok := ctx.Value(signedAtKey{}).(core.Micros)
+	return at, ok
 }
 
 // InteractionsURL renders the absolute URL an operator pastes into the developer portal's
