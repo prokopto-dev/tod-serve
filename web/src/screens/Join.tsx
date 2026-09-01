@@ -21,7 +21,16 @@ import { RevocationBanner } from '../components/RevocationBanner'
 import { Banner, Button, Card, Field, Input, Mono, Spinner } from '../components/ui'
 import { takeFragment, type Fragment } from '../lib/hash'
 import { instant, plural } from '../lib/format'
-import { clearPendingJoin, pendingJoin, rememberCircle, setPendingJoin } from '../lib/storage'
+import {
+  clearPendingJoin,
+  pendingJoin,
+  rememberCircle,
+  safeReturnTo,
+  setPendingJoin,
+} from '../lib/storage'
+
+/** CONSOLE_CLIENT is what a device minted from this console is called. See [SignIn]. */
+const CONSOLE_CLIENT = 'tod-serve console'
 
 /** CALLBACK_ERRORS explains what came back in `#error=`, in the vocabulary the API uses. */
 const CALLBACK_ERRORS: Record<string, string> = {
@@ -111,18 +120,61 @@ export function Join() {
   }
 
 
-  // A ticket coming back from the provider. Which operation it feeds depends on what was pending:
-  // an invite code means `redeemInvite`, a remembered circle means `authenticateIdentity`. Both
-  // take the SAME credential union, which is why the console has one code path here.
+  /**
+   * onSteppedUp runs after a re-proof of a session that already existed.
+   *
+   * It navigates BACK to where the step-up was asked for rather than to the board. Somebody was on
+   * Members, or Settings, and got refused; landing them somewhere else would make them find their
+   * way back and click the thing again, which is most of what made the old remedy feel like a
+   * punishment. See ADR-0024.
+   *
+   * Nothing is remembered and no circle is recorded, because nothing changed: same session, same
+   * membership, same circle, a fresher proof. The principal IS re-read — `stepped_up` and the
+   * per-tier expiries all moved, and the console draws controls from them.
+   */
+  const onSteppedUp = (returnTo: string | undefined) => {
+    clearPendingJoin()
+    reloadPrincipal()
+    navigate(safeReturnTo(returnTo, '/board'), { replace: true })
+  }
+
+  // A ticket coming back from the provider. Which operation it feeds depends on what was pending,
+  // and there are three, not two: an invite code means `redeemInvite`, a step-up means
+  // `stepUpSession`, and a remembered circle means `authenticateIdentity`. All three take the SAME
+  // credential union, which is why the console has one code path here.
+  //
+  // The step-up branch is checked FIRST and deliberately so. It is the one that must not mint a
+  // device, and falling through to `authenticateIdentity` — which would also succeed — is exactly
+  // the mistake that produced the complaint: the same round trip, the same landing, and a new row
+  // in the Devices list nobody asked for.
   useEffect(() => {
     if (fragment.kind !== 'ticket' || !pending) return
     const credential = { kind: 'provider_ticket' as const, ticket: fragment.ticket }
+    if (pending.stepUp) {
+      api
+        .stepUpSession({ body: { provider: pending.provider, credential } })
+        .then(() => onSteppedUp(pending.returnTo))
+        .catch((err: unknown) => {
+          setError(toError(err))
+          setBusy(false)
+        })
+      return
+    }
+    // Both of these mint a device, and it is named rather than left to the server's anonymous
+    // `device` fallback — a list of identical rows is half of why nobody could tell which sign-in
+    // had produced what. ADR-0024.
+    const client = { name: CONSOLE_CLIENT }
     const request = pending.code
       ? api.redeemInvite({
-          body: { invite_code: pending.code, provider: pending.provider, credential },
+          body: { invite_code: pending.code, provider: pending.provider, credential, client },
         })
       : api.authenticateIdentity({
-          body: { circle_id: pending.circleId ?? '', provider: pending.provider, credential },
+          body: {
+            circle_id: pending.circleId ?? '',
+            provider: pending.provider,
+            credential,
+            client,
+          },
         })
     request
       .then((r) => onJoined(body(r)))
@@ -162,6 +214,7 @@ export function Join() {
           provider: providerKey,
           credential: { kind: 'none' },
           display_name: displayName.trim(),
+          client: { name: CONSOLE_CLIENT },
         },
       })
       .then((r) => onJoined(body(r)))

@@ -27,6 +27,15 @@ import { ProviderButton } from '../components/ProviderButton'
 import { Banner, Button, Card, Empty, Field, Input, Select, Spinner } from '../components/ui'
 import { forgetCircle, rememberedCircles, setPendingJoin } from '../lib/storage'
 
+/**
+ * CONSOLE_CLIENT is what a device minted by a console sign-in is called.
+ *
+ * Not a browser sniff. A `User-Agent` string is a guess that ages badly and would put a different
+ * name on the same browser after an update; "the console" is the fact this client actually knows
+ * about itself, and it is enough to tell these rows from a plugin's.
+ */
+const CONSOLE_CLIENT = 'tod-serve console'
+
 export function SignIn() {
   // Sign-out lands here, and the confirmation it carries is rendered here rather than where the
   // button is: that component navigated away and was gone before it could draw anything. The state
@@ -85,6 +94,11 @@ export function SignIn() {
           provider: providerKey,
           credential: { kind: 'none' },
           display_name: displayName.trim(),
+          // Naming the device the sign-in mints. `/sessions` hands back a personal access token
+          // whichever kind of client called it, and a browser has no use for one — but the row
+          // exists, so it says what it is rather than falling back to the anonymous `device` that
+          // made the list unreadable. Re-proving a session mints nothing at all; ADR-0024.
+          client: { name: CONSOLE_CLIENT },
         },
       })
       // Confirmed rather than assumed, for the same reason [Join] confirms it: `/sessions` hands

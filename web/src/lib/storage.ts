@@ -27,6 +27,39 @@ export interface PendingJoin {
   code?: string
   circleId?: string
   provider: string
+  /**
+   * stepUp marks a round trip that is re-proving an EXISTING session rather than signing in.
+   *
+   * The ticket that comes back feeds `stepUpSession` instead of `authenticateIdentity`, which is
+   * the difference between refreshing a proof and minting another device. See ADR-0024 — a device
+   * list filling up with one browser is what that distinction is for.
+   */
+  stepUp?: boolean
+  /**
+   * returnTo is the console path to land on afterwards, for a step-up.
+   *
+   * A step-up interrupts something: somebody was on Members, or Settings, and got refused. Sending
+   * them to the board instead of back to what they were doing is a small betrayal of its own, and
+   * it is why this is remembered rather than defaulted.
+   *
+   * It is a PATH within this console and never a URL. It is written by the console and read by the
+   * console, and [safeReturnTo] refuses anything that is not a single-slash path — so a value that
+   * ever did come from somewhere else cannot become an open redirect.
+   */
+  returnTo?: string
+}
+
+/**
+ * safeReturnTo narrows a remembered path to one this console may navigate to.
+ *
+ * `//evil.example` is a protocol-relative URL and `https://evil.example` is an absolute one; both
+ * are things `navigate()` would happily follow. Nothing writes either today — the only writer is
+ * [StepUpProvider], with `location.pathname` — and that is exactly the kind of fact that stops
+ * being true quietly. One slash, and no second one.
+ */
+export function safeReturnTo(value: string | undefined, fallback: string): string {
+  if (!value || !value.startsWith('/') || value.startsWith('//')) return fallback
+  return value
 }
 
 function read<T>(storage: Storage, key: string): T | null {
