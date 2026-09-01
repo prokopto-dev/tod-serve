@@ -195,6 +195,12 @@ against `/applications/<id>/guilds/<guild id>/commands` registers them in one gu
 useful for testing, and remember to remove the guild copy afterwards or members see each command
 twice.
 
+**Do not register anything else against this application.** There is one interactions endpoint per
+application, not per command, so every command on it — a guild-scoped copy, one left behind by an
+older version, one some other tool registered — arrives at this instance. The instance answers
+`/tod` and refuses the rest by name rather than by trusting the registration, so nothing breaks; but
+a member who runs one gets a refusal naming you as the person who can fix it.
+
 ## 5. Bind a channel to a circle
 
 A guild raiding Blue and Green is **two circles** on this instance, deliberately

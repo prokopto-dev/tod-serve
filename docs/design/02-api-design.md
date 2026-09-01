@@ -466,7 +466,9 @@ outbound HTTP client in the reply path of every interaction to save one of them.
 request to Discord, and [law 6](../../AGENTS.md) confines outbound HTTP to `internal/identity`
 through one guarded client. `tod-serve discord commands` prints the exact body Discord's
 `PUT /applications/{id}/commands` takes, generated from the same catalogue the dispatcher switches
-on. **That is also why no bot token is configured on this instance at all:** the only thing it would
+on. **That registration is not enforcement**: one application has one interactions endpoint, so any
+other command registered against it reaches this route with a valid signature, and the handler
+checks the top-level name against `tod` before it walks a single option. **That is also why no bot token is configured on this instance at all:** the only thing it would
 have been for is a request this binary may not make.
 
 ## Instance administration

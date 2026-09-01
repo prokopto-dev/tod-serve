@@ -197,6 +197,13 @@ type registrationOption struct {
 // It is generated from the same [Commands] the dispatcher switches on, so a command an operator
 // registered and this server does not answer is not a thing that can happen by editing one of two
 // lists.
+//
+// **The converse is not this function's to guarantee, and it is worth being clear about which
+// half is which.** This renders what the instance ASKS Discord to offer; it says nothing about
+// what Discord actually has. One application has one interactions endpoint, so a command
+// registered against it by anything else — a guild-scoped copy, an older version, another tool —
+// arrives at the same route with a valid signature. What refuses those is
+// [Interaction.Command] checking the top-level name against [RootCommand], not this list.
 func CommandRegistrationJSON() ([]byte, error) {
 	subcommands := make([]registrationOption, 0, len(Commands()))
 	for _, c := range Commands() {
