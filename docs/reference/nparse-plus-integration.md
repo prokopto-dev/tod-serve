@@ -174,14 +174,29 @@ Concretely:
   rate limiter and before authentication, under any parameter name at all. There is no compatibility
   shim. Do not try.
 
-### One token per circle. Blue and Green means two.
+### One token per circle, and a person may be in any number of them
 
-ADR-0005 binds a PAT to a **membership**, not to a person and not to an instance. A circle is
-pinned to exactly one server, immutably, and there is no combined view anywhere. So:
+ADR-0005 binds a PAT to a **membership**, not to a person and not to an instance. So the number of
+tokens a user holds is the number of **circles** they belong to. Get the shape right, because the
+obvious simplification is wrong:
 
-- A raider in a Blue circle and a Green circle holds **two tokens**, minted by two separate joins.
-- Your credential store is keyed on circle, not on user. Store `(circle_id, circle name, server,
-  token)` together.
+| Relationship | Cardinality |
+|---|---|
+| circle → server | **Many-to-one, and immutable** ([ADR-0009](../adr/0009-circle-pinned-to-one-server.md)). A circle is pinned to one server for life |
+| person → circle | **Many-to-many, with no per-server limit.** `membership` carries no `server` column, and its only uniqueness is `(circle_id, identity_id)` — one membership per circle, and nothing stopping several circles on one server |
+| circle name → server | Unique per server (`(name_norm, server)` where not deleted). **On one server circles are told apart by name; across servers the same name may repeat** |
+
+So a user may hold three tokens for their guild's Blue circle, an allied Blue circle and a Green
+circle — **two of them on the same server**. That is an ordinary case, not a corner one.
+
+- **Key your credential store on `circle_id`, and on nothing else.** It is a set, not a map from
+  server to token. A store keyed or deduplicated by server silently loses one of two Blue
+  memberships, and the user's reports go to the wrong circle.
+- Store `(circle_id, circle name, server, token)` together, but treat only `circle_id` as the
+  identity. `server` is an attribute of the circle you must send back on a report; it identifies
+  nothing.
+- **Never label a circle by server alone** in any UI you build. Two rows can both say "blue". Show
+  the name and the server together.
 - With the scope set this document recommends you cannot list circles at all
   (`listCircles` needs `circle:read`, which you should not request). `GET /me` is how a token tells
   you which circle it is for.
@@ -477,8 +492,10 @@ Body (`CreateTodReportInputBody`; `server` and `died_at` are the only required f
   "client_clock_offset_seconds": -3 }
 ```
 
-- `server` must equal the circle's server or the answer is `422 server_mismatch`. A circle is pinned
-  to one server immutably; read it from `Joined.circle.server` and store it beside the token.
+- `server` must equal the circle's server or the answer is `422 server_mismatch`. Read it from
+  `Joined.circle.server` and store it **against that circle id**. There is no such thing as "the
+  user's server": one user can be reporting into two circles on `blue` and one on `green`, so a
+  single global server setting is a bug that will misroute every report from the second circle.
 - `source` ∈ `log_line | manual | api | import`, defaulting to `manual`. A parsed line is
   `log_line`; a time the user typed is `manual`. Be truthful — this is what an officer uses to
   weigh evidence.
@@ -777,7 +794,8 @@ rather than a rewrite.
    preview's `providers[]`, the matching `credential`, and
    `"scopes": ["tod:read","tod:report","catalogue:read"]`.
 3. **Store, once.** Persist `token.token` from the response — it exists nowhere else — keyed by
-   `circle.id`, beside `circle.server` and `circle.name`. Keychain, or a `0600` file. Log
+   `circle.id` and never by server, beside `circle.server` and `circle.name`. The store is a set of
+   circles; a user can be in two on the same server. Keychain, or a `0600` file. Log
    `token.token_prefix` and nothing more.
 4. **Confirm.** `GET /me` with the new token. Record `circle_id`, `role` and the `scopes` you were
    actually granted.
