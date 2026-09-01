@@ -9,9 +9,15 @@
 // a circle id — with a credential, and answering 404 for everything. So the console offers circles
 // it has actually signed into before, from this browser's own storage. Somebody arriving for the
 // first time comes through an invite link, which is the whole point of the link.
+//
+// That same storage is what the header's circle switcher offers, and `?circle=` is how it hands
+// one over: switching circles IS a re-authentication, so the switcher navigates here rather than
+// flipping something. The parameter is honoured only when it names a circle this browser already
+// remembers — a preselection is a convenience, and one taken from the address bar should not be
+// able to put an id on the screen that nothing here has ever seen.
 
 import { useState } from 'react'
-import { Link, Navigate, useLocation } from 'react-router-dom'
+import { Link, Navigate, useLocation, useSearchParams } from 'react-router-dom'
 
 import { api, body, toError } from '../api'
 import { readSignedOut, signedOutMessage } from '../app/signedOut'
@@ -34,7 +40,10 @@ export function SignIn() {
   )
 
   const [circles, setCircles] = useState(rememberedCircles)
-  const [circleID, setCircleID] = useState(circles[0]?.id ?? '')
+  const wanted = useSearchParams()[0].get('circle') ?? ''
+  const [circleID, setCircleID] = useState(
+    () => circles.find((c) => c.id === wanted)?.id ?? circles[0]?.id ?? '',
+  )
   const [displayName, setDisplayName] = useState('')
   const [error, setError] = useState<Error | null>(null)
   const [busy, setBusy] = useState(false)

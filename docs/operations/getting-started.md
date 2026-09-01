@@ -830,6 +830,41 @@ prunes it.
 
 ---
 
+## A second circle
+
+A guild raiding Blue and Green keeps **two circles**. There is no combined view of them anywhere
+and there never will be — [ADR-0009](../adr/0009-circle-pinned-to-one-server.md), enforced by
+a `BEFORE UPDATE` trigger — so a circle cannot be moved to another server after it is created and
+the choice of server is the one field on it that is permanent.
+
+Two ways to make one, and **they are not equivalent**:
+
+| | `tod-serve circle create` | **Console → circle switcher → Create a circle** |
+|---|---|---|
+| Writes the circle | Yes | Yes |
+| Mints the one-time owner code | **Yes** | **No** |
+| Needs | the database, no credential | `instance.circle.create` and a re-authenticated session |
+
+`POST /circles` writes the circle row and nothing else: no membership, no owner, no invite. The
+one-time owner code that gives a circle its first owner is minted only by `tod-serve circle create`,
+and only as part of creating — there is no operation, in the console or in the API, that mints one
+for a circle that already exists. **So a circle created from the console has no way in yet**, and
+with nobody in it holding `circle.delete` it cannot be removed either. The form says so before the
+button rather than after it.
+
+Use the CLI for a circle somebody is meant to join:
+
+```bash
+docker compose -f deploy/compose.local.yaml run --rm tod-serve \
+  circle create --name "Kittens Who Say Meep — Green" --server green
+```
+
+Then hand the printed code to whoever is going to own it, exactly as in
+[A9](#a9-redeem-the-owner-code). Switching between circles you belong to is the same control: a
+session belongs to one circle, so the switcher signs you in again rather than flipping a filter.
+
+---
+
 ## Starting over
 
 For an instance that is half-configured, misconfigured, or that you want to rebuild from zero.

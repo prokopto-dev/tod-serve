@@ -112,6 +112,8 @@ export function CircleSettings() {
         />
       )}
 
+      {principal.can('instance.circle.create') && <AnotherCircleCard />}
+
       {data && canDelete && <DeleteCircleCard circle={data} onError={setError} />}
 
       {data && !canSecurity && !canManage && !canDelete && (
@@ -123,6 +125,32 @@ export function CircleSettings() {
         </Banner>
       )}
     </div>
+  )
+}
+
+/**
+ * AnotherCircleCard points at the create form. It is a LINK and not a second copy of that form.
+ *
+ * The permission is instance-realm — `instance.circle.create` comes from the grant ledger, keyed
+ * on an identity, and no role in any circle grants it — so the form cannot live inside this
+ * screen: the section that reveals this one is gated on three circle-realm keys, and an instance
+ * owner who is an ordinary member here holds none of them. This is the neighbour, not the home.
+ */
+function AnotherCircleCard() {
+  const navigate = useNavigate()
+  return (
+    <Card
+      title="Another circle"
+      subtitle="A guild raiding two servers keeps two circles: this one cannot be moved to another server."
+      actions={<Button onClick={() => navigate('/circles/new')}>New circle…</Button>}
+    >
+      <p className="px-4 py-3 text-xs text-ink-400">
+        You hold <Mono>instance.circle.create</Mono>, so you can create one from here. Read what the
+        form says before you do: creating a circle writes the circle and nothing else — no
+        membership, no owner and no invite — and the code that gives a circle its first owner is
+        minted only by <Mono>tod-serve circle create</Mono>.
+      </p>
+    </Card>
   )
 }
 
