@@ -47,9 +47,21 @@ type Derived struct {
 	// ImplausibleReportIDs name observations that cannot be true alongside the current answer.
 	// They are flagged and retained: derived state must never veto an observation.
 	ImplausibleReportIDs []core.TodReportID `json:"implausible_report_ids"`
+	// AttributionVisible says whether this principal holds `tod.read.attribution`, and it is the
+	// ONLY thing on the wire that says so.
+	//
+	// It exists because `reporters` cannot answer it. That field is omitted for a principal
+	// without the permission AND for a target nobody has reported yet, so a client reading the
+	// permission off its absence told every owner on a fresh instance that they lacked a
+	// permission they hold — issue #52. Emptiness is an amount of data; this is a decision about
+	// the caller, and the two are now separate fields because they are separate facts.
+	AttributionVisible bool `json:"attribution_visible"`
 	// Reporters is present ONLY for a principal holding `tod.read.attribution`. That separation IS
 	// the `observer` role: a circle can share a board with an allied guild without handing over
 	// the identity of its trackers, and the evidence counts above stay visible either way.
+	//
+	// Empty is not a refusal. A permitted principal looking at a target with no reports gets
+	// `attribution_visible: true` and nothing here, which is "nobody has reported this yet".
 	Reporters  []Reporter   `json:"reporters,omitempty"`
 	ComputedAt *core.Micros `json:"computed_at"`
 }
@@ -156,6 +168,9 @@ func (s *Service) Get(
 	}
 
 	view := toDerived(target, circle.Server, timer, state, stored)
+	// Set from the permission and never from what `reporters` ended up holding: a target with no
+	// reports is permitted-and-empty, not denied.
+	view.AttributionVisible = attribution
 	if attribution {
 		view.Reporters, err = reportersOf(state, rows, members)
 		if err != nil {
@@ -207,6 +222,8 @@ func toDerived(
 func reportersOf(
 	state consensus.State, rows []sqlitegen.TodReport, members map[string]sqlitegen.Membership,
 ) ([]Reporter, error) {
+	// Nothing reads a permission off this being empty any more — `attribution_visible` carries
+	// that — so this is only the shortcut it looks like.
 	if len(state.Evidence.ReportIDs) == 0 {
 		return nil, nil
 	}

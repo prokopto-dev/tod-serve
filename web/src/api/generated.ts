@@ -1086,6 +1086,7 @@ export type TargetStateResponse = {
   alternatives_total: number
   /** RFC 3339 with microsecond precision, always UTC. */
   as_of: string
+  attribution_visible: boolean
   change_reason: string | null
   /** RFC 3339 with microsecond precision, always UTC. */
   computed_at: string

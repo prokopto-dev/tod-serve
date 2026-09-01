@@ -308,6 +308,9 @@ func (s *Server) registerTods() error {
 				// `reporters[]` only for a principal that holds attribution. That separation IS
 				// the observer role: a board can be shared with an allied guild without handing
 				// over the identity of the trackers behind it.
+				//
+				// The same flag comes back as `attribution_visible`, because the body cannot
+				// otherwise distinguish a refusal from a target nobody has reported.
 				derived, err := s.cfg.States.Get(ctx, circleID, targetID,
 					p.Can(authz.PermissionTodReadAttribution))
 				if err != nil {
