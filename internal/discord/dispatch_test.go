@@ -10,6 +10,7 @@ import (
 
 	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/discord"
+	"github.com/prokopto-dev/tod-serve/internal/tod"
 )
 
 // The channel, guild and Discord account every case below uses. Constants so a failure names the
@@ -513,4 +514,65 @@ func weakestRoleHolding(t *testing.T, permission authz.Permission) authz.Role {
 	}
 	t.Fatalf("no role holds %q; a command declares a permission no circle role grants", permission)
 	return ""
+}
+
+// **A command this instance never registered does not reach a handler, however Discord got it.**
+//
+// There is one interactions endpoint per APPLICATION, not per command. Every command registered
+// against this application arrives here with a valid signature — a guild-scoped copy, one left by
+// an older version, one another tool registered against the same application id — and each carries
+// whatever subcommand its author chose. Without the top-level check, any of them naming `board`,
+// `status`, `report` or `circles` dispatched, and [discord.RootCommand] was decorative: something
+// the generated registration asserts and nothing enforces.
+//
+// The registration is not the mechanism. It says what this instance ASKED Discord to offer, and
+// nothing at all about what Discord has.
+func TestDispatch_ASubcommandUnderAnotherTopLevelCommand_IsRefused(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	mine := f.seedCircle("Mine", "blue")
+	owner := f.seedMember(mine, aliceSubject, "Alice", string(authz.RoleOwner))
+	f.bind(mine, boundChannel, guild, true, owner)
+	f.seedTarget("Vulak`Aerr")
+
+	// The invoker is a real owner of the bound circle, so nothing downstream would have refused
+	// this: the ONLY thing standing between the payload and a write is the top-level name.
+	for _, root := range []string{"todserve", "tod-legacy", "raid", "TOD"} {
+		t.Run(root, func(t *testing.T) {
+			t.Parallel()
+			in := command(discord.CommandReport, boundChannel, guild, aliceSubject,
+				map[string]any{discord.OptionTarget: "Vulak`Aerr"})
+			in.Data.Name = root
+
+			reply, err := f.commander.Dispatch(t.Context(), in, fixtureNow)
+			require.NoError(t, err)
+			content := ephemeral(t, reply)
+			require.Contains(t, content, "and nothing else",
+				"%q reached a handler; the top-level command name is not enforced", root)
+			require.NotContains(t, content, "Recorded",
+				"%q appended a report through a command this instance never registered", root)
+		})
+	}
+
+	// Nothing was written by any of them.
+	reports, _, err := f.tods.List(t.Context(), tod.ListRequest{CircleID: mine, Limit: 50})
+	require.NoError(t, err)
+	require.Empty(t, reports)
+}
+
+// The parse refuses the same payload directly, so the rule is a property of [discord.Interaction]
+// rather than of one branch in the dispatcher.
+func TestCommand_ATopLevelNameThatIsNotTheRoot_IsRefused(t *testing.T) {
+	t.Parallel()
+	in := command(discord.CommandBoard, boundChannel, guild, aliceSubject, nil)
+	in.Data.Name = "somethingelse"
+
+	_, err := in.Command()
+	require.ErrorIs(t, err, discord.ErrNotThisApplicationsCommand)
+
+	// And the root itself still parses, so the check is a filter rather than a wall.
+	ok := command(discord.CommandBoard, boundChannel, guild, aliceSubject, nil)
+	got, err := ok.Command()
+	require.NoError(t, err)
+	require.Equal(t, discord.CommandBoard, got.Name)
 }

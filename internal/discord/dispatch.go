@@ -130,7 +130,17 @@ func (c *Commander) Dispatch(
 	}
 
 	invocation, err := in.Command()
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrNotThisApplicationsCommand):
+		// Discord has a command registered against this application that this binary does not
+		// answer — a guild-scoped copy, or one left behind by an older version. The remedy is an
+		// operator's, so the message names it rather than leaving a member to conclude the bot is
+		// broken.
+		return Ephemeral(now, fmt.Sprintf(
+			"This instance answers `/%s` and nothing else. A command registered against the same "+
+				"Discord application reaches the same endpoint, so an operator should remove it "+
+				"or re-register the list with `tod-serve discord commands`.", RootCommand)), nil
+	case err != nil:
 		return Ephemeral(now, "That command is not one this application registered."), nil
 	}
 	command, ok := LookupCommand(invocation.Name)

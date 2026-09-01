@@ -46,6 +46,23 @@ const FlagEphemeral = 1 << 6
 // Discord, so a detailed parse failure would help nobody and would be logged on a hot path.
 var ErrMalformedInteraction = errors.New("the interaction payload could not be read")
 
+// ErrNotThisApplicationsCommand is returned for an interaction whose top-level command is not
+// [RootCommand].
+//
+// **There is one interactions endpoint per Discord APPLICATION, not per command**, so every
+// command registered on this application — a guild-scoped one, a legacy one an operator forgot to
+// delete, one registered by a different tool against the same application id — arrives here with a
+// valid signature. Without this check, any of them carrying a `SUB_COMMAND` named `board`,
+// `status`, `report` or `circles` would dispatch, and [RootCommand] would be decorative: something
+// the registration says and nothing enforces.
+//
+// It is a distinct error from [ErrMalformedInteraction] because the fix is different and belongs to
+// a different person. A malformed payload is Discord sending something this version cannot read;
+// this is a REGISTRATION that does not match the binary, which an operator repairs with
+// `tod-serve discord commands`.
+var ErrNotThisApplicationsCommand = errors.New(
+	"the interaction names a command this instance did not register")
+
 // Interaction is the part of Discord's payload this server reads. It is a NARROW struct on
 // purpose: every member here is an assertion by a party we do not trust with tenancy, and a field
 // that is never read is a field nobody has to reason about.
@@ -200,9 +217,23 @@ func ParseInteraction(body []byte) (Interaction, error) {
 // Discord sends `/tod board` as one command named `tod` carrying a single `SUB_COMMAND` option
 // named `board`, whose own options are the arguments. Flattening that here means the dispatcher
 // never walks the nesting, so a command added later cannot walk it differently.
+//
+// **The top-level name is CHECKED, not assumed.** One application has one interactions endpoint,
+// so every command on it lands here — see [ErrNotThisApplicationsCommand]. The generated
+// registration is not enforcement: it says what this instance asked Discord to offer, and says
+// nothing about what Discord actually has, which an operator can add to at any time and from
+// anywhere.
+//
+// The application id is deliberately NOT checked beside it, and that is not an oversight: a
+// payload from another application is signed with another application's key, so
+// [Verifier.Verify] has already refused it. A second check on a field the signature covers would
+// read as though it were adding something.
 func (i Interaction) Command() (Invocation, error) {
 	if i.Data == nil || i.Data.Name == "" {
 		return Invocation{}, fmt.Errorf("%w: no command data", ErrMalformedInteraction)
+	}
+	if i.Data.Name != RootCommand {
+		return Invocation{}, fmt.Errorf("%w: %q", ErrNotThisApplicationsCommand, i.Data.Name)
 	}
 	for _, opt := range i.Data.Options {
 		if opt.Type == OptionTypeSubCommand {
