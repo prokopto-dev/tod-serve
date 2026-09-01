@@ -109,7 +109,7 @@ function StateCard({ state, asOf }: { state: TargetStateResponse; asOf: AsOf }) 
     >
       <div className="grid gap-4 p-4 md:grid-cols-3">
         <div>
-          <p className="text-[11px] tracking-wide text-ink-400 uppercase">Window</p>
+          <p className="caps text-[11px] text-ink-400">Window</p>
           <div className="mt-2">
             {hasWindow(state.window) ? (
               <WindowBar window={state.window} asOf={asOf} />
@@ -126,7 +126,7 @@ function StateCard({ state, asOf }: { state: TargetStateResponse; asOf: AsOf }) 
         </div>
 
         <div>
-          <p className="text-[11px] tracking-wide text-ink-400 uppercase">Died</p>
+          <p className="caps text-[11px] text-ink-400">Died</p>
           <p className="mt-2 text-ink-100 tnum">{instant(state.died_at)}</p>
           <p className="mt-1 text-[11px] text-ink-500">
             game truth — it may be backdated, and routinely is
@@ -139,7 +139,7 @@ function StateCard({ state, asOf }: { state: TargetStateResponse; asOf: AsOf }) 
         </div>
 
         <div>
-          <p className="text-[11px] tracking-wide text-ink-400 uppercase">Confidence</p>
+          <p className="caps text-[11px] text-ink-400">Confidence</p>
           <div className="mt-2">
             <ConfidenceSteps confidence={state.confidence} />
           </div>
@@ -242,7 +242,7 @@ function ReportersCard({ attribution }: { attribution: Attribution }) {
             {reporter.display_name}
             {reporter.revoked && (
               <span
-                className="ml-1.5 text-[10px] tracking-wide text-amber-400 uppercase"
+                className="caps ml-1.5 text-[10px] text-warn"
                 title="Revoked — and their reports still count. Revocation controls access, never history."
               >
                 revoked
@@ -317,12 +317,12 @@ function ReportsCard({
                     <Td className="tnum text-ink-400">{instant(report.reported_at)}</Td>
                     <Td>
                       {report.kind === 'retraction' ? (
-                        <span className="text-amber-400">retraction</span>
+                        <span className="text-warn">retraction</span>
                       ) : (
                         report.self_confidence
                       )}
                       {report.retracted && (
-                        <span className="ml-1.5 text-[10px] tracking-wide text-amber-400 uppercase">
+                        <span className="caps ml-1.5 text-[10px] text-warn">
                           retracted
                         </span>
                       )}
@@ -332,7 +332,7 @@ function ReportsCard({
                       <Mono>{report.reporter_membership_id.slice(0, 8)}</Mono>
                       {report.reporter_revoked && (
                         <span
-                          className="ml-1.5 text-[10px] tracking-wide text-amber-400 uppercase"
+                          className="caps ml-1.5 text-[10px] text-warn"
                           title="Revoked. Their reports still count."
                         >
                           revoked
@@ -400,7 +400,7 @@ function RetractDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 p-4">
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-ink-950/80 p-4">
       <Card
         className="w-full max-w-lg"
         title="Retract this report"

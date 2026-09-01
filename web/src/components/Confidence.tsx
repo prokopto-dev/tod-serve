@@ -23,11 +23,14 @@ const EXPLANATION: Record<Confidence, string> = {
   high: 'Two or more reporters within 5 minutes, or a log line plus a corroborating reporter.',
 }
 
+// One ladder, four rungs, climbing out of the neutral ramp into the accent and then into the
+// colour this palette already spends on "settled". `high` is chrome.py's GOOD — the same green the
+// `up` chip wears — because both mean the same thing: you can act on this.
 const FILL: Record<Confidence, string> = {
   unknown: 'bg-ink-600',
   low: 'bg-ink-400',
   medium: 'bg-accent-500',
-  high: 'bg-[var(--color-status-inwindow)]',
+  high: 'bg-status-up',
 }
 
 export function ConfidenceSteps({
@@ -49,7 +52,7 @@ export function ConfidenceSteps({
             key={step}
             className={classes(
               'h-3 w-1.5 rounded-[1px]',
-              i <= index ? FILL[confidence] : 'bg-ink-700',
+              i <= index ? FILL[confidence] : 'bg-ink-800',
             )}
           />
         ))}

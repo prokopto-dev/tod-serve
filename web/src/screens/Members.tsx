@@ -139,7 +139,7 @@ function MemberRow({
         <span className="text-ink-100">{member.display_name}</span>
         {member.possible_duplicate && (
           <span
-            className="ml-1.5 rounded border border-amber-800/70 px-1 text-[10px] tracking-wide text-amber-300 uppercase"
+            className="caps ml-1.5 rounded border border-warn/40 px-1 text-[10px] text-warn"
             title="Another membership in this circle looks like the same person. Deciding that they are is a judgement with consequences — it would rewrite who reported what — so this is shown and nothing is done about it."
           >
             possible duplicate
@@ -163,7 +163,7 @@ function MemberRow({
             {member.role}
             {role.note && (
               <span
-                className="ml-1.5 rounded border border-ink-700 px-1 text-[10px] tracking-wide text-ink-400 uppercase"
+                className="caps ml-1.5 rounded border border-ink-700 px-1 text-[10px] text-ink-400"
                 title={role.reason}
               >
                 {role.note}
@@ -177,7 +177,7 @@ function MemberRow({
         {member.provider_key ?? '—'}
         {member.revocation_strength === 'weak' && (
           <span
-            className="ml-1.5 text-[10px] tracking-wide text-amber-400 uppercase"
+            className="caps ml-1.5 text-[10px] text-warn"
             title="Revoking this member cuts off their credentials but cannot stop the same person returning under a new identity."
           >
             weak
@@ -187,7 +187,7 @@ function MemberRow({
       <Td className="tnum text-ink-400">{instant(member.joined_at)}</Td>
       <Td>
         {revoked ? (
-          <span className="text-amber-400" title={member.revoke_reason || undefined}>
+          <span className="text-warn" title={member.revoke_reason || undefined}>
             revoked
           </span>
         ) : (

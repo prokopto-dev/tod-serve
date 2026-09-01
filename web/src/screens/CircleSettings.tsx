@@ -81,7 +81,7 @@ export function CircleSettings() {
               label="Server"
               hint="Immutable. A circle is pinned to one server and there is no combined view anywhere; changing it is refused by a database trigger, not just by the API."
             >
-              <p className="text-xs tracking-wide text-ink-100 uppercase">{data.server}</p>
+              <p className="caps text-xs text-ink-100">{data.server}</p>
             </Field>
             <Field label="Circle id">
               <Mono>{data.id}</Mono>
@@ -382,13 +382,13 @@ function ProviderChoice({
         {choice.kind === 'discord' && <DiscordMark className="text-discord-blurple" />}
         {choice.display_name} <Mono>{choice.key}</Mono>
         {!choice.available && (
-          <span className="text-[10px] tracking-wide text-amber-400 uppercase">
+          <span className="caps text-[10px] text-warn">
             disabled instance-wide
           </span>
         )}
       </label>
       {!choice.available && choice.accepted && (
-        <p className="mt-1 text-[11px] text-amber-300">
+        <p className="mt-1 text-[11px] text-warn">
           This circle still accepts it on paper, and nobody can join through it: the instance
           operator disabled it. It is not gating anything and it does not count towards this
           circle&rsquo;s revocation strength. The next save removes it — an existing member who
@@ -450,7 +450,7 @@ function ProviderChoice({
 function GateSummary({ state, roleCount }: { state: GateState; roleCount: number }) {
   if (state === 'none') {
     return (
-      <p className="rounded border border-amber-800/70 bg-amber-950/40 px-2.5 py-1.5 text-[11px] text-amber-200">
+      <p className="rounded border border-warn/40 bg-warn/12 px-2.5 py-1.5 text-[11px] text-warn">
         <strong>No gate.</strong> Anybody with a Discord account and an invite to this circle gets
         in; Discord membership is not checked at all.
       </p>

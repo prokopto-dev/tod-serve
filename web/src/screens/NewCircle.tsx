@@ -259,7 +259,7 @@ function Created({ circle }: { circle: CircleResponse }) {
             <p className="text-xs text-ink-100">{circle.name}</p>
           </Field>
           <Field label="Server">
-            <p className="text-xs tracking-wide text-ink-100 uppercase">{circle.server}</p>
+            <p className="caps text-xs text-ink-100">{circle.server}</p>
           </Field>
           <Field label="Circle id">
             <Mono>{circle.id}</Mono>

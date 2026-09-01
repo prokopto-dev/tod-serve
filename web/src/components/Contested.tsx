@@ -32,8 +32,8 @@ export function ContestedChip({
     <span
       title={REASONS[key] ?? 'Reports disagree about this target.'}
       className={classes(
-        'inline-flex items-center gap-1 rounded border border-amber-800/70 bg-amber-950/30',
-        'px-1.5 py-0.5 text-[10px] tracking-wide text-amber-300 uppercase',
+        'inline-flex items-center gap-1 rounded border border-warn/40 bg-warn/12',
+        'px-1.5 py-0.5 text-[10px] text-warn',
         className,
       )}
     >

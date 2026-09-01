@@ -198,7 +198,7 @@ function BoardRow({ row, asOf }: { row: BoardEntry; asOf: AsOf }) {
         </Link>
         <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-500">
           <span>{row.target.zone}</span>
-          <span className="text-ink-700">·</span>
+          <span className="text-ink-500">·</span>
           <span>{row.target.expansion}</span>
           {row.timer_source === 'circle_override' && (
             <span

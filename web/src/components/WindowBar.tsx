@@ -42,15 +42,17 @@ export function WindowBar({
 
   return (
     <div className={classes('min-w-[9rem]', className)}>
-      <div className="relative h-1.5 overflow-hidden rounded-full bg-ink-800">
+      <div className="relative h-1.5 overflow-hidden rounded-full bg-ink-950">
         <div
           className={classes(
             'h-full rounded-full transition-[width] duration-500',
+            // The same three tokens the chips wear, so a bar and the chip beside it never
+            // disagree about which state this row is in.
             closed
-              ? 'bg-[var(--color-status-overdue)]'
+              ? 'bg-status-overdue'
               : open
-                ? 'bg-[var(--color-status-inwindow)]'
-                : 'bg-[var(--color-status-prewindow)]',
+                ? 'bg-status-inwindow'
+                : 'bg-status-prewindow',
           )}
           style={{ width: `${progress / 100}%` }}
         />
@@ -65,9 +67,23 @@ export function WindowBar({
           />
         )}
       </div>
-      <p className="mt-1 flex items-center justify-between gap-2 text-[11px] text-ink-400 tnum">
-        <span>{open ? 'closes' : 'opens'} {countdown(open ? untilClose : untilOpen)}</span>
-        <span className="text-ink-500">{(progress / 100).toFixed(0)}% through</span>
+      {/* The countdown carries the state's ink once the window is actually open, and only then:
+          this is the one line on the board that means "act now", and it should not be the same
+          grey as the row above it. Before the window opens it stays neutral — a pre-window
+          countdown is information, not a call. */}
+      <p className="mt-1 flex items-center justify-between gap-2 text-[11px] tnum">
+        <span
+          className={classes(
+            closed
+              ? 'text-status-overdue-ink'
+              : open
+                ? 'text-status-inwindow-ink'
+                : 'text-ink-400',
+          )}
+        >
+          {open ? 'closes' : 'opens'} {countdown(open ? untilClose : untilOpen)}
+        </span>
+        <span className="text-ink-400">{(progress / 100).toFixed(0)}% through</span>
       </p>
     </div>
   )
@@ -85,7 +101,7 @@ export function NoWindow({ status }: { status: string }) {
   }
   return (
     <span
-      className="text-[11px] text-[var(--color-status-notimer)]"
+      className="text-[11px] text-status-notimer-ink"
       title="This instance holds no respawn timer for this target, so there is no window to draw. Timers load from the separate tod-serve-p99-seed repository."
     >
       no timer loaded
