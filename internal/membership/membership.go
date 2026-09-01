@@ -313,9 +313,12 @@ type UpdateRequest struct {
 
 // Update changes a member's role or display name.
 //
-// Demoting the last owner is `409 last_owner`, the same answer revoking them gets: a circle
-// without an owner has nobody who can change its providers or delete it, and there is no operation
-// anywhere that creates one out of nothing.
+// A role move answers to three standing rules, all `403`: you may not grant a role above your own
+// ([refuseGrantAboveOwnRole]), you may not change your own ([refuseChangingYourOwnRole]), and you
+// may not change one above your own ([refuseChangingARoleAboveYourOwn]). Together they mean an
+// owner stops being an owner only when ANOTHER owner says so — so this path can no longer leave a
+// circle without one, and `409 last_owner` is now reached through `Revoke`, where a sole owner
+// standing down is still a thing they may do to themselves.
 func (s *Service) Update(
 	ctx context.Context, circleID core.CircleID, id core.MembershipID, actor core.MembershipID,
 	req UpdateRequest,
@@ -357,7 +360,20 @@ func (s *Service) Update(
 			if txErr = refuseGrantAboveOwnRole(ctx, q, circleID, actor, role); txErr != nil {
 				return txErr
 			}
+			if txErr = refuseChangingYourOwnRole(id, actor); txErr != nil {
+				return txErr
+			}
+			if txErr = refuseChangingARoleAboveYourOwn(
+				ctx, q, circleID, actor, row.Role,
+			); txErr != nil {
+				return txErr
+			}
 		}
+		// Kept as the backstop, and it can no longer fire here: demoting an owner now needs an
+		// actor who is not the subject and who holds `owner` themselves, so the query below always
+		// finds them. It stays because it is what keeps the invariant true if either standing rule
+		// above is ever relaxed, and because `Revoke` — where a sole owner CAN still stand down —
+		// reaches the same function. That path is where `last_owner` is driven.
 		if row.Role == string(authz.RoleOwner) && role != string(authz.RoleOwner) {
 			if txErr = requireAnotherOwner(ctx, q, circleID, id); txErr != nil {
 				return txErr
@@ -407,11 +423,9 @@ func (s *Service) Update(
 // what you hold, and not more. An owner may still make another owner, which is how ownership is
 // handed over.
 //
-// It does NOT stop an officer changing a member who currently outranks them — an officer can still
-// demote an owner, bounded by `last_owner`, so a circle always keeps one. Whether that should also
-// be refused is a policy question rather than an escalation: an officer who demotes an owner gains
-// nothing, because this function stops them taking the role. It is named here rather than decided
-// quietly.
+// It does NOT stop an officer changing a member who currently outranks them, nor an owner changing
+// their own role downwards; those were left open as policy questions and are now answered by
+// [refuseChangingARoleAboveYourOwn] and [refuseChangingYourOwnRole].
 func refuseGrantAboveOwnRole(
 	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID,
 	actor core.MembershipID, granting string,
@@ -420,23 +434,9 @@ func refuseGrantAboveOwnRole(
 	if err != nil {
 		return err
 	}
-	actorRow, err := q.GetMembership(ctx, sqlitegen.GetMembershipParams{
-		CircleID: circleID.String(), ID: actor.String(),
-	})
-	if store.IsNotFound(err) {
-		// The actor is authenticated and this is their own circle — the tenancy middleware settled
-		// that before the handler ran — so a missing row is a database somebody edited by hand.
-		// It grants nothing rather than everything.
-		return apierr.New(apierr.CodeForbidden, "the acting membership no longer exists")
-	}
+	actorRole, err := roleOfActor(ctx, q, circleID, actor)
 	if err != nil {
 		return err
-	}
-	actorRole, err := authz.ParseRole(actorRow.Role)
-	if err != nil {
-		// A role outside the enum grants nothing. Failing open here would make a typo in a
-		// migration into a privilege escalation, which is the very thing this function prevents.
-		return apierr.Wrap(apierr.CodeForbidden, err, "the acting membership has no usable role")
 	}
 	if !actorRole.AtLeast(granted) {
 		return apierr.Newf(apierr.CodeForbidden,
@@ -445,6 +445,97 @@ func refuseGrantAboveOwnRole(
 			WithField("body.role", "above the role you hold")
 	}
 	return nil
+}
+
+// refuseChangingYourOwnRole stops a member editing the role they themselves hold.
+//
+// Reported from real use: an owner could set their own role to `officer` from the Members page, in
+// a circle with a second owner, and did. The two directions are not symmetric and this closes the
+// one the escalation guard above leaves open — that guard already makes the upward half
+// impossible, since a role AT your own is not a move at all, so what is left is exactly the
+// downward one.
+//
+// Handing over ownership is promoting somebody else, not demoting yourself: the promotion leaves
+// the circle administered at every instant, and the person who ends up responsible for it agreed to
+// be. A self-demotion leaves the circle in the care of whoever happens to hold `owner` at that
+// moment — nobody at all, if `last_owner` did not stop it — and the person who was managing it
+// cannot undo their own click, because after it they no longer hold the role the undo needs.
+//
+// It is not narrowed to `owner`, though `owner` is what was reported. Every role reaches this the
+// same way and the rule reads the same at each of them: your own role is not yours to change. An
+// officer standing down asks an owner, which costs a message and buys the same property.
+func refuseChangingYourOwnRole(subject, actor core.MembershipID) error {
+	if subject != actor {
+		return nil
+	}
+	return apierr.New(apierr.CodeForbidden,
+		"your own role is not yours to change; ownership is handed over by promoting somebody "+
+			"else, who can then change yours").
+		WithField("body.role", "your own")
+}
+
+// refuseChangingARoleAboveYourOwn stops a member changing the role of somebody who outranks them.
+//
+// An officer demoting an owner gains nothing — [refuseGrantAboveOwnRole] stops them taking the role
+// — which is why this was left open rather than shipped with that guard. It is still an officer
+// removing their own supervisor, and the officer keeps `member.manage` afterwards while the person
+// who could have taken it away no longer holds `circle.security.manage`. The demotion is not an
+// escalation on its own and is one step of a plausible route to one.
+//
+// The comparison is against the subject's CURRENT role, not the one being granted: refusing on the
+// grant is already this function's neighbour, and reading the current role is what makes an owner
+// still demotable by another owner — equal is not above — so the handover route stays open.
+func refuseChangingARoleAboveYourOwn(
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID,
+	actor core.MembershipID, subjectRole string,
+) error {
+	held, err := authz.ParseRole(subjectRole)
+	if err != nil {
+		// A role outside the enum is not a role this actor can be shown to hold at least, so the
+		// refusal stands. It is the same fail-closed direction as an unparseable ACTOR role.
+		return apierr.Wrap(apierr.CodeForbidden, err, "that member's role is not a usable one")
+	}
+	actorRole, err := roleOfActor(ctx, q, circleID, actor)
+	if err != nil {
+		return err
+	}
+	if !actorRole.AtLeast(held) {
+		return apierr.Newf(apierr.CodeForbidden,
+			"you hold %s and cannot change the role of %s; a role is changed by somebody who "+
+				"holds at least it", actorRole, held).
+			WithField("body.role", "above the role you hold")
+	}
+	return nil
+}
+
+// roleOfActor reads the acting membership's own role, failing closed on every way it can be absent
+// or unreadable.
+//
+// One function rather than one per guard: each caller refuses something, so a disagreement between
+// them about what an unreadable actor row means would be a hole in whichever guard was more
+// generous.
+func roleOfActor(
+	ctx context.Context, q *sqlitegen.Queries, circleID core.CircleID, actor core.MembershipID,
+) (authz.Role, error) {
+	actorRow, err := q.GetMembership(ctx, sqlitegen.GetMembershipParams{
+		CircleID: circleID.String(), ID: actor.String(),
+	})
+	if store.IsNotFound(err) {
+		// The actor is authenticated and this is their own circle — the tenancy middleware settled
+		// that before the handler ran — so a missing row is a database somebody edited by hand.
+		// It grants nothing rather than everything.
+		return "", apierr.New(apierr.CodeForbidden, "the acting membership no longer exists")
+	}
+	if err != nil {
+		return "", err
+	}
+	actorRole, err := authz.ParseRole(actorRow.Role)
+	if err != nil {
+		// A role outside the enum grants nothing. Failing open here would make a typo in a
+		// migration into a privilege escalation, which is the very thing these guards prevent.
+		return "", apierr.Wrap(apierr.CodeForbidden, err, "the acting membership has no usable role")
+	}
+	return actorRole, nil
 }
 
 // requireAnotherOwner refuses to leave a circle without one.
