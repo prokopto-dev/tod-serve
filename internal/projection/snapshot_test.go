@@ -1,6 +1,7 @@
 package projection_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/projection"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
+	"github.com/prokopto-dev/tod-serve/internal/store"
 )
 
 // The two timers the storm below alternates between, chosen so that BOTH halves of the pair move.
@@ -229,26 +231,75 @@ func TestGetTargetState_AQuakeFlagFlippingMidRead_NeverRendersItAgainstTheOtherD
 		"the flag must change the answer, or this test is vacuous")
 	require.NotEqual(t, quaked.DiedAt, plain.DiedAt)
 
-	flips := f.flipQuakeFlagContinuously(target)
+	flips := f.flipQuakeFlagBetweenReads(target)
 	defer flips.stop()
 
-	const reads = 200
+	const (
+		reads = 200
+		// Both answers have to turn up, or the pacing below has quietly made this a test that
+		// reads two hundred times and never sees the flag move. A writer taking one token per read
+		// alternates, so the split is even: measured over eight runs under `-race`, every one of
+		// them split 99/101 and the threshold is a quarter of the thinner side.
+		wantEach = 25
+		// A contended read is retried rather than failed, because SQLITE_BUSY is the database
+		// saying "not now", not the pairing coming back mixed — issue #40, where losing that
+		// distinction failed CI on four separate heads. The retry is BOUNDED and COUNTED so that
+		// genuine lock pathology still turns the build red instead of being absorbed: a paced
+		// writer leaves this at zero, so any nonzero total is already worth reading.
+		maxBusyPerRead = 5
+		maxBusyTotal   = 20
+	)
+
+	busy := 0
+	// render reads the target once, waiting out contention and nothing else.
+	render := func(i int) projection.Derived {
+		t.Helper()
+		for attempt := 1; ; attempt++ {
+			derived, err := f.states.Get(t.Context(), f.circle, target.ID, false)
+			if err == nil {
+				return derived
+			}
+			// Anything that is not the lock is a failure and is reported as one. A retry loop
+			// that swallowed every error would spin five times on a broken read and then blame
+			// the database for it.
+			require.Truef(t, store.IsBusy(err), "read %d failed: %v", i, err)
+			busy++
+			require.LessOrEqualf(t, attempt, maxBusyPerRead,
+				"read %d lost the lock %d times running", i, attempt)
+			require.LessOrEqualf(t, busy, maxBusyTotal,
+				"%d contended reads in %d; this is lock pathology, not a busy machine", busy, i+1)
+		}
+	}
+
+	quakedSeen, plainSeen := 0, 0
 	for i := range reads {
 		require.NoError(t, flips.err(), "the catalogue writer failed")
+		// One flip per read, asked for here rather than run flat out on the writer's own
+		// goroutine. See [fixture.flipQuakeFlagBetweenReads].
+		flips.next()
 
-		derived, readErr := f.states.Get(t.Context(), f.circle, target.ID, false)
-		require.NoError(t, readErr)
+		derived := render(i)
 
 		// **The assertion is the pairing itself**: whichever flag this response renders, the
 		// derivation beside it has to be the one that flag produces.
 		want := plain
 		if derived.Target.IsQuakeTarget {
-			want = quaked
+			want, quakedSeen = quaked, quakedSeen+1
+		} else {
+			plainSeen++
 		}
 		require.Emptyf(t, cmp.Diff(want, pairingOfDerived(derived)),
 			"read %d rendered is_quake_target=%v against the other derivation",
 			i, derived.Target.IsQuakeTarget)
 	}
+
+	// Pacing the writer gave the rest of the suite its write lock back. It must not also have
+	// given it a test that passes over nothing: every assertion in the loop is satisfied by a run
+	// in which the flag never moved at all, so the split is asserted here rather than assumed.
+	require.GreaterOrEqualf(t, quakedSeen, wantEach,
+		"the flag was on for only %d of %d reads; the writer is not racing this read", quakedSeen, reads)
+	require.GreaterOrEqualf(t, plainSeen, wantEach,
+		"the flag was off for only %d of %d reads; the writer is not racing this read", plainSeen, reads)
 }
 
 // timerFlips is a catalogue timer being rewritten, narrow then wide then narrow, on another
@@ -325,38 +376,92 @@ func (t *timerFlips) stop() {
 	<-t.finished
 }
 
-// flipQuakeFlagContinuously rewrites the target's `is_quake_target` as fast as it can, until
-// [timerFlips.stop]. Continuous for the reason [fixture.flipTimerContinuously] gives.
+// quakeFlips is a target's `is_quake_target` being rewritten on another goroutine, ONE FLIP PER
+// READ rather than as fast as the machine allows.
+//
+// [fixture.flipTimerContinuously] is unpaced and stays that way: the pair it races lives between
+// two statements of a single render, and only a writer that is permanently mid-transaction commits
+// into a gap that small. **This writer races something far wider.** Since issue #21
+// `catalogue.Update` recomputes every board on the instance inside its own transaction, so one
+// flip overlaps essentially the whole of the read it is racing, and running flat out bought no
+// interleaving the pacing does not already give.
+//
+// What it did buy was issue #40. Every iteration is a full `BEGIN IMMEDIATE` — ADR-0013 puts the
+// invalidation inside the writing transaction — and the read it races writes too, because
+// [projection.Service.Get] refreshes the cache row it derived. Under `-race`, beside the rest of
+// this package running in parallel, the two exhausted `busy_timeout` and the test failed on
+// SQLITE_BUSY: a flake that cost four CI re-runs and three investigations across four heads. The
+// fix is here rather than in the DSN, which already reasons about the production value — see
+// [store.connectionString] — because the contention was manufactured by this file.
+type quakeFlips struct {
+	*timerFlips
+	flip chan struct{}
+}
+
+// next asks for one flip.
+//
+// The send is deliberately non-blocking. If the writer is still committing the last one then the
+// read that follows runs against a write in flight, which is the interleaving this test is for;
+// waiting for it instead would serialise the two and leave no race to observe. Either way at most
+// one write is outstanding, and the whole run commits no more writes than it performs reads.
+func (q *quakeFlips) next() {
+	select {
+	case q.flip <- struct{}{}:
+	default:
+	}
+}
+
+// flipQuakeFlagBetweenReads starts a writer that flips the target's `is_quake_target` once for
+// each [quakeFlips.next], until [timerFlips.stop].
 //
 // **It is `catalogue.Update`, not a bare UPDATE**, because the point is that a supported write
 // path moves a derivation input in a transaction of its own — and, since issue #21, recomputes
 // every board on the instance inside that same transaction.
-func (f *fixture) flipQuakeFlagContinuously(target catalogue.Target) *timerFlips {
-	flips := &timerFlips{
-		failure:  make(chan error, 1),
-		stopped:  make(chan struct{}),
-		finished: make(chan struct{}),
+func (f *fixture) flipQuakeFlagBetweenReads(target catalogue.Target) *quakeFlips {
+	flips := &quakeFlips{
+		timerFlips: &timerFlips{
+			failure:  make(chan error, 1),
+			stopped:  make(chan struct{}),
+			finished: make(chan struct{}),
+		},
+		flip: make(chan struct{}),
 	}
 	go func() {
 		defer close(flips.finished)
-		quake := true
+		quake, busy := true, 0
 		for {
 			select {
 			case <-flips.stopped:
 				return
-			default:
+			case <-flips.flip:
 			}
 			on := quake
-			quake = !quake
 			if _, err := f.catalogue.Update(f.t.Context(), target.ID,
 				catalogue.UpdateRequest{IsQuakeTarget: &on}, f.states); err != nil {
+				// The writer needs the same distinction the reader does, and for the same reason:
+				// a flip that lost the lock did not happen, which is contention, while anything
+				// else is the write path being broken. `quake` is left alone so the next token
+				// retries the value this one failed to write rather than skipping it.
+				if store.IsBusy(err) {
+					busy++
+					if busy <= maxWriterBusy {
+						continue
+					}
+					err = fmt.Errorf("%d contended writes: %w", busy, err)
+				}
 				flips.failure <- err
 				return
 			}
+			quake = !quake
 		}
 	}()
 	return flips
 }
+
+// maxWriterBusy is how much contention the paced writer absorbs before it reports it. Bounded for
+// the reason the reader's budget is: a writer that retried forever would hide the lock pathology
+// this test would otherwise be the thing that noticed.
+const maxWriterBusy = 20
 
 // putCatalogueTimer is [fixture.seedCatalogueTimer] that returns its error instead of failing the
 // test, because it is called from a goroutine that is not the test's.
