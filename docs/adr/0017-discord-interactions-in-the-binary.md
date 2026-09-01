@@ -1,6 +1,6 @@
 # ADR-0017 — Discord interactions in the binary, disambiguated by a channel binding
 
-**Status:** proposed · **Date:** 2026-08-31 · **Deciders:** Courtney Caldwell
+**Status:** accepted · **Date:** 2026-08-31 · **Deciders:** Courtney Caldwell
 
 ## Context and problem statement
 
@@ -26,9 +26,10 @@ a bot that refuses every command, or one that guesses into a channel nobody can 
 ## Decision outcome
 
 **Chosen: D.** Interactions are inbound — Discord POSTs and we verify an Ed25519 signature over the
-body — so the endpoint is a **route**. Law 1's registry gives it a permission, scopes and a tenancy
-flag, and law 5's `TestTenancy_CrossCircle_EveryOperationDenies` is derived from that registry, so
-it covers the new route without anybody remembering to add it anywhere.
+body — so the endpoint is a **route**: law 1's registry gives it an auth kind, a published scheme
+and one signature check. It does **not** inherit
+`TestTenancy_CrossCircle_EveryOperationDenies`, which walks routes naming `{circle_id}`;
+`TestDiscordInteraction_ACrossCircleTarget_IsAnsweredAsAbsent` holds law 5 instead.
 
 **C is the tempting one and it is wrong.** `db/schema.hcl:1101` states guild-to-many-circles as
 intent, not as an oversight; the index would break the case the schema exists to support.
@@ -47,13 +48,13 @@ disambiguates, and binding one **is** the explicit, stored, per-channel opt-in a
 needs.
 
 - **One channel, one circle.** The primary key is `discord_channel_id` alone. Two circles on one
-  channel restores the ambiguity the table exists to remove and leaves a visible answer with no
-  single circle it could have come from.
+  channel restores the ambiguity this table removes, and leaves a visible answer with no single
+  circle it could have come from.
 - **Circle-scoped, not on the allowlist.** `circle_id NOT NULL REFERENCES circle(id)`, law 4. The
   resolve reads channel → circle, so its `WHERE` cannot name `circle_id` and it takes a counted
-  `-- tenancy:` waiver. That is the cheaper cost: [#29](https://github.com/prokopto-dev/tod-serve/pull/29)
-  proved that moving a table onto the instance-scoped allowlist is the single edit that makes
-  `TEN001` and `TestInstanceScopedAllowlist_MatchesTheAppliedSchema` both quieter with nothing red.
+  `-- tenancy:` waiver — the cheaper cost, because
+  [#29](https://github.com/prokopto-dev/tod-serve/pull/29) proved that moving a table onto the
+  allowlist is the single edit that makes both tenancy gates quieter with nothing red.
 - **A tombstoned circle keeps its bindings.** Nothing deletes them, exactly as nothing deletes
   `circle_provider`'s rows, so the resolve joins `circle.deleted_at IS NULL` the way the guild-gate
   query already does — and re-binding the channel replaces the dead row.
@@ -61,24 +62,25 @@ needs.
   into `membership (circle_id, id)`, which makes "an officer of circle A bound a channel to circle
   B" unrepresentable rather than merely refused.
 
-The rules the route is held to are
+The rules, and what holds each, are
 [04-identity §9](../design/04-identity-and-revocation.md#9-discord-interactions-what-is-disclosed-and-where);
 the operator's side is [discord-bot.md](../operations/discord-bot.md).
 
 ### Consequences
 
 - Good, because there is one circle↔guild map, one tenancy decision and one deployment artefact.
-- Good, because being a route buys the permission, the scopes, the tenancy flag and law 5's
-  isolation test rather than reimplementing any of them.
+- Good, because being a route buys the auth kind and the published scheme rather than a handler's
+  own opinion of either.
 - Good, because "what does this channel disclose" has an answer an officer can read back.
 - **Bad, because interactions carry commands and not events, so removing somebody's Discord role
   still does not revoke a PAT they already hold.** ADR-0011 accepted that gap and this decision
-  **keeps** it; A is the only option that closes it. `revokeMember` remains the mechanism that
-  works, and it is written down here so nobody rediscovers it.
+  **keeps** it; A is the only option that closes it. `revokeMember` remains what works, and it is
+  written down here so nobody rediscovers it.
 - **Bad, because a guild with two circles cannot use the bot until a channel is bound.** The first
   command in a fresh guild fails, and the remedy is elsewhere.
-- **Bad, because a bot token is a second high-value secret at rest**, beside the `client_secret`
-  ADR-0011 accepted, on an application whose compromise is now worth more.
+- **Bad, because the application is now worth more to compromise**: its key verifies every command
+  a circle's members run. The bot token is **not** at rest here — registering commands is outbound,
+  which law 6 forbids, so the operator sends the body this binary prints.
 - **Bad, because a binding is a disclosure decision stored where the people it affects cannot see
   it.** Members read the channel; they do not read `circle_discord_channel`.
 

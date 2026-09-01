@@ -49,7 +49,7 @@ func TestWiring_EveryEntropySink_IsGivenCryptoRandReader(t *testing.T) {
 	db := bootstrappedStore(t)
 
 	svc, err := wire(ctx, db, log,
-		core.Secret("wiring-test-pepper"), core.Secret("wiring-test-session-key"), "")
+		core.Secret("wiring-test-pepper"), core.Secret("wiring-test-session-key"), "", "")
 	require.NoError(t, err)
 
 	// The services below took their randomness at construction and do not expose it, which is

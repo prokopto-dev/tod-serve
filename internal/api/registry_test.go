@@ -139,6 +139,10 @@ func permissionCell(r api.Route) string {
 		return "`TOD_METRICS_TOKEN`"
 	case api.AuthSetupToken:
 		return "`TOD_SETUP_TOKEN`"
+	case api.AuthDiscordSignature:
+		// The header rather than a permission, because there is no permission at the edge: the
+		// signature says the payload is Discord's, and every command inside it carries its own.
+		return "`" + api.DiscordSignatureHeader + "`"
 	default:
 		names := make([]string, 0, len(r.Permissions))
 		for _, p := range r.Permissions {

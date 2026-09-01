@@ -126,6 +126,27 @@ func (b *Builder) routeMiddleware(r Route) func(huma.Context, func(huma.Context)
 			return
 		}
 
+		// The interaction signature, before anything that resolves a principal — there is no
+		// principal to resolve at the edge here. Who typed the command is a fact INSIDE the
+		// payload, and reading it before the signature says the payload is Discord's would be
+		// trusting an attacker's account id.
+		//
+		// It is here rather than in the handler for the reason the setup token is: the middleware
+		// settles it before any handler runs, so a second signed route cannot be served with the
+		// check missing. `TestDiscordRoutes_EveryRoute_RefusesAnUnsignedBody` walks
+		// [DiscordRoutes] rather than a list.
+		if r.Auth == AuthDiscordSignature {
+			verified, err := b.checkDiscordSignature(ctx)
+			if err != nil {
+				b.writeProblem(ctx, err)
+				return
+			}
+			// The verified instant travels on the context the handler is given, so what a
+			// `/tod report` records as `died_at` provably came from a checked signature.
+			b.dispatch(verified, r, auth.Principal{}, next)
+			return
+		}
+
 		p, err := b.authorize(ctx, r)
 		if err != nil {
 			b.writeProblem(ctx, err)

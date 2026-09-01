@@ -93,9 +93,16 @@ gateway intent, no "Add to Server", and no privileged intent to request. If a ha
 application has a bot on it, that bot is unused here and harmless; you do not have to remove it,
 and adding one will not fix a sign-in problem.
 
-The Discord **bot** is a separate feature with its own credential on this same application, and
-its own decisions about what a channel discloses:
-[discord-bot.md](discord-bot.md). Nothing on this page depends on it.
+The Discord **bot** is a separate feature on this same application, with its own setup and its own
+decisions about what a channel discloses: **[discord-bot.md](discord-bot.md)**, which is now the
+whole of it — the interactions endpoint URL to paste, the exact install scope and permissions, the
+one variable the instance needs, how to register the slash commands, and how to check it works.
+Nothing on this page depends on it, and this page does not repeat it.
+
+One thing worth knowing here, because it changes what you keep where: **the bot token is never
+configured on the instance.** It is used once, from your own machine, to tell Discord which slash
+commands exist — and the instance holds only the application's *public* key, which verifies
+signatures and signs nothing.
 
 ## 2. An application that was never finished
 
@@ -147,7 +154,9 @@ the end of [§1](#1-no-application-yet-register-one), and
 
 The one thing worth checking is that you did not put the **bot's** token somewhere expecting it to
 be the client secret. They are different values from different sections; a bot token in
-`client_secret` fails the token exchange with `credential_invalid`.
+`client_secret` fails the token exchange with `credential_invalid`. Nor does it go anywhere else on
+the instance — [discord-bot.md §1](discord-bot.md#the-bot-token-goes-nowhere-on-the-instance-and-that-is-the-answer)
+says where it does go, which is your password manager.
 
 **What your application will actually ask your members for, in full:** `identify` on every sign-in,
 and `guilds.members.read` only when the circle being joined gates on a guild. That is the entire

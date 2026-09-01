@@ -183,7 +183,7 @@ func newE2EServerWith(
 	// every deployment does before `serve` starts, and `t.Setenv` cannot be used in a package
 	// whose tests are all parallel. This is the value that file would have supplied.
 	svc, err := wire(ctx, db, log,
-		core.Secret(e2ePepper), core.Secret(e2eSessionKey), e2ePublicURL)
+		core.Secret(e2ePepper), core.Secret(e2eSessionKey), e2ePublicURL, "")
 	require.NoError(t, err)
 	server, err := api.New(api.Config{
 		Version: "0.0.0-e2e", Store: db, Auth: svc.authn, Sessions: svc.codec,
@@ -191,7 +191,9 @@ func newE2EServerWith(
 		Identities: svc.identity, Catalogue: svc.catalogue, InstanceSettings: svc.settings,
 		Tods: svc.tods, States: svc.states, Invalidator: svc.states,
 		Clock: svc.clock, Log: log, IDs: svc.ids,
-		Setup: svc.setup, SetupToken: api.SetupConfig{Token: setupToken},
+		DiscordBindings: svc.bindings, DiscordCommands: svc.commands,
+		DiscordVerifier: svc.verifier,
+		Setup:           svc.setup, SetupToken: api.SetupConfig{Token: setupToken},
 		OnResponseViolation: func(v api.Violation) { t.Errorf("response contract: %s", v) },
 	})
 	require.NoError(t, err)

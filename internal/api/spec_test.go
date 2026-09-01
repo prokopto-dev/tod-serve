@@ -174,12 +174,15 @@ func TestSpec_AFloorOperation_OffersOnlyTheSessionScheme(t *testing.T) {
 // The security schemes are exactly four, and the absence of a fifth is the point: `Authorization:
 // Bearer` and the session cookie are the only API credentials, and the other two are environment
 // variables reaching one operational surface each — the metrics listener and first-run setup.
-func TestSpec_SecuritySchemes_AreTheFourThatExist(t *testing.T) {
+func TestSpec_SecuritySchemes_AreTheFiveThatExist(t *testing.T) {
 	t.Parallel()
 	doc, _ := loadSpec(t)
-	require.Len(t, doc.Components.SecuritySchemes, 4)
+	require.Len(t, doc.Components.SecuritySchemes, 5)
 	for _, name := range []string{
 		api.SchemeBearer, api.SchemeSession, api.SchemeMetricsToken, api.SchemeSetupToken,
+		// The fifth authenticates a SENDER rather than a principal: an interaction signature says
+		// the payload is Discord's, and who typed the command is a fact inside it. ADR-0017.
+		api.SchemeDiscordSignature,
 	} {
 		require.Contains(t, doc.Components.SecuritySchemes, name)
 	}

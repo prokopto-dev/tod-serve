@@ -55,6 +55,12 @@ services:
       # <TOD_PUBLIC_URL>/setup and nothing else. `deploy/smoke.sh` sets it, because driving that
       # wizard is how the walkthrough is executed rather than described.
       TOD_SETUP_TOKEN: ${TOD_SETUP_TOKEN:-}
+
+      # The Discord application's public key, for the interactions endpoint. Public, not secret:
+      # it verifies a signature and signs nothing. The `:-` form means a `.env` without it brings
+      # the stack up with the endpoint refusing every interaction, which is the right state for an
+      # instance that is not running the bot. docs/operations/discord-bot.md.
+      TOD_DISCORD_PUBLIC_KEY: ${TOD_DISCORD_PUBLIC_KEY:-}
       TOD_METRICS_ENABLED: "false"
 
     volumes:

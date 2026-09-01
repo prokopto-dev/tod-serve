@@ -90,7 +90,8 @@ func newServeCommand() *cobra.Command {
 			// The empty public URL means "resolve it": $TOD_PUBLIC_URL, then the instance
 			// row, and an error naming them rather than a guess. Both the join redirect and
 			// the OAuth callback URL are derived from it.
-			svc, err := wire(ctx, db, log, pepper, sessionKey, "")
+			svc, err := wire(ctx, db, log, pepper, sessionKey, "",
+				os.Getenv(envDiscordPublicKey))
 			if err != nil {
 				return err
 			}
@@ -127,8 +128,15 @@ func newServeCommand() *cobra.Command {
 					Enabled: os.Getenv(envMetricsEnabled) == "true",
 					Token:   metricsToken,
 				},
-				Setup:      svc.setup,
-				SetupToken: api.SetupConfig{Token: setupToken},
+				// The Discord surface. The verifier's key is the ONLY Discord credential this
+				// instance holds: registering the slash commands is an outbound request law 6
+				// forbids here, so `tod-serve discord commands` prints the body and the operator
+				// sends it with the bot token, which never reaches this process.
+				DiscordBindings: svc.bindings,
+				DiscordCommands: svc.commands,
+				DiscordVerifier: svc.verifier,
+				Setup:           svc.setup,
+				SetupToken:      api.SetupConfig{Token: setupToken},
 			})
 			if err != nil {
 				return err

@@ -1,14 +1,18 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +28,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/discord"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/identity/identitysql"
 	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
@@ -61,24 +66,28 @@ const (
 // keyed on `(membership, key)` — are rules about rows, and a mock would let every one of them pass
 // while the schema said otherwise.
 type harness struct {
-	t           *testing.T
-	server      *api.Server
-	store       *store.DB
-	clock       *clock.Test
-	ids         *core.Generator
-	minter      *auth.Minter
-	codec       *auth.SessionCodec
-	handler     http.Handler
-	provider    core.IdentityProviderID
-	circles     *circle.Service
-	invites     *invite.Service
-	identity    *identity.Service
-	members     *membership.Service
-	catalogue   *catalogue.Service
-	tods        *tod.Service
-	states      *projection.Service
-	grants      *instancegrant.Service
-	invalidator *recordingInvalidator
+	t         *testing.T
+	server    *api.Server
+	store     *store.DB
+	clock     *clock.Test
+	ids       *core.Generator
+	minter    *auth.Minter
+	codec     *auth.SessionCodec
+	handler   http.Handler
+	provider  core.IdentityProviderID
+	circles   *circle.Service
+	invites   *invite.Service
+	identity  *identity.Service
+	members   *membership.Service
+	catalogue *catalogue.Service
+	tods      *tod.Service
+	states    *projection.Service
+	grants    *instancegrant.Service
+	bindings  *discord.Service
+	// discordProvider is written on demand: an instance holds at most one `discord` provider row,
+	// so a second seeder would fail the partial unique index rather than build a second one.
+	discordProvider core.IdentityProviderID
+	invalidator     *recordingInvalidator
 }
 
 func newHarness(t *testing.T) *harness {
@@ -124,6 +133,9 @@ func newHarness(t *testing.T) *harness {
 		Log:              log,
 		IDs:              ids,
 		Metrics:          api.MetricsConfig{Enabled: true, Token: testMetricsTok},
+		DiscordBindings:  svc.bindings,
+		DiscordCommands:  svc.commands,
+		DiscordVerifier:  testDiscordVerifier(t, clk),
 		Setup:            svc.setup,
 		// Armed on the DEFAULT harness, so that "setup is reachable" is the state every test in
 		// this package runs against and a route that stopped refusing correctly is a red test
@@ -142,6 +154,7 @@ func newHarness(t *testing.T) *harness {
 		circles: svc.circles, invites: svc.invites, members: svc.members,
 		identity:  svc.identities,
 		catalogue: svc.catalogue, tods: svc.tods, states: svc.states, grants: svc.grants,
+		bindings:    svc.bindings,
 		invalidator: invalidator,
 	}
 }
@@ -160,6 +173,8 @@ type wiredServices struct {
 	grants     *instancegrant.Service
 	setup      *setup.Service
 	settings   *instancesettings.Service
+	bindings   *discord.Service
+	commands   *discord.Commander
 }
 
 func newServices(
@@ -225,10 +240,18 @@ func newServices(
 	})
 	require.NoError(t, err)
 
+	bindings, err := discord.New(discord.Config{Store: db, Clock: clk, IDs: ids, Log: log})
+	require.NoError(t, err)
+	commands, err := discord.NewCommander(discord.CommanderConfig{
+		Bindings: bindings, Providers: identities, Circles: circles, Boards: states,
+		Targets: catalogues, Reports: tods, Clock: clk, Log: log,
+	})
+	require.NoError(t, err)
+
 	return wiredServices{
 		circles: circles, invites: invites, members: members, identities: identities,
 		catalogue: catalogues, tods: tods, states: states, grants: grants, setup: first,
-		settings: settings,
+		settings: settings, bindings: bindings, commands: commands,
 	}
 }
 
@@ -264,6 +287,9 @@ func newHarnessWithConsole(t *testing.T) *harness {
 		Clock:               h.clock,
 		Log:                 log,
 		IDs:                 h.ids,
+		DiscordBindings:     svc.bindings,
+		DiscordCommands:     svc.commands,
+		DiscordVerifier:     testDiscordVerifier(t, h.clock),
 		Console:             stubConsole(),
 		Metrics:             api.MetricsConfig{Enabled: true, Token: testMetricsTok},
 		Setup:               svc.setup,
@@ -303,6 +329,9 @@ func newHarnessWithoutMetrics(t *testing.T) *harness {
 		Clock:               h.clock,
 		Log:                 log,
 		IDs:                 h.ids,
+		DiscordBindings:     svc.bindings,
+		DiscordCommands:     svc.commands,
+		DiscordVerifier:     testDiscordVerifier(t, h.clock),
 		Setup:               svc.setup,
 		SetupToken:          api.SetupConfig{Token: testSetupTok},
 		OnResponseViolation: func(v api.Violation) { t.Errorf("response contract: %s", v) },
@@ -343,6 +372,9 @@ func newHarnessWithoutSetupToken(t *testing.T) *harness {
 		Clock:            h.clock,
 		Log:              log,
 		IDs:              h.ids,
+		DiscordBindings:  svc.bindings,
+		DiscordCommands:  svc.commands,
+		DiscordVerifier:  testDiscordVerifier(t, h.clock),
 		Setup:            svc.setup,
 		// No SetupToken. The zero value is the whole point: an operator who never armed setup, or
 		// who removed the variable afterwards, has an instance where the routes refuse everybody.
@@ -901,4 +933,40 @@ func (h *harness) sweepAuthFlows() int {
 		h.t.Context(), int64(h.clock.Now().Add(365*24*time.Hour)))
 	require.NoError(h.t, err)
 	return int(n)
+}
+
+// The Discord application this suite's instance is configured with.
+//
+// The seed is a constant so the key is the same on every run: a random one would make a failing
+// signature test impossible to reproduce, and this is the credential whose FAILURE path is the
+// point. `crypto/rand` is not what mints it and does not need to be — nothing here is a secret an
+// attacker could gain by predicting; it is a test's stand-in for an operator's public key.
+var testDiscordSeed = bytes.Repeat([]byte{0x2c}, ed25519.SeedSize)
+
+func testDiscordKey(t *testing.T) ed25519.PrivateKey {
+	t.Helper()
+	return ed25519.NewKeyFromSeed(testDiscordSeed)
+}
+
+func testDiscordVerifier(t *testing.T, clk clock.Clock) *discord.Verifier {
+	t.Helper()
+	key := testDiscordKey(t)
+	v, err := discord.NewVerifier(
+		hex.EncodeToString(key.Public().(ed25519.PublicKey)), clk.Now)
+	require.NoError(t, err)
+	return v
+}
+
+// signedInteraction returns the headers and body of an interaction signed the way Discord signs
+// one: hex Ed25519 over the timestamp concatenated with the RAW body.
+func signedInteraction(t *testing.T, at core.Micros, payload any) (map[string]string, []byte) {
+	t.Helper()
+	body, err := json.Marshal(payload)
+	require.NoError(t, err)
+	timestamp := strconv.FormatInt(at.Time().Unix(), 10)
+	signature := ed25519.Sign(testDiscordKey(t), append([]byte(timestamp), body...))
+	return map[string]string{
+		api.DiscordSignatureHeader: hex.EncodeToString(signature),
+		api.DiscordTimestampHeader: timestamp,
+	}, body
 }

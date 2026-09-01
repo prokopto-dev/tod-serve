@@ -16,6 +16,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/discord"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/instancesettings"
 	"github.com/prokopto-dev/tod-serve/internal/invite"
@@ -130,6 +131,21 @@ type Config struct {
 	IDs *core.Generator
 	// Metrics configures the separate metrics listener.
 	Metrics MetricsConfig
+	// DiscordBindings owns the channel-to-circle bindings: the resolve an interaction depends on,
+	// and the three operations an officer reaches. Required, like every other service here.
+	DiscordBindings *discord.Service
+	// DiscordCommands turns a verified interaction into a reply. Required for the same reason:
+	// an API wired without it would answer every slash command with a 500, which a member sees as
+	// "the application did not respond" and reads as the instance being down.
+	DiscordCommands *discord.Commander
+	// DiscordVerifier checks the Ed25519 signature on an interaction.
+	//
+	// Its ZERO value is the safe one — a verifier with no key refuses every interaction — which
+	// is why it is not required by [Config.validate] and why an instance with no
+	// `TOD_DISCORD_PUBLIC_KEY` serves the route and answers `401` rather than not serving it. An
+	// endpoint that 404s and an endpoint that refuses look the same to a forger; only one of them
+	// tells Discord's endpoint validation what it needs to hear when the key IS configured.
+	DiscordVerifier *discord.Verifier
 	// Setup runs first-run setup, and is required: an API wired without it would answer the
 	// wizard's routes with a 500 on a database where nothing else can answer at all.
 	Setup *setup.Service
@@ -186,6 +202,10 @@ func (c Config) validate() error {
 		return errors.New("api config: logger is nil")
 	case c.IDs == nil:
 		return errors.New("api config: id generator is nil")
+	case c.DiscordBindings == nil:
+		return errors.New("api config: discord binding service is nil")
+	case c.DiscordCommands == nil:
+		return errors.New("api config: discord commander is nil")
 	case c.Setup == nil:
 		return errors.New("api config: setup service is nil")
 	case c.Metrics.Enabled && c.Metrics.Token.IsZero():
@@ -257,10 +277,11 @@ func newBuilder(
 	}
 }
 
-// securitySchemes declares how a caller authenticates. There are exactly four, and the shape of the
-// list is the point: `Authorization: Bearer` and the session cookie are the only API credentials,
-// and the other two are environment variables that reach one operational surface each and no
-// domain route at all.
+// securitySchemes declares how a caller authenticates. There are exactly five, and the shape of the
+// list is the point: `Authorization: Bearer` and the session cookie are the only API credentials
+// that name a principal, two are environment variables that reach one operational surface each and
+// no domain route at all, and the fifth authenticates a SENDER rather than anybody — a Discord
+// interaction is signed by the application, and who typed the command is a fact inside the payload.
 func securitySchemes() map[string]*huma.SecurityScheme {
 	// The OpenAPI spellings, named because three of the four schemes share them and a typo in one
 	// would publish a scheme a generated client cannot use.
@@ -290,6 +311,14 @@ func securitySchemes() map[string]*huma.SecurityScheme {
 			Scheme: bearerScheme,
 			Description: "TOD_SETUP_TOKEN, for first-run setup only. Never a PAT scope, and it " +
 				"stops working the moment this instance has an administrator.",
+		},
+		SchemeDiscordSignature: {
+			Type: "apiKey",
+			In:   "header",
+			Name: DiscordSignatureHeader,
+			Description: "An Ed25519 signature by the Discord application, over " +
+				"X-Signature-Timestamp concatenated with the raw request body. It says the " +
+				"payload is Discord's; who typed the command is resolved from inside it.",
 		},
 	}
 }
@@ -399,6 +428,7 @@ func (s *Server) registerAll() error {
 		s.registerMembers(),
 		s.registerInvites(),
 		s.registerCatalogue(),
+		s.registerDiscord(),
 		s.registerInstance(),
 		s.registerAdmin(),
 		s.registerAuth(),

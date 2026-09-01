@@ -63,6 +63,7 @@ func newDoctorCommand() *cobra.Command {
 			enabled := checkProviders(cmd.Context(), db, ok, warn, bad)
 			checkRedirectURIs(cmd.Context(), db, enabled, ok, bad)
 			checkAdministrable(cmd.Context(), db, ok, bad)
+			checkDiscordBot(cmd.Context(), db, ok, warn)
 			checkHostAgreement(hostClaims(instance, haveInstance, enabled), ok, bad)
 
 			if problems > 0 {
@@ -190,6 +191,43 @@ func checkProviders(ctx context.Context, db *store.DB, ok, warn, bad func(string
 // It is a PROBLEM rather than a warning because there is exactly one string that works. This is
 // also the check to run after moving an instance to a new domain, which is the operation that
 // produces a stale redirect URI every time.
+// checkDiscordBot prints the two strings an operator has to give Discord, and says whether the one
+// piece of configuration this instance holds is present.
+//
+// **The URL is DERIVED from the route registry**, so this report and the path the binary serves
+// cannot drift — the same reason `checkRedirectURIs` derives the callback base rather than
+// spelling it. docs/operations/discord-bot.md names this command instead of writing the path out a
+// third time, and TestDiscordBotRunbook_ThePathItPublishes_IsTheRouteRegistrys compares the two.
+//
+// A missing public key is a WARNING and not a problem: an instance not running the bot is a
+// perfectly good instance, and its interactions endpoint refuses everything, which is the correct
+// answer for one.
+func checkDiscordBot(ctx context.Context, db *store.DB, ok, warn func(string)) {
+	public := strings.TrimSpace(os.Getenv(envPublicURL))
+	if public == "" {
+		var err error
+		if public, err = publicURL(ctx, db); err != nil {
+			// Already reported by checkInstance and checkRedirectURIs; saying it a third time
+			// would push the finding that matters off the top of the report.
+			return
+		}
+	}
+	url, err := api.InteractionsURL(public)
+	if err != nil {
+		warn("the Discord interactions URL cannot be derived from " + public + ": " + err.Error())
+		return
+	}
+	ok("Discord interactions endpoint " + url)
+
+	if strings.TrimSpace(os.Getenv(envDiscordPublicKey)) == "" {
+		warn(envDiscordPublicKey + " is unset, so every Discord interaction is refused. Set it " +
+			"to the application's public key from the developer portal — " +
+			"docs/operations/discord-bot.md")
+		return
+	}
+	ok(envDiscordPublicKey + " is set")
+}
+
 func checkRedirectURIs(
 	ctx context.Context, db *store.DB, providers []sqlitegen.IdentityProvider, ok, bad func(string),
 ) {

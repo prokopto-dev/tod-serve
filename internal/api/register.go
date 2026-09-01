@@ -36,6 +36,12 @@ const (
 	// is never a PAT scope, authenticates no principal, and stops working for good the moment an
 	// identity holds an administrator permission — ADR-0016.
 	SchemeSetupToken = "setupToken"
+	// SchemeDiscordSignature is `X-Signature-Ed25519` over the raw body, with
+	// `X-Signature-Timestamp` beside it. It reaches the interactions endpoint and nothing else,
+	// is never a PAT scope, and authenticates the SENDER rather than a principal: the person who
+	// typed the command is resolved inside the handler, from the payload the signature covers.
+	// ADR-0017.
+	SchemeDiscordSignature = "discordSignature"
 )
 
 // The OpenAPI extensions each operation carries. Everything the route registry knows reaches the
@@ -159,6 +165,8 @@ func securityFor(r Route) []map[string][]string {
 		return []map[string][]string{{SchemeMetricsToken: {}}}
 	case AuthSetupToken:
 		return []map[string][]string{{SchemeSetupToken: {}}}
+	case AuthDiscordSignature:
+		return []map[string][]string{{SchemeDiscordSignature: {}}}
 	case AuthSelf, AuthPermission:
 		if r.SessionOnly() {
 			return []map[string][]string{{SchemeSession: {}}}
@@ -227,6 +235,13 @@ func errorStatusesFor(r Route) []int {
 	}
 	if r.CircleScoped || len(r.PathParams()) > 0 {
 		statuses = append(statuses, 404)
+	}
+	if r.Auth == AuthDiscordSignature {
+		// Documented because it is the ANSWER Discord's own endpoint validation looks for: it
+		// POSTs a deliberately-bad signature when an operator saves the URL and refuses to accept
+		// an endpoint that does not answer `401`. A generated client treating the route's
+		// designed refusal as an undocumented error would be a client that could not report it.
+		statuses = append(statuses, 401)
 	}
 	if r.Auth == AuthSetupToken {
 		// Documented because it is the ANSWER, not an edge case. An unset `TOD_SETUP_TOKEN` and a
