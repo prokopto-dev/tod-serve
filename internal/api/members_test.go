@@ -267,3 +267,56 @@ func (h *harness) memberETag(
 	require.NotEmpty(h.t, etag)
 	return etag
 }
+
+// **The role field on the Members screen, driven over the wire.**
+//
+// Reported from real use: an owner changed their own role away from `owner` from that screen. The
+// console's half of this is that it no longer offers the option — `web/src/lib/roles.ts`, and
+// `roles.test.ts` drives it — but an affordance is not an enforcement, and the two halves are
+// written from the same rules on purpose.
+//
+// A second owner is seeded so that neither refusal here can be `last_owner` wearing another rule's
+// clothes: the circle keeps an owner whatever the server answers.
+func TestUpdateMember_ChangingYourOwnRoleOrAnOwnersRole_Is403(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	mine := h.seedCircle("Mine")
+	owner := h.seedMember(mine, authz.RoleOwner)
+	second := h.seedMember(mine, authz.RoleOwner)
+	officer := h.seedMember(mine, authz.RoleOfficer)
+
+	own := h.do(request{
+		Method: http.MethodPatch, Path: memberPath(mine, owner), Session: h.session(owner, true),
+		Headers: map[string]string{api.IfMatchHeader: h.memberETag(mine, owner, owner)},
+		Body:    `{"role":"officer"}`,
+	})
+	h.requireProblem(own, apierr.CodeForbidden)
+
+	outranked := h.do(request{
+		Method: http.MethodPatch, Path: memberPath(mine, owner), Session: h.session(officer, true),
+		Headers: map[string]string{api.IfMatchHeader: h.memberETag(mine, owner, officer)},
+		Body:    `{"role":"officer"}`,
+	})
+	h.requireProblem(outranked, apierr.CodeForbidden)
+
+	// Neither refusal was an error returned over a write that happened anyway.
+	still := h.do(request{
+		Method: http.MethodGet, Path: memberPath(mine, owner),
+		Token: h.seedToken(owner, authz.ScopeMemberRead),
+	})
+	require.Equal(t, http.StatusOK, still.Status, still.Body)
+	var view api.MemberResponse
+	require.NoError(t, json.Unmarshal([]byte(still.Body), &view))
+	require.Equal(t, string(authz.RoleOwner), view.Role)
+
+	// And the door that has to stay open: an owner still makes another owner, which is how
+	// ownership is handed over now that demoting yourself is not.
+	promoted := h.do(request{
+		Method: http.MethodPatch, Path: memberPath(mine, officer), Session: h.session(second, true),
+		Headers: map[string]string{api.IfMatchHeader: h.memberETag(mine, officer, second)},
+		Body:    `{"role":"owner"}`,
+	})
+	require.Equal(t, http.StatusOK, promoted.Status, promoted.Body)
+	require.NoError(t, json.Unmarshal([]byte(promoted.Body), &view))
+	require.Equal(t, string(authz.RoleOwner), view.Role)
+}

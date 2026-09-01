@@ -44,30 +44,30 @@ func TestRevoke_TheLastOwner_IsLastOwner(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// Demoting the last owner is the same refusal as revoking them, for the same reason.
-func TestUpdate_DemotingTheLastOwner_IsLastOwner(t *testing.T) {
+// A revoked owner does not count towards the one that has to remain.
+//
+// It is driven through `Revoke` because that is where a circle can still be talked down to its last
+// owner: `Update` refuses a self-demotion outright, so the state this asserts is unreachable from
+// there. Revocation is the one thing an owner may still do to themselves.
+func TestRevoke_ARevokedOwner_IsNotTheOwnerThatRemains(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	view := f.localCircle("Riot Blue")
 	owner, err := f.joinLocal(f.ownerGrant(view), "Tankguy")
 	require.NoError(t, err)
 
-	role := string(authz.RoleOfficer)
-	_, err = f.members.Update(t.Context(), view.ID, owner.Membership.ID, owner.Membership.ID,
-		membership.UpdateRequest{Role: &role})
-	require.True(t, apierr.HasCode(err, apierr.CodeLastOwner), "got %v", err)
-
-	// A revoked owner does not count towards the one that has to remain.
 	second := f.joinAs(view, owner, authz.RoleOfficer, "Sneakco")
 	promote := string(authz.RoleOwner)
 	_, err = f.members.Update(t.Context(), view.ID, second.Membership.ID, owner.Membership.ID,
 		membership.UpdateRequest{Role: &promote})
 	require.NoError(t, err)
+
+	// Two live owners, so the first may stand down — and then there is one again.
 	_, err = f.members.Revoke(
 		t.Context(), view.ID, second.Membership.ID, owner.Membership.ID, "")
 	require.NoError(t, err)
-	_, err = f.members.Update(t.Context(), view.ID, owner.Membership.ID, owner.Membership.ID,
-		membership.UpdateRequest{Role: &role})
+	_, err = f.members.Revoke(
+		t.Context(), view.ID, owner.Membership.ID, owner.Membership.ID, "")
 	require.True(t, apierr.HasCode(err, apierr.CodeLastOwner),
 		"a revoked owner is not an owner; got %v", err)
 }
@@ -511,4 +511,142 @@ func TestUpdate_ADisplayNameChangeByAnOfficer_IsNotRefused(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ownerName, renamed.DisplayName)
 	require.Equal(t, string(authz.RoleOwner), renamed.Role)
+}
+
+// **A member's own role is not theirs to change.**
+//
+// Reported from real use: an owner could set their own role to something else from the Members
+// page, and did. `last_owner` covered the sole owner and had nothing to say about a circle with
+// two, which is exactly the state this was reported from.
+//
+// Handing over ownership is promoting somebody else, not demoting yourself: the promotion leaves
+// the circle administered at every instant, and the person who ends up responsible for it agreed to
+// be. It is not narrowed to `owner` — an officer holds `member.manage` and reaches this path for
+// themselves too, and the rule reads the same at every role.
+func TestUpdate_YourOwnRole_IsNeverYoursToChange(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	view := f.localCircle("Riot Blue")
+	owner, err := f.joinLocal(f.ownerGrant(view), "Tankguy")
+	require.NoError(t, err)
+	officer := f.joinAs(view, owner, authz.RoleOfficer, "Sneakco")
+	toOfficer := string(authz.RoleOfficer)
+	toMember := string(authz.RoleMember)
+	toOwner := string(authz.RoleOwner)
+
+	// The SOLE owner. This used to be `409 last_owner`; it is the standing refusal now, because
+	// that code's own advice — promote somebody else, then repeat the operation — stopped being
+	// true the moment a self-demotion was refused however many owners a circle has.
+	_, err = f.members.Update(t.Context(), view.ID, owner.Membership.ID, owner.Membership.ID,
+		membership.UpdateRequest{Role: &toOfficer})
+	require.True(t, apierr.HasCode(err, apierr.CodeForbidden), "got %v", err)
+
+	// A SECOND owner does not unlock it. This is the reported state.
+	second := f.joinAs(view, owner, authz.RoleMember, "Tankgal")
+	_, err = f.members.Update(t.Context(), view.ID, second.Membership.ID, owner.Membership.ID,
+		membership.UpdateRequest{Role: &toOwner})
+	require.NoError(t, err)
+	_, err = f.members.Update(t.Context(), view.ID, owner.Membership.ID, owner.Membership.ID,
+		membership.UpdateRequest{Role: &toOfficer})
+	require.True(t, apierr.HasCode(err, apierr.CodeForbidden), "got %v", err)
+
+	// And an OFFICER standing themselves down is the same rule, not an owner-shaped exception.
+	_, err = f.members.Update(t.Context(), view.ID, officer.Membership.ID, officer.Membership.ID,
+		membership.UpdateRequest{Role: &toMember})
+	require.True(t, apierr.HasCode(err, apierr.CodeForbidden), "got %v", err)
+
+	// Refused rather than an error returned over a write that happened anyway.
+	require.Equal(t, string(authz.RoleOwner), f.roleOf(view.ID, owner.Membership.ID))
+	require.Equal(t, string(authz.RoleOfficer), f.roleOf(view.ID, officer.Membership.ID))
+
+	// Your own DISPLAY NAME is still yours: the guard fires only when a role moves, and a guard
+	// about roles quietly becoming a guard about names would take away the one edit every member
+	// makes to their own row.
+	name := "Tankguy the First"
+	renamed, err := f.members.Update(t.Context(), view.ID, owner.Membership.ID, owner.Membership.ID,
+		membership.UpdateRequest{DisplayName: &name})
+	require.NoError(t, err)
+	require.Equal(t, name, renamed.DisplayName)
+	require.Equal(t, string(authz.RoleOwner), renamed.Role)
+}
+
+// **An officer cannot change the role of somebody who outranks them.**
+//
+// The officer gains nothing by it — `refuseGrantAboveOwnRole` stops them taking the role — which is
+// why this was left open beside that guard rather than shipped with it. It is still an officer
+// removing their own supervisor, and the officer keeps `member.manage` afterwards while the person
+// who could have taken it away no longer holds `circle.security.manage`.
+func TestUpdate_AnOfficer_CannotChangeTheRoleOfAnOwner(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	view := f.localCircle("Riot Blue")
+	owner, err := f.joinLocal(f.ownerGrant(view), "Tankguy")
+	require.NoError(t, err)
+	officer := f.joinAs(view, owner, authz.RoleOfficer, "Sneakco")
+
+	// A second owner, so the refusal cannot be `last_owner` wearing this rule's clothes.
+	second := f.joinAs(view, owner, authz.RoleMember, "Tankgal")
+	toOwner := string(authz.RoleOwner)
+	_, err = f.members.Update(t.Context(), view.ID, second.Membership.ID, owner.Membership.ID,
+		membership.UpdateRequest{Role: &toOwner})
+	require.NoError(t, err)
+
+	for _, role := range []authz.Role{authz.RoleObserver, authz.RoleMember, authz.RoleOfficer} {
+		t.Run(string(role), func(t *testing.T) {
+			granted := string(role)
+			_, updateErr := f.members.Update(t.Context(), view.ID, owner.Membership.ID,
+				officer.Membership.ID, membership.UpdateRequest{Role: &granted})
+			require.True(t, apierr.HasCode(updateErr, apierr.CodeForbidden), "got %v", updateErr)
+		})
+	}
+	require.Equal(t, string(authz.RoleOwner), f.roleOf(view.ID, owner.Membership.ID))
+
+	// The rule is about the role the SUBJECT holds, not about who they are: the same officer still
+	// manages everybody at or below their own role.
+	toMember := string(authz.RoleMember)
+	demoted, err := f.members.Update(t.Context(), view.ID, second.Membership.ID,
+		owner.Membership.ID, membership.UpdateRequest{Role: &toMember})
+	require.NoError(t, err)
+	require.Equal(t, toMember, demoted.Role)
+	toObserver := string(authz.RoleObserver)
+	byOfficer, err := f.members.Update(t.Context(), view.ID, second.Membership.ID,
+		officer.Membership.ID, membership.UpdateRequest{Role: &toObserver})
+	require.NoError(t, err)
+	require.Equal(t, toObserver, byOfficer.Role)
+}
+
+// **Handing over ownership still works, which is the whole point of refusing the other half.**
+//
+// An owner promotes somebody else, and that person — an owner now, so not outranked — changes the
+// first one's role. Every step is one somebody may take, and the circle has an owner at every
+// instant in between.
+func TestUpdate_HandingOverOwnership_StillWorks(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	view := f.localCircle("Riot Blue")
+	owner, err := f.joinLocal(f.ownerGrant(view), "Tankguy")
+	require.NoError(t, err)
+	successor := f.joinAs(view, owner, authz.RoleOfficer, "Sneakco")
+
+	toOwner := string(authz.RoleOwner)
+	promoted, err := f.members.Update(t.Context(), view.ID, successor.Membership.ID,
+		owner.Membership.ID, membership.UpdateRequest{Role: &toOwner})
+	require.NoError(t, err)
+	require.Equal(t, toOwner, promoted.Role)
+
+	toOfficer := string(authz.RoleOfficer)
+	steppedDown, err := f.members.Update(t.Context(), view.ID, owner.Membership.ID,
+		successor.Membership.ID, membership.UpdateRequest{Role: &toOfficer})
+	require.NoError(t, err)
+	require.Equal(t, toOfficer, steppedDown.Role)
+	require.Equal(t, toOwner, f.roleOf(view.ID, successor.Membership.ID))
+}
+
+// roleOf re-reads a membership's role, so a refusal is asserted against the row rather than against
+// the error the call returned.
+func (f *fixture) roleOf(circleID core.CircleID, id core.MembershipID) string {
+	f.t.Helper()
+	got, err := f.members.Get(f.t.Context(), circleID, id)
+	require.NoError(f.t, err)
+	return got.Role
 }

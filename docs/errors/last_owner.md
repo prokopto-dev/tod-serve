@@ -6,8 +6,12 @@ The operation would leave the circle with no owner.
 
 ## What causes it
 
-- Demoting the only owner.
 - Revoking the only owner's membership.
+
+**Not a demotion, any more.** `updateMember` refuses a role change against your own row or against
+somebody who outranks you — [`forbidden`](forbidden.md) — so demoting an owner already needs another
+owner to be the one asking, and this cannot arise. Revocation is the one thing an owner may still do
+to themselves, so it is where the circle can still be talked down to its last one.
 
 ## What the client should do
 

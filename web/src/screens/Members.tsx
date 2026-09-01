@@ -8,6 +8,9 @@
 //     human. A UI that merged them automatically would be quietly editing history.
 //   - A revoked member stays in the list, with their reports still counting. Revocation controls
 //     access, never history, and hiding the row would make the evidence counts stop adding up.
+//
+// The Role cell is the most dangerous field on this screen and what it offers is decided in
+// `../lib/roles`, driven there rather than here.
 
 import { useState } from 'react'
 
@@ -17,8 +20,7 @@ import { useResource } from '../app/useResource'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { Banner, Button, Card, Empty, Field, Input, Mono, Select, Spinner, Td, Th } from '../components/ui'
 import { instant, plural } from '../lib/format'
-
-const ROLES = ['observer', 'member', 'officer', 'owner'] as const
+import { roleField, type Role } from '../lib/roles'
 
 export function Members() {
   const principal = usePrincipal()
@@ -89,6 +91,7 @@ export function Members() {
                     canManage={principal.can('member.manage')}
                     canRevoke={principal.can('member.revoke')}
                     myRole={principal.view.role}
+                    myMembershipID={principal.view.membership_id}
                     onAct={act}
                     onRevoked={setNotice}
                   />
@@ -110,6 +113,7 @@ function MemberRow({
   canManage,
   canRevoke,
   myRole,
+  myMembershipID,
   onAct,
   onRevoked,
 }: {
@@ -118,14 +122,16 @@ function MemberRow({
   canManage: boolean
   canRevoke: boolean
   myRole: string
+  myMembershipID: string
   onAct: (promise: Promise<unknown>) => void
   onRevoked: (revoked: RevokedResponse) => void
 }) {
   const revoked = Boolean(member.revoked_at)
-  // A role is granted only by somebody who holds it. The server refuses anything above the
-  // caller's own role; the console does not offer it, so nobody reaches for a button that
-  // will always fail.
-  const grantable = ROLES.slice(0, ROLES.indexOf(myRole as (typeof ROLES)[number]) + 1)
+  // What this caller may change this member's role to, and why not when they may not. The server
+  // refuses all three cases; the console does not offer them, so nobody reaches for a control that
+  // will always fail — and the role field is where that matters most, because the one it used to
+  // offer took a circle's owner away from it.
+  const role = roleField({ canManage, revoked, myRole, myMembershipID, member })
 
   return (
     <tr className={revoked ? 'opacity-60' : undefined}>
@@ -141,19 +147,29 @@ function MemberRow({
         )}
       </Td>
       <Td>
-        {canManage && !revoked ? (
+        {role.options.length > 0 ? (
           <Select
             value={member.role}
             onChange={(e) => onAct(changeRole(circleID, member.id, e.target.value))}
           >
-            {grantable.map((role) => (
-              <option key={role} value={role}>
-                {role}
+            {role.options.map((option) => (
+              <option key={option} value={option}>
+                {option}
               </option>
             ))}
           </Select>
         ) : (
-          member.role
+          <>
+            {member.role}
+            {role.note && (
+              <span
+                className="ml-1.5 rounded border border-ink-700 px-1 text-[10px] tracking-wide text-ink-400 uppercase"
+                title={role.reason}
+              >
+                {role.note}
+              </span>
+            )}
+          </>
         )}
       </Td>
       <Td className="text-ink-400">{member.kind}</Td>
@@ -227,7 +243,7 @@ function changeRole(circleID: string, memberID: string, role: string): Promise<u
       {
         circle_id: circleID,
         member_id: memberID,
-        body: { role: role as (typeof ROLES)[number] },
+        body: { role: role as Role },
       },
       current.etag ? { ifMatch: current.etag } : {},
     ),
