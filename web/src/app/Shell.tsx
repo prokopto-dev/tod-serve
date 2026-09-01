@@ -13,7 +13,7 @@ import { api, body, toError } from '../api'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { RevocationBanner } from '../components/RevocationBanner'
 import { Button, Spinner } from '../components/ui'
-import { circleChoices, type CircleChoice } from '../lib/circles'
+import { circleChoices, serverIsAmbiguous, type CircleChoice } from '../lib/circles'
 import { classes } from '../lib/format'
 import { rememberCircle, rememberedCircles } from '../lib/storage'
 import { usePrincipalState } from './principal'
@@ -263,6 +263,13 @@ function CircleHeader() {
  * this session — the circle may be gone, or the membership revoked. They are offered anyway,
  * because the record is the only thing that knows they exist, and marked, because an offer that
  * might 404 should not look like one that cannot.
+ *
+ * **A server does not identify a circle, and this list is where assuming it would show.**
+ * `membership` has no per-server uniqueness — a person may hold a guild circle and an alliance
+ * circle both on Blue — so two rows can carry the same badge, and the NAME is the only thing that
+ * tells them apart (`ux_circle_name_norm_server` is unique on the name, not on the circle). Which
+ * is why the name wraps rather than truncating: two circles called "Kittens Who Say Meep — Blue
+ * Raid" and "Kittens Who Say Meep — Blue Alliance" clipped to one line are the same row twice.
  */
 function CircleSwitcher({
   here,
@@ -320,7 +327,7 @@ function CircleSwitcher({
               if (e.key === 'Escape') setOpen(false)
             }}
             className={classes(
-              'absolute top-full left-0 z-20 mt-1.5 w-80 rounded-lg border border-ink-700',
+              'absolute top-full left-0 z-20 mt-1.5 w-96 rounded-lg border border-ink-700',
               'bg-ink-900 shadow-lg shadow-black/50',
             )}
           >
@@ -330,6 +337,13 @@ function CircleSwitcher({
                 A session belongs to one circle, so switching means signing in again. Each circle is
                 pinned to its own server and there is no combined view of two.
               </p>
+              {serverIsAmbiguous(choices) && (
+                <p className="mt-1 text-[11px] leading-relaxed text-ink-400">
+                  Some of these share a server. That is ordinary — nothing limits how many circles
+                  a server carries, or how many of them you belong to — so read the name rather
+                  than the badge.
+                </p>
+              )}
             </div>
 
             {others.length > 0 && (
@@ -342,7 +356,10 @@ function CircleSwitcher({
                       className="block rounded px-2 py-1.5 text-xs text-ink-200 hover:bg-ink-800"
                     >
                       <span className="flex items-baseline justify-between gap-2">
-                        <span className="truncate">{circle.name}</span>
+                        {/* Wraps rather than truncating: two circles on one server are told apart
+                            by their names, and a clipped name is where two of them become one
+                            row. */}
+                        <span className="break-words">{circle.name}</span>
                         <span className="shrink-0 text-[10px] tracking-wide text-ink-400 uppercase">
                           {circle.server}
                         </span>

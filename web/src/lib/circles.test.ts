@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { circleChoices } from './circles.ts'
+import { circleChoices, serverIsAmbiguous } from './circles.ts'
 
 const circle = (id: string, name = id, server = 'blue') => ({ id, name, server })
 
@@ -70,4 +70,46 @@ test('a circle listed twice is offered once', () => {
 
 test('no sources is no choices, and not a crash', () => {
   assert.deepEqual(circleChoices([], [], 'a'), [])
+})
+
+// A server does NOT identify a circle. `membership` has no per-server uniqueness — a person may
+// hold a guild circle and an alliance circle both on Blue — so anything here that collapsed,
+// grouped or keyed on `server` would drop one of somebody's real circles from their own switcher.
+
+test('two circles on the same server are two circles', () => {
+  const got = circleChoices(
+    [circle('a', 'Guild Blue', 'blue')],
+    [circle('b', 'Alliance Blue', 'blue'), circle('c', 'Guild Green', 'green')],
+    'a',
+  )
+
+  assert.deepEqual(
+    got.map((c) => [c.id, c.server]),
+    [
+      ['a', 'blue'],
+      ['b', 'blue'],
+      ['c', 'green'],
+    ],
+  )
+})
+
+test('the current circle is found by id, not by server', () => {
+  const got = circleChoices([], [circle('a', 'Guild Blue', 'blue'), circle('b', 'Alliance Blue', 'blue')], 'b')
+
+  assert.deepEqual(
+    got.map((c) => [c.id, c.current]),
+    [
+      ['b', true],
+      ['a', false],
+    ],
+  )
+})
+
+test('serverIsAmbiguous is true exactly when a server is shared', () => {
+  const on = (server: string, id: string) => ({ id, name: id, server, current: false, live: true })
+
+  assert.equal(serverIsAmbiguous([on('blue', 'a'), on('green', 'b'), on('red', 'c')]), false)
+  assert.equal(serverIsAmbiguous([on('blue', 'a'), on('green', 'b'), on('blue', 'c')]), true)
+  assert.equal(serverIsAmbiguous([on('blue', 'a')]), false)
+  assert.equal(serverIsAmbiguous([]), false)
 })

@@ -68,3 +68,26 @@ export function circleChoices(
 
   return out.sort((a, b) => Number(b.current) - Number(a.current))
 }
+
+/**
+ * serverIsAmbiguous reports whether two of these circles sit on the same server.
+ *
+ * **A server does not identify a circle, and the schema is where that is settled.** `membership`
+ * carries no `server` column and no per-server uniqueness — `ux_membership_identity` is unique on
+ * `(circle_id, identity_id)` — so one person may hold any number of memberships, several of them
+ * on one server: a guild circle and an alliance circle both on Blue is an ordinary case, not an
+ * edge one. The only server-scoped uniqueness anywhere is `ux_circle_name_norm_server`, on the
+ * NAME.
+ *
+ * The switcher shows the name and the server on every row regardless. This exists so that the one
+ * case where the server chip settles nothing can say so, instead of leaving somebody to work out
+ * why two rows carry the same badge.
+ */
+export function serverIsAmbiguous(choices: readonly CircleChoice[]): boolean {
+  const seen = new Set<string>()
+  for (const choice of choices) {
+    if (seen.has(choice.server)) return true
+    seen.add(choice.server)
+  }
+  return false
+}

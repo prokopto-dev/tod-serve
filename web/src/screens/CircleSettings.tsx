@@ -141,7 +141,7 @@ function AnotherCircleCard() {
   return (
     <Card
       title="Another circle"
-      subtitle="A guild raiding two servers keeps two circles: this one cannot be moved to another server."
+      subtitle="Nothing caps how many circles a server carries or how many you belong to. What is fixed is which server THIS one is on."
       actions={<Button onClick={() => navigate('/circles/new')}>New circle…</Button>}
     >
       <p className="px-4 py-3 text-xs text-ink-400">

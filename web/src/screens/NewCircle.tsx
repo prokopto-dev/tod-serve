@@ -11,8 +11,13 @@
 //
 // `server` is IMMUTABLE. ADR-0009: a circle is pinned to one server permanently, `updateCircle`
 // answers `422 field_immutable`, and a `BEFORE UPDATE` trigger refuses it in the database even if
-// the API ever forgot to. A guild raiding Blue and Green makes two circles — this form is where
-// that should become obvious, not six weeks later when somebody tries to move one.
+// the API ever forgot to. A guild raiding Blue and Green makes at least two circles — this form is
+// where that should become obvious, not six weeks later when somebody tries to move one.
+//
+// What it must NOT imply is one circle per server. `membership` has no per-server uniqueness at
+// all — `ux_membership_identity` is unique on `(circle_id, identity_id)` and there is no `server`
+// column on it — so a person can hold a guild circle and an alliance circle both on Blue. The only
+// server-scoped uniqueness anywhere is `ux_circle_name_norm_server`, on the NAME.
 //
 // Creating a circle does NOT put you in it. `POST /circles` writes the circle row and nothing
 // else: no membership, no owner, no invite. That is not a bug this screen can fix from `web/`,
@@ -190,11 +195,17 @@ export function NewCircle() {
               <Mono>BEFORE UPDATE</Mono> trigger refuses it in the database.
             </p>
             <p className="mt-1">
-              <strong>A guild raiding Blue and Green makes two circles.</strong> Two member lists,
-              two invite sets, two sets of officers. That composes better than it sounds: the
+              <strong>A guild raiding Blue and Green makes at least two circles.</strong> Two member
+              lists, two invite sets, two sets of officers. That composes better than it sounds: the
               reporting plugin holds several destinations and ticks the ones a kill reports to, so
               “report to my Blue circle and my Green circle” is two ticked boxes rather than one
               circle spanning both.
+            </p>
+            <p className="mt-1">
+              It does <strong>not</strong> mean one circle per server. Nothing limits how many
+              circles a server carries, or how many of them one person belongs to — a raider can
+              hold a guild circle and an alliance circle both on Blue. The only thing unique per
+              server is the <strong>name</strong>, so pick one that says which of them this is.
             </p>
           </Banner>
 

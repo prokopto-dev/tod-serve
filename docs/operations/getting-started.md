@@ -832,10 +832,23 @@ prunes it.
 
 ## A second circle
 
-A guild raiding Blue and Green keeps **two circles**. There is no combined view of them anywhere
-and there never will be — [ADR-0009](../adr/0009-circle-pinned-to-one-server.md), enforced by
-a `BEFORE UPDATE` trigger — so a circle cannot be moved to another server after it is created and
-the choice of server is the one field on it that is permanent.
+A guild raiding Blue and Green keeps **at least two circles**. There is no combined view of them
+anywhere and there never will be — [ADR-0009](../adr/0009-circle-pinned-to-one-server.md), enforced
+by a `BEFORE UPDATE` trigger — so a circle cannot be moved to another server after it is created
+and the choice of server is the one field on it that is permanent.
+
+**That is not one circle per server.** The limit runs one way only:
+
+| | |
+|---|---|
+| circle → server | many-to-one, **immutable**. A circle is on exactly one server, for good |
+| person → circle | many-to-many, **no per-server limit**. `membership` has no `server` column, and `ux_membership_identity` is unique on `(circle_id, identity_id)` — the circle, not the server |
+| what is unique per server | the **name**. `ux_circle_name_norm_server`, on `(name_norm, server)` where `deleted_at IS NULL`. The same name may repeat across servers |
+
+So a raider can hold their guild's Blue circle, an alliance Blue circle and a Green circle: three
+memberships, two of them on Blue. The console's switcher shows the name and the server on every
+row for exactly that reason, and says so when two of them share a server — a badge reading `BLUE`
+settles nothing on its own.
 
 Two ways to make one, and **they are not equivalent**:
 

@@ -33,8 +33,9 @@ const WHAT_IT_IS = [
     title: 'One circle, one server',
     body:
       'Blue, Green and Red are different worlds with different spawn clocks. A circle is pinned ' +
-      'to one of them permanently, so a Blue fact and a Green fact never meet in a row. A guild ' +
-      'raiding two servers keeps two circles.',
+      'to one of them permanently, so a Blue fact and a Green fact never meet in a row. The ' +
+      'limit runs that way only: you can belong to as many circles as you like, several on one ' +
+      'server included.',
   },
   {
     title: 'Nothing is ever rewritten',
