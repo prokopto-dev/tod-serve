@@ -146,6 +146,7 @@ For a real deployment — a droplet, Traefik, GHCR and an approved deploy —
 | [Decisions](docs/adr/) | Why things are the way they are, including the downsides |
 | [Glossary](docs/concepts/glossary.md) | P99 raiding vocabulary, for contributors who do not play |
 | [Invariants](docs/concepts/invariants.md) | Every rule and the mechanism that enforces it |
+| [Client integration](docs/reference/nparse-plus-integration.md) | Everything needed to build an nParse+ client from outside this repository: credentials, scopes, endpoints, and the rules a client must not break |
 | [Getting started](docs/operations/getting-started.md) | Clone to signed-in, both at home and behind Traefik. Start here |
 | [Deploying](docs/operations/deployment.md) | The droplet, the two workflows, and what is deliberately not covered |
 | [Backups](docs/operations/backup.md) | Taking one, checking it, and restoring — the only undo there is |
