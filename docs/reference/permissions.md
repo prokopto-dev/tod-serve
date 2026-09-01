@@ -8,35 +8,35 @@ Effective capability is **role permissions ∩ token scopes**. A permission narr
 
 ## Permissions
 
-A permission with no scope is session-only: no token reaches it at any scope. A permission marked step-up also requires re-authentication.
+A permission in the **floor** is session-only: no token reaches it at any scope. **Step-up** is the separate question of how recently that session proved its identity — `none`, `routine` or `sensitive`. The two are not the same question, and `audit.read` is the permission that shows it: floored, and asking for no proof of recency at all.
 
-| Permission | Realm | Roles | Scopes | Step-up | What it allows |
-|---|---|---|---|---|---|
-| `circle.read` | circle | `observer`, `member`, `officer`, `owner` | `circle:read` | — | Read the circle's name, server, settings and revocation strength |
-| `circle.manage` | circle | `officer`, `owner` | — | yes | Rename the circle, change its settings, and set its timer overrides |
-| `circle.security.manage` | circle | `owner` | — | yes | Change which identity providers the circle accepts, which changes its revocation strength |
-| `circle.delete` | circle | `owner` | — | yes | Delete the circle and every report in it |
-| `member.read` | circle | `member`, `officer`, `owner` | `member:read` | — | List the circle's members and read one |
-| `member.manage` | circle | `officer`, `owner` | — | yes | Change a member's role or display name |
-| `member.revoke` | circle | `officer`, `owner` | — | yes | Revoke a membership, and reinstate a revoked one |
-| `invite.read` | circle | `officer`, `owner` | `invite:read` | — | List the circle's invites |
-| `invite.create` | circle | `officer`, `owner` | `invite:create` | — | Mint an invite code; one minted by a PAT is hard-narrowed to one use, 24 hours and a role below owner |
-| `invite.revoke` | circle | `officer`, `owner` | — | yes | Revoke an invite before it expires |
-| `tod.read` | circle | `observer`, `member`, `officer`, `owner` | `tod:read`, `events:subscribe` | — | Read the board, the reports behind it, and the quake log |
-| `tod.read.attribution` | circle | `member`, `officer`, `owner` | `tod:read` | — | See which member reported a time of death; withholding this is what the observer role is |
-| `tod.report` | circle | `member`, `officer`, `owner` | `tod:report` | — | Append a time-of-death report |
-| `tod.retract` | circle | `member`, `officer`, `owner` | `tod:retract` | — | Retract one's own report |
-| `tod.retract.any` | circle | `officer`, `owner` | `tod:retract` | — | Retract another member's report |
-| `tod.quake.report` | circle | `officer`, `owner` | — | — | Record a server-wide earthquake; a false one wipes the whole board |
-| `catalogue.read` | circle | `observer`, `member`, `officer`, `owner` | `catalogue:read` | — | Read the raid-target catalogue and resolve a target name |
-| `catalogue.manage` | instance | — | — | yes | Add or change raid targets and their per-server timers, for every circle on the instance |
-| `audit.read` | circle | `officer`, `owner` | — | yes | Read the circle's audit log |
-| `ops.read` | instance | — | — | — | Read instance diagnostics and job status |
-| `token.mint` | circle | `owner` | — | yes | Create a service membership and mint its token |
-| `token.revoke` | circle | `owner` | — | yes | Revoke another principal's token |
-| `instance.circle.create` | instance | — | — | yes | Create a circle on this instance |
-| `instance.security.manage` | instance | — | — | yes | Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation |
-| `instance.owner` | instance | — | — | yes | Instance ownership: whatever an instance administrator can do that has no narrower key |
+| Permission | Realm | Roles | Scopes | Floor | Step-up | What it allows |
+|---|---|---|---|---|---|---|
+| `circle.read` | circle | `observer`, `member`, `officer`, `owner` | `circle:read` | — | none | Read the circle's name, server, settings and revocation strength |
+| `circle.manage` | circle | `officer`, `owner` | — | yes | routine | Rename the circle, change its settings, and set its timer overrides |
+| `circle.security.manage` | circle | `owner` | — | yes | sensitive | Change which identity providers the circle accepts, which changes its revocation strength |
+| `circle.delete` | circle | `owner` | — | yes | sensitive | Delete the circle and every report in it |
+| `member.read` | circle | `member`, `officer`, `owner` | `member:read` | — | none | List the circle's members and read one |
+| `member.manage` | circle | `officer`, `owner` | — | yes | sensitive | Change a member's role or display name |
+| `member.revoke` | circle | `officer`, `owner` | — | yes | sensitive | Revoke a membership, and reinstate a revoked one |
+| `invite.read` | circle | `officer`, `owner` | `invite:read` | — | none | List the circle's invites |
+| `invite.create` | circle | `officer`, `owner` | `invite:create` | — | none | Mint an invite code; one minted by a PAT is hard-narrowed to one use, 24 hours and a role below owner |
+| `invite.revoke` | circle | `officer`, `owner` | — | yes | routine | Revoke an invite before it expires |
+| `tod.read` | circle | `observer`, `member`, `officer`, `owner` | `tod:read`, `events:subscribe` | — | none | Read the board, the reports behind it, and the quake log |
+| `tod.read.attribution` | circle | `member`, `officer`, `owner` | `tod:read` | — | none | See which member reported a time of death; withholding this is what the observer role is |
+| `tod.report` | circle | `member`, `officer`, `owner` | `tod:report` | — | none | Append a time-of-death report |
+| `tod.retract` | circle | `member`, `officer`, `owner` | `tod:retract` | — | none | Retract one's own report |
+| `tod.retract.any` | circle | `officer`, `owner` | `tod:retract` | — | none | Retract another member's report |
+| `tod.quake.report` | circle | `officer`, `owner` | — | — | none | Record a server-wide earthquake; a false one wipes the whole board |
+| `catalogue.read` | circle | `observer`, `member`, `officer`, `owner` | `catalogue:read` | — | none | Read the raid-target catalogue and resolve a target name |
+| `catalogue.manage` | instance | — | — | yes | routine | Add or change raid targets and their per-server timers, for every circle on the instance |
+| `audit.read` | circle | `officer`, `owner` | — | yes | none | Read the circle's audit log |
+| `ops.read` | instance | — | — | — | none | Read instance diagnostics and job status |
+| `token.mint` | circle | `owner` | — | yes | sensitive | Create a service membership and mint its token |
+| `token.revoke` | circle | `owner` | — | yes | sensitive | Revoke another principal's token |
+| `instance.circle.create` | instance | — | — | yes | sensitive | Create a circle on this instance |
+| `instance.security.manage` | instance | — | — | yes | sensitive | Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation |
+| `instance.owner` | instance | — | — | yes | sensitive | Instance ownership: whatever an instance administrator can do that has no narrower key |
 
 ## The role matrix
 
@@ -81,21 +81,21 @@ Cumulative: every role holds everything the role below it holds. Instance-realm 
 
 ## The capability floor
 
-Session and step-up only. No PAT scope reaches any of these, and `TestCapabilityFloor_MatchesCanonicalConventions` compares this list against the canonical conventions in both directions.
+Session only. No PAT scope reaches any of these, and `TestCapabilityFloor_MatchesCanonicalConventions` compares this list against the canonical conventions in both directions. The tier beside each is its step-up window, which is a second question — [ADR-0024](../adr/0024-step-up-is-graded-and-re-authentication-is-not-a-sign-in.md).
 
-- `circle.manage`
-- `circle.security.manage`
-- `circle.delete`
-- `member.manage`
-- `member.revoke`
-- `invite.revoke`
-- `catalogue.manage`
-- `audit.read`
-- `token.mint`
-- `token.revoke`
-- `instance.circle.create`
-- `instance.security.manage`
-- `instance.owner`
+- `circle.manage` — routine
+- `circle.security.manage` — sensitive
+- `circle.delete` — sensitive
+- `member.manage` — sensitive
+- `member.revoke` — sensitive
+- `invite.revoke` — routine
+- `catalogue.manage` — routine
+- `audit.read` — none
+- `token.mint` — sensitive
+- `token.revoke` — sensitive
+- `instance.circle.create` — sensitive
+- `instance.security.manage` — sensitive
+- `instance.owner` — sensitive
 
 ### Not in the floor, deliberately
 

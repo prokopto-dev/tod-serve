@@ -126,9 +126,11 @@ func TestOpenAPIPermissions_EveryPermission_CarriesItsMetadata(t *testing.T) {
 		ext, ok := byKey[string(def.Key)]
 		require.True(t, ok)
 		require.Equal(t, string(def.Realm), ext.Realm)
-		require.Equal(t, def.StepUp, ext.RequiresStepUp)
+		require.Equal(t, def.StepUp != authz.StepUpNone, ext.RequiresStepUp)
+		require.Equal(t, string(def.StepUp), ext.StepUpTier)
+		require.Equal(t, def.Floor, ext.Floor)
 		require.Equal(t, def.Summary, ext.Summary)
-		if def.StepUp {
+		if def.Floor {
 			require.Empty(t, ext.Scopes, "%q is in the floor and lists a scope", def.Key)
 		}
 	}
@@ -141,6 +143,8 @@ func TestOpenAPIPermissions_EveryPermission_CarriesItsMetadata(t *testing.T) {
 		"key": "tod.read",
 		"realm": "circle",
 		"requires_step_up": false,
+		"step_up_tier": "none",
+		"floor": false,
 		"roles": ["observer", "member", "officer", "owner"],
 		"scopes": ["tod:read", "events:subscribe"],
 		"summary": "Read the board, the reports behind it, and the quake log"

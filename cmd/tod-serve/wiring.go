@@ -150,7 +150,7 @@ func wire(
 		return nil, err
 	}
 	authn, err := auth.NewAuthenticator(
-		db, minter, codec, grants, clk, log, auth.DefaultStepUpWindow)
+		db, minter, codec, grants, clk, log, auth.DefaultStepUpWindows())
 	if err != nil {
 		return nil, err
 	}

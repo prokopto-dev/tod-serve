@@ -3,6 +3,7 @@ package authz_test
 import (
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -209,7 +210,7 @@ func TestScopes_NoScopeGrants_AnInstanceRealmPermission(t *testing.T) {
 	}
 }
 
-func TestRequiresStepUp_FloorMembership_IsWhatItReports(t *testing.T) {
+func TestRequiresStepUp_TierMembership_IsWhatItReports(t *testing.T) {
 	t.Parallel()
 	require.True(t, authz.RequiresStepUp(authz.PermissionTokenMint))
 	require.True(t, authz.RequiresStepUp(authz.PermissionCircleSecurityManage))
@@ -218,7 +219,99 @@ func TestRequiresStepUp_FloorMembership_IsWhatItReports(t *testing.T) {
 	// and fully audited, so a leaked bot token can add a visible, revocable member — not seize the
 	// circle. See canonical conventions §6.
 	require.False(t, authz.RequiresStepUp(authz.PermissionInviteCreate))
-	require.False(t, authz.RequiresStepUp(authz.Permission("nonsense")))
+
+	// In the floor and asking for NO recency proof. This is the pair that stopped being one
+	// question: reading a circle's own audit log is not a privilege escalation, and a leaked token
+	// still cannot do it. ADR-0024.
+	require.True(t, authz.InFloor(authz.PermissionAuditRead))
+	require.False(t, authz.RequiresStepUp(authz.PermissionAuditRead))
+	require.Equal(t, authz.StepUpNone, authz.StepUpFor(authz.PermissionAuditRead))
+
+	// A key this catalogue has never heard of answers the STRICTEST tier, not the loosest. It used
+	// to answer false, which was safe only because the floor question was the same question: a
+	// route naming an unknown permission would then have been session-only anyway. They are two
+	// questions now, so the recency half has to fail closed on its own.
+	require.Equal(t, authz.StepUpSensitive, authz.StepUpFor(authz.Permission("nonsense")))
+	require.True(t, authz.RequiresStepUp(authz.Permission("nonsense")))
+	require.False(t, authz.InFloor(authz.Permission("nonsense")))
+}
+
+// The tiers are stated twice — in the catalogue and in canonical §6 — and this is what stops them
+// diverging. It also asserts the two lists cover exactly the floor, so a permission that gained a
+// tier without gaining a floor row, or the reverse, is a red test rather than a silent hole.
+func TestStepUpTiers_MatchCanonicalConventions(t *testing.T) {
+	t.Parallel()
+
+	doc, err := canondoc.LoadCanonical()
+	require.NoError(t, err)
+	block, err := doc.BlockUnder("Step-up is a second question", 0)
+	require.NoError(t, err)
+
+	documented := map[authz.Permission]authz.StepUpTier{}
+	lines := 0
+	for _, line := range strings.Split(block.Body, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		lines++
+		tier, tierErr := authz.ParseStepUpTier(fields[0])
+		require.NoError(t, tierErr, "line %q of the step-up block names a tier nothing implements",
+			line)
+		require.Greater(t, len(fields), 1, "line %q names a tier and no permission", line)
+		for _, name := range fields[1:] {
+			p, permErr := authz.ParsePermission(name)
+			require.NoError(t, permErr, "the step-up block names %q, which is not a permission",
+				name)
+			_, dup := documented[p]
+			require.False(t, dup, "%q appears in the step-up block twice", name)
+			documented[p] = tier
+		}
+	}
+	require.NotZero(t, lines, "the step-up block parsed to nothing; the parser is wrong")
+
+	floor := authz.CapabilityFloor()
+	require.Len(t, documented, len(floor),
+		"the step-up block names %d permissions and the floor holds %d", len(documented),
+		len(floor))
+	for _, p := range floor {
+		tier, ok := documented[p]
+		require.True(t, ok, "%q is in the capability floor and the step-up block does not name it",
+			p)
+		require.Equal(t, tier, authz.StepUpFor(p), "step-up tier of %q", p)
+	}
+}
+
+// A permission a token can reach cannot meaningfully ask a token to step up: no token ever has, at
+// any scope. A tier outside the floor would therefore be a rule that reads as a control and denies
+// nobody — or worse, one that denies every PAT holder an operation their scope says they may call.
+func TestStepUp_OutsideTheFloor_IsAlwaysNone(t *testing.T) {
+	t.Parallel()
+	for _, def := range authz.Permissions() {
+		if def.Floor {
+			continue
+		}
+		require.Equal(t, authz.StepUpNone, def.StepUp,
+			"%q is not in the capability floor and asks for step-up %q", def.Key, def.StepUp)
+	}
+}
+
+// The ordering is what [authz.StepUpTier.AtLeast] rests on, and [api.Route.StepUp] takes the
+// strictest tier across a route's permissions by using it.
+func TestStepUpTier_Ordering_IsNoneRoutineSensitive(t *testing.T) {
+	t.Parallel()
+	require.Equal(t,
+		[]authz.StepUpTier{authz.StepUpNone, authz.StepUpRoutine, authz.StepUpSensitive},
+		authz.StepUpTiers())
+
+	require.True(t, authz.StepUpSensitive.AtLeast(authz.StepUpRoutine))
+	require.True(t, authz.StepUpRoutine.AtLeast(authz.StepUpNone))
+	require.True(t, authz.StepUpRoutine.AtLeast(authz.StepUpRoutine))
+	require.False(t, authz.StepUpRoutine.AtLeast(authz.StepUpSensitive))
+	require.False(t, authz.StepUpNone.AtLeast(authz.StepUpRoutine))
+
+	_, err := authz.ParseStepUpTier("whenever")
+	require.ErrorIs(t, err, authz.ErrUnknownStepUpTier)
 }
 
 func TestParsePermission_Value_IsAcceptedOrRefused(t *testing.T) {

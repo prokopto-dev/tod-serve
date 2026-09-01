@@ -302,7 +302,6 @@ func staleTestReferences() map[string]string {
 		"TestPermissions_InstanceRealm_IsNotGrantedByAnyRole":              "internal/authz",
 		"TestPermissions_InstanceRealm_IsNotGrantedByAnyRoleMatrix":        "internal/authz",
 		"TestRaidTargetWrites_AreUnreachableUntilInstanceGrantsExist":      "internal/api",
-		"TestRouteRegistry_StepUp_MatchesTheAPIDesign":                     "internal/api",
 		"TestScopes_NoScopeGrants_ACapabilityFloorPermission":              "internal/authz",
 		"TestTimerWrite_TheInvalidationRunsInsideTheWritingTransaction":    "internal/api",
 	}

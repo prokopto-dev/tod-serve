@@ -71,12 +71,19 @@ func ScopesFor(p Permission) []Scope {
 // It is a struct rather than a map[string]any because a generated spec that nobody can typecheck
 // is a spec that drifts silently, and because `any` has no place in a signature here.
 type OpenAPIPermission struct {
-	Key            string   `json:"key"`
-	Realm          string   `json:"realm"`
-	RequiresStepUp bool     `json:"requires_step_up"`
-	Roles          []string `json:"roles"`
-	Scopes         []string `json:"scopes"`
-	Summary        string   `json:"summary"`
+	Key   string `json:"key"`
+	Realm string `json:"realm"`
+	// RequiresStepUp is `step_up_tier != "none"`. It is kept beside the tier rather than replaced
+	// by it because it is already published: a client reading the extension to decide whether to
+	// offer a re-authentication button asks this question and not the finer one.
+	RequiresStepUp bool `json:"requires_step_up"`
+	// StepUpTier is how recently the session must have proved its identity — `none`, `routine` or
+	// `sensitive`. See [StepUpTier].
+	StepUpTier string   `json:"step_up_tier"`
+	Floor      bool     `json:"floor"`
+	Roles      []string `json:"roles"`
+	Scopes     []string `json:"scopes"`
+	Summary    string   `json:"summary"`
 }
 
 // OpenAPIPermissions returns the extension metadata for every permission, in catalogue order.
@@ -94,7 +101,9 @@ func OpenAPIPermissions() []OpenAPIPermission {
 		out = append(out, OpenAPIPermission{
 			Key:            string(def.Key),
 			Realm:          string(def.Realm),
-			RequiresStepUp: def.StepUp,
+			RequiresStepUp: def.StepUp != StepUpNone,
+			StepUpTier:     string(def.StepUp),
+			Floor:          def.Floor,
 			Roles:          roles,
 			Scopes:         scopes,
 			Summary:        def.Summary,
@@ -124,12 +133,17 @@ func SeedSQL() string {
 	defs := slices.Clone(Permissions())
 	slices.SortFunc(defs, func(a, c PermissionDef) int { return strings.Compare(string(a.Key), string(c.Key)) })
 
+	// `requires_step_up` is the coarse question — any tier at all — because the column is one
+	// bit wide and nothing reads it: the authority for WHICH window applies is
+	// [PermissionDef.StepUp], and a widened column would be a schema migration bought for a value
+	// no query consults. If a query ever needs the tier, the column becomes the tier and this
+	// comment is the thing that has to change with it.
 	b.WriteString("INSERT INTO permission (key, realm, requires_step_up, summary) VALUES\n")
 	rows := make([]string, 0, len(defs))
 	for _, def := range defs {
 		rows = append(rows, fmt.Sprintf("  (%s, %s, %d, %s)",
-			sqlQuote(string(def.Key)), sqlQuote(string(def.Realm)), boolToInt(def.StepUp),
-			sqlQuote(def.Summary)))
+			sqlQuote(string(def.Key)), sqlQuote(string(def.Realm)),
+			boolToInt(def.StepUp != StepUpNone), sqlQuote(def.Summary)))
 	}
 	b.WriteString(strings.Join(rows, ",\n"))
 	b.WriteString(";\n\nINSERT INTO role_permission (role, permission_key) VALUES\n")
@@ -174,14 +188,17 @@ func PermissionsDoc() string {
 		"There is no `admin:*` scope and no all-powerful token.\n\n")
 
 	b.WriteString("## Permissions\n\n")
-	b.WriteString("A permission with no scope is session-only: no token reaches it at any scope. " +
-		"A permission marked step-up also requires re-authentication.\n\n")
-	b.WriteString("| Permission | Realm | Roles | Scopes | Step-up | What it allows |\n")
-	b.WriteString("|---|---|---|---|---|---|\n")
+	b.WriteString("A permission in the **floor** is session-only: no token reaches it at any " +
+		"scope. **Step-up** is the separate question of how recently that session proved its " +
+		"identity — `none`, `routine` or `sensitive`. The two are not the same question, and " +
+		"`audit.read` is the permission that shows it: floored, and asking for no proof of " +
+		"recency at all.\n\n")
+	b.WriteString("| Permission | Realm | Roles | Scopes | Floor | Step-up | What it allows |\n")
+	b.WriteString("|---|---|---|---|---|---|---|\n")
 	for _, def := range Permissions() {
-		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s |\n",
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s | %s |\n",
 			def.Key, def.Realm, joinRoles(RolesFor(def.Key)), joinScopes(ScopesFor(def.Key)),
-			tick(def.StepUp), def.Summary)
+			tick(def.Floor), def.StepUp, def.Summary)
 	}
 
 	b.WriteString("\n## The role matrix\n\n")
@@ -218,11 +235,13 @@ func PermissionsDoc() string {
 	}
 
 	b.WriteString("\n## The capability floor\n\n")
-	b.WriteString("Session and step-up only. No PAT scope reaches any of these, " +
+	b.WriteString("Session only. No PAT scope reaches any of these, " +
 		"and `TestCapabilityFloor_MatchesCanonicalConventions` compares this list " +
-		"against the canonical conventions in both directions.\n\n")
+		"against the canonical conventions in both directions. " +
+		"The tier beside each is its step-up window, which is a second question — " +
+		"[ADR-0024](../adr/0024-step-up-is-graded-and-re-authentication-is-not-a-sign-in.md).\n\n")
 	for _, p := range CapabilityFloor() {
-		fmt.Fprintf(&b, "- `%s`\n", p)
+		fmt.Fprintf(&b, "- `%s` — %s\n", p, StepUpFor(p))
 	}
 
 	b.WriteString("\n### Not in the floor, deliberately\n\n")

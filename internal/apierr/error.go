@@ -43,6 +43,9 @@ type Meta struct {
 	RetryAfterSeconds int `json:"retry_after_seconds,omitempty" doc:"Seconds to wait before retrying"`
 	// StepUpWindowSeconds is how recently a session must have re-authenticated.
 	StepUpWindowSeconds int `json:"step_up_window_seconds,omitempty" doc:"Required re-authentication recency"`
+	// StepUpTier names WHICH bar was failed — `routine` or `sensitive`. The window alone is a
+	// number a client has to reverse-engineer a rule from; the tier is the rule.
+	StepUpTier string `json:"step_up_tier,omitempty" doc:"Which step-up tier the operation asks for"`
 	// CappedBy names what narrowed a request's values below what it asked for — `pat` for an
 	// invite minted by a token. Never hide a row silently: if a value was clamped, say so.
 	CappedBy string `json:"capped_by,omitempty" doc:"What narrowed the request below what it asked for"`
@@ -162,6 +165,12 @@ func (e *Error) WithRetryAfter(seconds int) *Error {
 // WithStepUpWindow records how recently a session must have re-authenticated.
 func (e *Error) WithStepUpWindow(seconds int) *Error {
 	e.meta().StepUpWindowSeconds = seconds
+	return e
+}
+
+// WithStepUpTier records which step-up tier the operation asks for.
+func (e *Error) WithStepUpTier(tier string) *Error {
+	e.meta().StepUpTier = tier
 	return e
 }
 

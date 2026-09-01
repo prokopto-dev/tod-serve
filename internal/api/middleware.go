@@ -14,6 +14,7 @@ import (
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/auth"
+	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 )
 
@@ -196,10 +197,18 @@ func (b *Builder) authorize(ctx huma.Context, r Route) (auth.Principal, error) {
 		return auth.Principal{}, apierr.New(apierr.CodeSessionRequired,
 			"this operation is in the capability floor; no token reaches it at any scope")
 	}
-	if r.RequiresStepUp() && !p.SteppedUpWithin(b.cfg.Clock.Now(), b.cfg.Auth.StepUpWindow()) {
-		return auth.Principal{}, apierr.New(apierr.CodeStepUpRequired,
-			"this operation needs a recently re-authenticated session").
-			WithStepUpWindow(int(b.cfg.Auth.StepUpWindow().Seconds()))
+	if tier := r.StepUp(); tier != authz.StepUpNone {
+		window := b.cfg.Auth.StepUpWindows().For(tier)
+		if !p.SteppedUpWithin(b.cfg.Clock.Now(), window) {
+			// The tier travels on the problem, not just the window. A console showing "prove who
+			// you are again" wants to say WHICH bar it failed — five minutes to revoke a member
+			// reads very differently from an hour to rename a circle, and a caller told only the
+			// number has to guess which rule it came from.
+			return auth.Principal{}, apierr.New(apierr.CodeStepUpRequired,
+				"this operation needs a recently re-authenticated session").
+				WithStepUpWindow(int(window.Seconds())).
+				WithStepUpTier(string(tier))
+		}
 	}
 	if err := checkPermission(p, r); err != nil {
 		return auth.Principal{}, err

@@ -158,8 +158,8 @@ events:subscribe
 **Effective capability = role permissions ∩ token scopes.** A token can only ever narrow what its
 membership's role already grants. **There is no `admin:*` scope and no all-powerful token.**
 
-Operations that alter authentication, authorization, or bulk-export state are **session + step-up
-only** and have no scope at all:
+Operations that alter authentication, authorization, or bulk-export state are **session only** and
+have no scope at all:
 
 ```
 circle.manage circle.security.manage circle.delete
@@ -174,6 +174,46 @@ instance.circle.create instance.security.manage instance.owner
 The block above is fenced because it is **parsed**:
 `TestCapabilityFloor_MatchesCanonicalConventions` compares `authz.CapabilityFloor()` against these
 tokens element by element and in both directions, so the Go function and this section cannot drift.
+
+### Step-up is a second question, and it is graded
+
+**The floor says no token reaches it. Step-up says how recently the person proved they are still
+there.** Those are different questions and they used to share one boolean, which is how
+`audit.read` — a read — ended up carrying the five-minute expiry chosen for granting a role.
+[ADR-0024](../adr/0024-step-up-is-graded-and-re-authentication-is-not-a-sign-in.md) is the
+decision; this is the list.
+
+Every floor permission carries a tier, and every permission outside the floor is `none` — a
+permission a token can reach cannot meaningfully ask a token to step up:
+
+```
+sensitive circle.security.manage circle.delete
+sensitive member.manage member.revoke
+sensitive token.mint token.revoke
+sensitive instance.circle.create instance.security.manage instance.owner
+routine   circle.manage invite.revoke catalogue.manage
+none      audit.read
+```
+
+Each line is `<tier> <permission>…`, and the block is parsed:
+`TestStepUpTiers_MatchCanonicalConventions` compares it against `authz.StepUpFor` in both
+directions, and asserts the permissions named here are exactly the floor.
+
+The line between the tiers is **what a compromise costs**, the same boundary the
+`circle.manage`/`circle.security.manage` split is drawn on:
+
+- **`sensitive`** changes *who can do what*, or destroys what nothing can rebuild: a role, a
+  revocation, a minted credential, the identity providers a circle accepts, the instance realm.
+  A hijacked tab reaching one of these takes the circle.
+- **`routine`** changes circle state without changing who holds a capability: renaming a circle,
+  revoking an invite, editing a timer. A hijacked tab reaching one of these is a nuisance and an
+  audit row.
+- **`none`** asks for no recency proof. `audit.read` is the only floor permission here, and it is
+  a read: a leaked token still cannot bulk-export who did what, which is the property the floor
+  was protecting. Being unable to *look* at your own circle's audit log was never that property.
+
+The windows themselves are `auth.DefaultStepUpWindows()` — five minutes for `sensitive`, one hour
+for `routine` — and they are wiring, not doctrine. The tier is the doctrine.
 
 **`invite.create` is deliberately NOT in the floor, while `token.mint` is.** An invite is time-boxed,
 single-use, role-capped below `owner` and fully audited, so a leaked bot token can add a visible,

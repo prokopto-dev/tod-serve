@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -61,9 +62,13 @@ type PermissionExtension struct {
 	// AnyOf are the catalogue permissions, ANY of which reaches the operation. Empty for every
 	// kind except `permission`.
 	AnyOf []authz.OpenAPIPermission `json:"any_of,omitempty"`
-	// RequiresStepUp marks a capability-floor operation: session only, recently re-authenticated,
-	// and reachable by no token at any scope.
+	// RequiresStepUp says the operation asks for a recency proof at all. It is not the capability
+	// floor — `x-tod-session-only` is that — and `listCircleAudit` is the operation where the two
+	// differ: no token reaches it, and it asks for no re-authentication.
 	RequiresStepUp bool `json:"requires_step_up"`
+	// StepUpTier is which window: `none`, `routine` or `sensitive`. A client offering an
+	// in-place re-authentication button reads this to say what it is asking for.
+	StepUpTier string `json:"step_up_tier"`
 }
 
 // Register attaches a handler to the operation named by id.
@@ -193,6 +198,7 @@ func extensionsFor(r Route) map[string]any {
 			Kind:           string(r.Auth),
 			AnyOf:          perms,
 			RequiresStepUp: r.RequiresStepUp(),
+			StepUpTier:     string(r.StepUp()),
 		},
 		ExtScopes:       scopes,
 		ExtAnyScope:     r.AnyScope,
@@ -234,5 +240,12 @@ func errorStatusesFor(r Route) []int {
 	if r.RequiresIdempotencyKey() {
 		statuses = append(statuses, 409)
 	}
-	return statuses
+	if r.AcceptsCredential {
+		statuses = append(statuses, 409)
+	}
+	// Deduplicated because two independent reasons can name the same status — `/join` reaches 409
+	// through both branches above — and a response listed twice is a document that reads as
+	// though somebody meant two different things by it.
+	slices.Sort(statuses)
+	return slices.Compact(statuses)
 }

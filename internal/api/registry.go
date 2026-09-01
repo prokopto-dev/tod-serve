@@ -38,6 +38,7 @@ const (
 	OpPreviewInvite          OperationID = "previewInvite"
 	OpRedeemInvite           OperationID = "redeemInvite"
 	OpAuthenticateIdentity   OperationID = "authenticateIdentity"
+	OpStepUpSession          OperationID = "stepUpSession"
 	OpSignOut                OperationID = "signOut"
 	OpListMyTokens           OperationID = "listMyTokens"
 	OpRevokeToken            OperationID = "revokeToken"
@@ -188,6 +189,11 @@ type Route struct {
 	// IfMatch says `If-Match` is REQUIRED: the operation overwrites state a previous read
 	// supplied, so a request without one is refused with 428 rather than silently racing.
 	IfMatch bool
+	// AcceptsCredential marks an operation whose body carries the identity credential union, so
+	// it can fail in ways the edge never sees — a provider this circle no longer accepts is a
+	// `409`, and a client that treated it as an undocumented error could not tell somebody to use
+	// the other button.
+	AcceptsCredential bool
 	// InviteOracle marks a public route that reveals whether an invite code is live.
 	//
 	// Every such route is metered from ONE shared bucket keyed on the caller — never a bucket each,
@@ -242,20 +248,33 @@ func (r Route) FullPath() string {
 	return r.Path
 }
 
-// RequiresStepUp reports whether the operation is in the capability floor: session-only, recently
-// re-authenticated, and reachable by no token at any scope.
+// StepUp returns how recently the session must have proved its identity to call the operation:
+// the STRICTEST tier among the permissions the route accepts.
 //
-// It is derived from internal/authz rather than declared, so the floor has exactly one definition.
-// TestRouteRegistry_StepUp_MatchesTheAPIDesign compares the derivation against the `step-up`
-// annotation in the document, so the document cannot quietly disagree with the catalogue either.
-func (r Route) RequiresStepUp() bool {
+// Strictest and not weakest, because the permissions on a route are an ANY-OF — holding one of
+// them reaches the operation — so taking the weakest would let a caller reach a sensitive
+// operation by way of the cheapest key that opens it.
+//
+// It is derived from internal/authz rather than declared, so the tier has exactly one definition.
+// TestRouteRegistry_StepUp_MatchesTheCapabilityFloor compares the derivation against the
+// `step-up:<tier>` annotation in the API design, so the document cannot quietly disagree with the
+// catalogue either.
+func (r Route) StepUp() authz.StepUpTier {
+	tier := authz.StepUpNone
 	for _, p := range r.Permissions {
-		if authz.RequiresStepUp(p) {
-			return true
+		if got := authz.StepUpFor(p); got.AtLeast(tier) {
+			tier = got
 		}
 	}
-	return false
+	return tier
 }
+
+// RequiresStepUp reports whether the operation asks for any recency proof at all.
+//
+// It is NOT "is in the capability floor" — those were the same question until the two were split,
+// and `listCircleAudit` is the operation that separates them: floored, so no token reaches it, and
+// asking for no re-authentication. [Route.SessionOnly] is the floor question.
+func (r Route) RequiresStepUp() bool { return r.StepUp() != authz.StepUpNone }
 
 // SessionOnly reports whether no personal access token reaches the operation at any scope.
 func (r Route) SessionOnly() bool {
@@ -353,12 +372,27 @@ func routes() []Route {
 		{
 			ID: OpRedeemInvite, Method: http.MethodPost, Path: "/join", Versioned: true,
 			Auth: AuthPublic, CreatesState: true, Idempotency: IdempotencyHandler,
-			Summary: "Redeem an invite: verify the credential, create the identity and membership, mint a token",
+			AcceptsCredential: true,
+			Summary:           "Redeem an invite: verify the credential, create the identity and membership, mint a token",
 		},
 		{
 			ID: OpAuthenticateIdentity, Method: http.MethodPost, Path: "/sessions", Versioned: true,
 			Auth: AuthPublic, CreatesState: true, Idempotency: IdempotencyHandler,
-			Summary: "Re-authenticate an existing membership on a new device, with no invite",
+			AcceptsCredential: true,
+			Summary:           "Re-authenticate an existing membership on a new device, with no invite",
+		},
+		{
+			ID: OpStepUpSession, Method: http.MethodPost, Path: "/sessions/step-up",
+			Versioned: true, Auth: AuthSelf, AcceptsCredential: true,
+			// No scopes and `AnyScope` false, so [Route.SessionOnly] is true: a token has no
+			// session to step up, and offering it the route would only ever let one credential
+			// raise another's privileges.
+			//
+			// `CreatesState` is false and there is no `Idempotency-Key`, which is the honest
+			// reading of an operation that writes no domain row. What it consumes — a single-use
+			// credential ticket — is consumed by verification and is not replayable by design, so
+			// a replay record would be a record of something that can never be replayed.
+			Summary: "Re-prove my identity for the session I already have. Mints no token and creates no device",
 		},
 		{
 			ID: OpSignOut, Method: http.MethodDelete, Path: "/sessions", Versioned: true,

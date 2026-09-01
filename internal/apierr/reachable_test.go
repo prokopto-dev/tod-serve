@@ -52,14 +52,6 @@ func pendingCodes() map[apierr.Code]string {
 		// missing, which is a different gap and one Server.Unimplemented already reports.
 		apierr.CodeCredentialStale: "the OAuth flow milestone; the 60-second freshness rule " +
 			"(ADR-0011) has no caller yet",
-
-		// `provider_unverifiable` is the refusal to LINK a second identity through a provider with
-		// no verifiable subject, and identity linking is a milestone of its own. `local` being
-		// unverifiable is already visible everywhere else — the circle's revocation strength, the
-		// invite preview, the membership — through `verifiable_subject` rather than through a
-		// refusal, which is why nothing emits this one yet.
-		apierr.CodeProviderUnverifiable: "the identity-linking milestone; linking through a " +
-			"provider with no verifiable subject",
 	}
 }
 

@@ -75,7 +75,7 @@ func newStubRig(t *testing.T, ops ...OperationID) *stubRig {
 	})
 	require.NoError(t, err)
 	authn, err := auth.NewAuthenticator(
-		db, minter, codec, grants, clk, log, auth.DefaultStepUpWindow)
+		db, minter, codec, grants, clk, log, auth.DefaultStepUpWindows())
 	require.NoError(t, err)
 
 	cfg := Config{Version: "stub", Store: db, Auth: authn, Clock: clk, Log: log, IDs: ids}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 )
 
@@ -23,10 +24,73 @@ const SessionCookie = "__Host-tod_session"
 // DefaultSessionTTL is how long a session lasts before it must authenticate again.
 const DefaultSessionTTL = 12 * time.Hour
 
-// DefaultStepUpWindow is how recently a session must have proved its identity to perform a
-// capability-floor operation. A tab left open all afternoon still authenticates you; it does not
-// prove that you are the person now typing into it.
-const DefaultStepUpWindow = 5 * time.Minute
+// StepUpWindows is how recently a session must have proved its identity, per
+// [authz.StepUpTier]. A tab left open all afternoon still authenticates you; it does not prove
+// that you are the person now typing into it — but how hard that has to be proved depends on what
+// is about to happen, which is what the tiers are for.
+//
+// It is a value rather than two constants so that a caller cannot answer the question with the
+// wrong window by picking the wrong identifier: [StepUpWindows.For] takes the tier and there is
+// nothing else to pass.
+type StepUpWindows struct {
+	// Routine covers operations that change circle state without changing who holds a
+	// capability.
+	Routine time.Duration
+	// Sensitive covers operations that change who can do what, or destroy what nothing can
+	// rebuild.
+	Sensitive time.Duration
+}
+
+// DefaultStepUpWindows is the shipped policy.
+//
+// Five minutes for `sensitive` is unchanged and deliberate: it is a reasonable bar for granting a
+// permission, and it was always the tier it was chosen for. One hour for `routine` is the number
+// this pair exists to introduce — long enough that an officer with the console open through a raid
+// is not re-proving themselves to rename a circle, short enough that it is still a bar. It is not
+// the session TTL: a routine window equal to [DefaultSessionTTL] would be a tier that never
+// refuses anything, which is worse than having no tier, because it reads as a control.
+func DefaultStepUpWindows() StepUpWindows {
+	return StepUpWindows{Routine: time.Hour, Sensitive: 5 * time.Minute}
+}
+
+// For returns the window a tier asks for. [authz.StepUpNone] answers zero, and a zero window is
+// never consulted — [Principal.SteppedUpWithin] is not called for a tier that asks nothing.
+//
+// An unrecognised tier answers the STRICTEST window rather than the loosest. A tier this build has
+// never heard of is not one to wave through, and answering `Routine` for it would be the confident
+// mistake.
+func (w StepUpWindows) For(tier authz.StepUpTier) time.Duration {
+	switch tier {
+	case authz.StepUpNone:
+		return 0
+	case authz.StepUpRoutine:
+		return w.Routine
+	case authz.StepUpSensitive:
+		return w.Sensitive
+	default:
+		return w.Sensitive
+	}
+}
+
+// Validate refuses a policy that would make a tier meaningless.
+//
+// A non-positive window is a window nothing satisfies, which would lock every operation in that
+// tier out for good. A `routine` window shorter than `sensitive` inverts the grading: the cheap
+// operations would be harder to reach than the dangerous ones, and every reader of the tier names
+// would be wrong about what they mean.
+func (w StepUpWindows) Validate() error {
+	switch {
+	case w.Sensitive <= 0:
+		return errors.New("step-up windows: the sensitive window must be positive")
+	case w.Routine <= 0:
+		return errors.New("step-up windows: the routine window must be positive")
+	case w.Routine < w.Sensitive:
+		return fmt.Errorf(
+			"step-up windows: routine (%s) is stricter than sensitive (%s), which inverts the grading",
+			w.Routine, w.Sensitive)
+	}
+	return nil
+}
 
 var (
 	// ErrMalformedSession is returned for a cookie value that is not a session at all.

@@ -55,6 +55,13 @@ type Principal struct {
 	// without taking an id from the request — there is no session id a caller can name, which is
 	// what stops sign-out being a way to end somebody else's.
 	SessionID string
+	// SessionIssuedAt is when the session was created, and is zero for a token.
+	//
+	// It is carried so that a step-up can re-issue the cookie with a fresh proof and the ORIGINAL
+	// expiry. Recomputing the expiry from now would silently turn a twelve-hour session into a
+	// perpetual one for anybody who re-proves themselves before it lapses, which is the bounded
+	// lifetime a stateless session rests on — see [Session].
+	SessionIssuedAt core.Micros
 	// SessionExpiryAt is when that session stops being accepted regardless, and is zero for a
 	// token. A revocation is only worth keeping until then.
 	SessionExpiryAt core.Micros
