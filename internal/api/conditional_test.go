@@ -85,6 +85,18 @@ func TestRouteRegistry_ConditionalRead_MatchesWhatTheRouteActuallyDoes(t *testin
 			h.grantInstance(owner, authz.PermissionInstanceSecurityManage)
 			return api.BasePath + "/admin/instance", request{Session: session}
 		},
+		api.OpGetCircleDiscordChannel: func(t *testing.T, h *harness) (string, request) {
+			t.Helper()
+			circleID := h.seedCircle("Riot")
+			owner := h.seedMember(circleID, authz.RoleOwner)
+			// Driven against a binding that EXISTS. A `404` revalidates nothing, so a driver that
+			// skipped the seed would compare two refusals and report the flag as honest without
+			// having exercised it — the "green over nothing" this file is about. A session rather
+			// than a token, because the route is in the capability floor.
+			h.seedBinding(circleID, blueChannel, sharedGuild, owner, false)
+			return api.BasePath + "/circles/" + circleID.String() +
+				"/discord-channels/" + blueChannel, request{Session: h.session(owner, true)}
+		},
 		api.OpGetTargetState: func(t *testing.T, h *harness) (string, request) {
 			t.Helper()
 			circleID := h.seedCircle("Riot")

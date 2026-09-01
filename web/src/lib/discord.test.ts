@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { isSnowflake, parseChannelReference, rebindFor } from './discord.ts'
+import { driftedSince, isSnowflake, parseChannelReference, widensDisclosure } from './discord.ts'
 
 const channel = '1032123456789012345'
 const guild = '987654321098765432'
@@ -83,21 +83,41 @@ test('isSnowflake is the server rule and nothing more generous', () => {
   assert.equal(isSnowflake('12a'), false)
 })
 
-// The direction matters and the residue does not. Turning the switch ON is the one that discloses
-// more and is the one that gets a confirmation; turning it OFF is the safe direction and gets
-// none. Both are an unbind followed by a bind, and a failure between the two leaves the channel
-// UNBOUND either way — which is less disclosure than the officer started with, never more.
-test('only the widening direction is a disclosure decision, and neither can fail open', () => {
-  assert.deepEqual(rebindFor({ allow_visible: false }, true), {
-    allow_visible: true,
-    widensDisclosure: true,
-    worstOutcome: 'unbound',
-  })
-  assert.deepEqual(rebindFor({ allow_visible: true }, false), {
-    allow_visible: false,
-    widensDisclosure: false,
-    worstOutcome: 'unbound',
-  })
+// Only the widening direction is a disclosure decision, so only it is confirmed. A confirmation on
+// the narrowing direction would be a dialog people learn to dismiss, which costs the one that
+// matters its meaning.
+test('only the widening direction is confirmed', () => {
+  assert.equal(widensDisclosure({ allow_visible: false, discord_guild_id: guild }, true), true)
+  assert.equal(widensDisclosure({ allow_visible: true, discord_guild_id: guild }, false), false)
   // Re-asserting the value it already has widens nothing, so it is not a confirmation either.
-  assert.equal(rebindFor({ allow_visible: true }, true).widensDisclosure, false)
+  assert.equal(widensDisclosure({ allow_visible: true, discord_guild_id: guild }, true), false)
+})
+
+// The check the entity tag cannot make. The flip reads immediately before it writes, so `If-Match`
+// only ever covers the gap between those two requests; the window that matters opens when the list
+// is rendered. A colleague's change landing in it is exactly what the first version of this screen
+// destroyed unseen.
+test('a binding that moved since it was read stops the write, and says what moved', () => {
+  const seen = { allow_visible: false, discord_guild_id: guild }
+
+  assert.deepEqual(driftedSince(seen, { allow_visible: false, discord_guild_id: guild }), [])
+
+  assert.deepEqual(driftedSince(seen, { allow_visible: true, discord_guild_id: guild }), [
+    { field: 'visible replies', seen: 'off', now: 'allowed' },
+  ])
+
+  assert.deepEqual(driftedSince(seen, { allow_visible: false, discord_guild_id: '111' }), [
+    { field: 'Discord server', seen: guild, now: '111' },
+  ])
+
+  // Both at once are both reported: naming one and applying the other is the confident mistake.
+  assert.equal(driftedSince(seen, { allow_visible: true, discord_guild_id: '111' }).length, 2)
+})
+
+// `updated_at` is deliberately NOT compared. Any write bumps it, so a colleague re-asserting the
+// same two values would block a flip over nothing — and a check that fires on nothing is a check
+// people learn to work around.
+test('a rewrite that changed neither value is not drift', () => {
+  const seen = { allow_visible: true, discord_guild_id: guild }
+  assert.deepEqual(driftedSince(seen, { ...seen }), [])
 })

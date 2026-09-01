@@ -235,7 +235,7 @@ What a binding is, in one line each:
 ### How to bind one, in the console
 
 **Circle Settings → Discord channels**, as an owner or officer of the circle. The screen is the
-same three operations below and adds nothing the API cannot do; what it adds is the part §6 is
+same four operations below and adds nothing the API cannot do; what it adds is the part §6 is
 about, next to the switch rather than on this page.
 
 1. Sign in to the console and switch to the circle the channel is for. **The circle, not the
@@ -254,11 +254,12 @@ about, next to the switch rather than on this page.
 The card lists what this circle discloses into, and **only this circle** — another circle in the
 same guild has its own bindings and they are not readable from there, by design.
 
-**Changing an existing binding's visible-reply switch unbinds and re-binds it**, and the console
-says so before it does. That is not a shortcut: a replace needs the binding's exact `ETag`, only
-the PUT's own response carries one, and the list operation answers no `ETag` at all — so no client
-that has merely listed holds a tag it could send. A failure between the two halves leaves the
-channel **unbound**, which is less disclosure than it started with, never more.
+**Changing an existing binding's visible-reply switch is one atomic replace**, and it is refused
+if somebody else changed the binding first. The console reads the binding, sends the `ETag` that
+read returned, and — separately — compares that read against the row you were looking at when you
+pressed the button. Either check failing writes nothing and shows you what the other officer did,
+because reversing a disclosure decision you have not read is the one outcome this is all built to
+prevent.
 
 ### How to bind one, over the API
 
@@ -276,19 +277,28 @@ Content-Type: application/json
 
 - **`If-Match: *`** means "and it must not exist yet". Changing an existing binding takes that
   binding's exact `ETag` instead, so you cannot reverse another officer's disclosure decision
-  having read nothing. **The only response that carries one is this PUT's own** — the list answers
-  no `ETag`, per-item or otherwise, and there is no single-binding read — so a client that did not
-  create the binding in the first place unbinds it and binds it again, as the console does.
+  having read nothing. `GET` the binding to obtain it — see below. A `412` carries the current
+  representation, so recovering costs no extra request.
+- **Unbinding and binding again is not a substitute for that.** It is two requests with no
+  precondition between them: `If-Match: *` on the second only asserts that nothing exists, which is
+  true because the first deleted it. A change another officer made in between is destroyed unseen.
+  The console shipped that first; it now does the conditional replace above.
 - **`discord_channel_id` and `discord_guild_id`** are Discord snowflakes. Turn on **User Settings →
   Advanced → Developer Mode** in Discord, then right-click the channel → **Copy Channel ID**, and
   right-click the server icon → **Copy Server ID**.
 - **The guild is stored and compared.** An interaction arriving from a different guild carrying that
   channel id resolves to nothing: the signature proves who *sent* the payload, not that the ids in
   it mean what your binding says.
-- `GET /api/v1/circles/{circle_id}/discord-channels` lists what this circle discloses into.
-  `DELETE` on the same path as the PUT unbinds.
+- `GET /api/v1/circles/{circle_id}/discord-channels` lists what this circle discloses into. The
+  **list carries no `ETag`**, per item or otherwise, so it is a read and never a precondition.
+- `GET` on the same path as the PUT (`getCircleDiscordChannel`) returns one binding **and the
+  `ETag` a change to it must quote back**. It is the read the bullet above is about, and it exists
+  for that reason: without it the concurrency rule on the PUT was unreachable by any client that
+  had not created the binding itself.
+- `DELETE` on the same path unbinds. It takes **no** precondition, deliberately — it removes all
+  disclosure rather than changing it, so there is no decision of somebody else's for it to reverse.
 
-The console is these three operations and nothing else — `openapi/openapi.json` is the authority,
+The console is these four operations and nothing else — `openapi/openapi.json` is the authority,
 and anything the screen can do a client holding a session can do.
 
 ## 6. What a bound channel discloses

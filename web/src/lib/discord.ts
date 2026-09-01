@@ -116,41 +116,70 @@ export function parseChannelReference(input: string): ChannelParse {
 }
 
 /**
- * Rebind is what changing a live binding's visible-reply switch actually costs, enumerated so the
- * screen states it rather than implying an in-place edit.
+ * Disclosure is the part of a binding an officer is actually deciding about.
  *
- * **There is no in-place edit available to any browser.** `bindCircleDiscordChannel` is a
- * create-or-replace PUT: a create takes `If-Match: *`, and a replace takes the exact entity tag of
- * the binding — which only that PUT's own response carries. `listCircleDiscordChannels` answers no
- * `ETag`, per-item or otherwise, and there is no single-binding read, so a console that has merely
- * LISTED holds no tag it could send. Sending `*` at a binding that exists is refused with `412`,
- * which is the concurrency rule working exactly as intended: it stops an officer reversing a
- * disclosure decision they have not read.
- *
- * So the flip is `unbind` then `bind`, and every cost of that is listed here rather than hidden:
- * the switch is a disclosure decision, and the officer making one is owed the shape of it.
+ * `updated_at` is deliberately not in it. Any write bumps that column, so comparing it would stop a
+ * flip because somebody re-asserted the same two values — a refusal over nothing, which is how a
+ * check that matters gets clicked through.
  */
-export interface Rebind {
-  /** allow_visible is the value the new binding is created with. */
+export interface Disclosure {
   allow_visible: boolean
-  /** widensDisclosure is true for the direction that exposes more, and drives the confirmation. */
-  widensDisclosure: boolean
-  /**
-   * worstOutcome is what a failure between the two requests leaves behind.
-   *
-   * It is `unbound` in BOTH directions, and that is the property that makes the two-step
-   * acceptable at all: a half-completed flip removes the channel's binding, and an unbound channel
-   * discloses nothing — the bot answers ephemerally and asks which circle you meant. There is no
-   * failure here whose residue is more disclosure than the officer asked for.
-   */
-  worstOutcome: 'unbound'
+  discord_guild_id: string
 }
 
-/** rebindFor describes the flip from a binding's current switch to the one an officer pressed. */
-export function rebindFor(current: { allow_visible: boolean }, allowVisible: boolean): Rebind {
-  return {
-    allow_visible: allowVisible,
-    widensDisclosure: allowVisible && !current.allow_visible,
-    worstOutcome: 'unbound',
+/** Drift is one field that moved between what an officer read and what is there now. */
+export interface Drift {
+  field: string
+  seen: string
+  now: string
+}
+
+/**
+ * driftedSince reports what changed between the binding an officer acted on and the live one.
+ *
+ * **The server cannot make this check, and that is why it is here.** The flip reads the binding
+ * immediately before writing it, so the entity tag it quotes back is always fresh — `If-Match`
+ * therefore holds against a change landing during those two requests and against nothing else. The
+ * window that matters is longer: it opens when the list is rendered and closes when somebody
+ * presses a button, and a second officer's disclosure decision lands in the middle of it.
+ *
+ * That was a real defect in the first version of this screen, which unbound and re-bound with
+ * `If-Match: *`. The wildcard reads as a precondition and is not one here — nothing exists at that
+ * moment because the same flow deleted it one request earlier — so a colleague's change was
+ * destroyed unseen and the ephemeral value from a stale row was written back over it. A visible
+ * channel silently became ephemeral, or a corrected guild reverted, and the audit log recorded the
+ * second officer as having decided it.
+ *
+ * So the fresh read is compared against what the officer SAW, and any difference stops the write.
+ * "You cannot reverse a decision you have not read" is the rule the entity tag encodes; this is
+ * the same rule over the window the tag cannot see.
+ */
+export function driftedSince(seen: Disclosure, fresh: Disclosure): Drift[] {
+  const out: Drift[] = []
+  if (seen.allow_visible !== fresh.allow_visible) {
+    out.push({
+      field: 'visible replies',
+      seen: seen.allow_visible ? 'allowed' : 'off',
+      now: fresh.allow_visible ? 'allowed' : 'off',
+    })
   }
+  if (seen.discord_guild_id !== fresh.discord_guild_id) {
+    out.push({
+      field: 'Discord server',
+      seen: seen.discord_guild_id,
+      now: fresh.discord_guild_id,
+    })
+  }
+  return out
+}
+
+/**
+ * widensDisclosure reports whether a change exposes more than the binding does now.
+ *
+ * It drives the confirmation, and only one direction gets one. Turning the switch off reduces what
+ * the channel discloses, and a confirmation on the safe direction is what teaches people to click
+ * through the one that matters.
+ */
+export function widensDisclosure(current: Disclosure, allowVisible: boolean): boolean {
+  return allowVisible && !current.allow_visible
 }

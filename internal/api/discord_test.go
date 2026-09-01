@@ -386,6 +386,84 @@ func TestBindCircleDiscordChannel_TheWildcard_CreatesAndDoesNotOverwrite(t *test
 	require.Contains(t, withTag.Body, `"allow_visible":false`)
 }
 
+// TestGetCircleDiscordChannel_TheTagItReturns_IsWhatAReplaceRequires drives the read INTO the
+// write, in both directions.
+//
+// The two sides are one line apart in `discord.go` and they still drift: the tag is computed over
+// `bindingView`, and the response body is that view PLUS `as_of`. A tag taken over the body would
+// be different on every read, no caller could ever satisfy the precondition, and the failure looks
+// exactly like somebody else editing concurrently — which is the one explanation an officer will
+// believe. So neither half is asserted in isolation: the tag this GET returned is sent as the
+// `If-Match` of a real PUT, and the write has to succeed.
+//
+// The second half is the mutation proof. A test that only drove the accepted tag would pass with
+// the precondition removed altogether, so the tag is re-sent AFTER the binding moved and has to be
+// refused — otherwise this route would hand out a key that opens the lock whatever the state is,
+// which is worse than no route at all.
+func TestGetCircleDiscordChannel_TheTagItReturns_IsWhatAReplaceRequires(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	blue := h.seedCircle("Blue")
+	owner := h.seedMember(blue, authz.RoleOwner)
+	h.seedBinding(blue, blueChannel, sharedGuild, owner, false)
+
+	read := h.do(request{
+		Method: http.MethodGet, Path: bindingPath(blue, blueChannel),
+		Session: h.session(owner, true),
+	})
+	require.Equal(t, http.StatusOK, read.Status, read.Body)
+	etag := read.Header.Get(api.ETagHeader)
+	require.NotEmpty(t, etag, "the read returned no ETag, so a replace is unreachable")
+	require.Contains(t, read.Body, `"allow_visible":false`)
+	require.Contains(t, read.Body, `"as_of"`,
+		"the body carries as_of; the tag must NOT be taken over it")
+
+	// The tag that read returned, on the write it exists for.
+	replaced := h.do(request{
+		Method: http.MethodPut, Path: bindingPath(blue, blueChannel),
+		Session: h.session(owner, true),
+		Body:    `{"discord_guild_id":"` + sharedGuild + `","allow_visible":true}`,
+		Headers: map[string]string{api.IfMatchHeader: etag},
+	})
+	require.Equal(t, http.StatusOK, replaced.Status, replaced.Body)
+	require.Contains(t, replaced.Body, `"allow_visible":true`)
+
+	// And the same tag once the binding has moved: refused, carrying what it moved to. This is the
+	// concurrency rule the console's flip now runs on — an officer who read `false`, and whose
+	// colleague made it visible in between, cannot write their stale decision back.
+	stale := h.do(request{
+		Method: http.MethodPut, Path: bindingPath(blue, blueChannel),
+		Session: h.session(owner, true),
+		Body:    `{"discord_guild_id":"` + sharedGuild + `","allow_visible":false}`,
+		Headers: map[string]string{api.IfMatchHeader: etag},
+	})
+	h.requireProblem(stale, apierr.CodePreconditionFailed)
+	require.Contains(t, stale.Body, `"allow_visible":true`,
+		"the 412 must carry the CURRENT representation, so the retry costs no extra read")
+}
+
+// Another circle's binding is a `404` on the read too, for the reason the DELETE is: a `403` would
+// confirm the binding exists, and therefore that the circle holding it does.
+func TestGetCircleDiscordChannel_AnotherCirclesBinding_Is404(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	green := h.seedCircle("Green")
+	greenOwner := h.seedMember(green, authz.RoleOwner)
+	h.seedBinding(green, greenChannel, sharedGuild, greenOwner, true)
+
+	blue := h.seedCircle("Blue")
+	blueOwner := h.seedMember(blue, authz.RoleOwner)
+
+	got := h.do(request{
+		Method: http.MethodGet, Path: bindingPath(blue, greenChannel),
+		Session: h.session(blueOwner, true),
+	})
+	require.Equal(t, http.StatusNotFound, got.Status, got.Body)
+	require.Equal(t, apierr.CodeNotFound, got.Problem.Code)
+	require.NotContains(t, got.Body, "allow_visible",
+		"the refusal leaked the other circle's disclosure setting")
+}
+
 // A binding with no `If-Match` at all is `428`, not a silent create: this PUT overwrites a
 // disclosure decision, and a request that raced one must be told rather than applied.
 func TestBindCircleDiscordChannel_WithoutIfMatch_Is428(t *testing.T) {

@@ -64,6 +64,16 @@ type listCircleDiscordChannelsInput struct {
 
 type listCircleDiscordChannelsOutput struct{ Body Page[DiscordChannelBinding] }
 
+type getCircleDiscordChannelInput struct {
+	CircleID         string `path:"circle_id" doc:"The circle"`
+	DiscordChannelID string `path:"discord_channel_id" doc:"The Discord channel id"`
+}
+
+type getCircleDiscordChannelOutput struct {
+	ETag string `header:"ETag"`
+	Body DiscordChannelBindingResponse
+}
+
 type bindCircleDiscordChannelInput struct {
 	CircleID         string `path:"circle_id" doc:"The circle"`
 	DiscordChannelID string `path:"discord_channel_id" doc:"The Discord channel id, 1 to 20 digits"`
@@ -113,7 +123,7 @@ type discordInteractionInput struct {
 
 type discordInteractionOutput struct{ Body discord.InteractionReply }
 
-// registerDiscord attaches the Discord operations: the three an officer reaches, and the one
+// registerDiscord attaches the Discord operations: the four an officer reaches, and the one
 // Discord itself POSTs to.
 //
 // The interactions route is registered LAST here so the file reads in the order the feature is
@@ -139,6 +149,35 @@ func (s *Server) registerDiscord() error {
 				return &listCircleDiscordChannelsOutput{
 					Body: NewPage(views, "", false, s.cfg.Clock.Now()),
 				}, nil
+			})),
+
+		registerFailure(OpGetCircleDiscordChannel, Register(s.api, OpGetCircleDiscordChannel,
+			func(ctx context.Context, in *getCircleDiscordChannelInput) (
+				*getCircleDiscordChannelOutput, error,
+			) {
+				id, err := parseCircleID(in.CircleID)
+				if err != nil {
+					return nil, err
+				}
+				binding, err := s.cfg.DiscordBindings.Get(ctx, id, in.DiscordChannelID)
+				if err != nil {
+					return nil, err
+				}
+				// **`bindingView`, not the response body.** The tag has to be the one
+				// [Server.requireBindingIfMatch] compares against, and that computes
+				// `ETagOf(bindingView(current))` — a body carrying `as_of` would hash differently
+				// on every read and no caller could ever satisfy the precondition. The two are one
+				// line apart here and still drift, so
+				// TestGetCircleDiscordChannel_TheTagItReturns_IsWhatAReplaceRequires drives the
+				// read into the write rather than asserting either in isolation.
+				view := bindingView(binding)
+				etag, err := ETagOf(view)
+				if err != nil {
+					return nil, apierr.Wrap(apierr.CodeInternalError, err, "")
+				}
+				return &getCircleDiscordChannelOutput{ETag: etag, Body: DiscordChannelBindingResponse{
+					DiscordChannelBinding: view, AsOf: s.cfg.Clock.Now(),
+				}}, nil
 			})),
 
 		registerFailure(OpBindCircleDiscordChannel, Register(s.api, OpBindCircleDiscordChannel,

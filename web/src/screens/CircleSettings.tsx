@@ -35,6 +35,7 @@ import { useNavigate } from 'react-router-dom'
 
 import {
   api,
+  body,
   type Circle,
   type DiscordChannelBinding,
   type PublicIdentityProvider,
@@ -47,7 +48,14 @@ import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { DiscordMark } from '../components/ProviderButton'
 import { RevocationBanner } from '../components/RevocationBanner'
 import { Banner, Button, Card, Empty, Field, Input, Mono, Spinner } from '../components/ui'
-import { isSnowflake, parseChannelReference, rebindFor, SNOWFLAKE_HINT } from '../lib/discord'
+import {
+  driftedSince,
+  isSnowflake,
+  parseChannelReference,
+  SNOWFLAKE_HINT,
+  widensDisclosure,
+  type Drift,
+} from '../lib/discord'
 import { instant, plural } from '../lib/format'
 import { choicesFor, gateState, saveSet, type Choice, type GateState } from '../lib/gate'
 import { forgetCircle } from '../lib/storage'
@@ -652,69 +660,80 @@ function ProofNotice({ proved, onProve }: { proved: boolean; onProve: () => void
 /**
  * BindingRow is one live binding: what it discloses, and the two ways to change that.
  *
- * **The visible-reply switch is changed by unbinding and binding again, and this says so.** There
- * is no in-place edit any browser can reach: replacing a binding needs its exact entity tag, only
- * the PUT's own response carries one, and `listCircleDiscordChannels` answers no `ETag` — so a
- * console that has merely listed holds nothing to send. `If-Match: *` at a binding that exists is
- * refused with `412`, which is the concurrency rule doing its job rather than a bug to work around:
- * it is what stops an officer reversing a disclosure decision they have not read. See [rebindFor]
- * for what the two-step costs and why a failure between the halves cannot fail open.
+ * **The flip is read-then-conditional-replace, which is the idiom every other write on this screen
+ * uses.** `getCircleDiscordChannel` returns the binding and the entity tag a change to it must
+ * quote back; `bindCircleDiscordChannel` is sent with that tag. One request pair, atomic on the
+ * server, no window in which the channel is unbound, and `created_at` and the founding officer are
+ * preserved because a replace is not a delete.
  *
- * **Timer overrides have the identical gap and this screen answers it differently on purpose.**
- * There the console offers no in-place edit at all and tells the officer to remove the override and
- * add it again, because re-creating one means re-entering a whole form that only they hold. Here
- * the console already holds everything the second request needs — the channel id and the guild id
- * are on the row it just listed — so asking somebody to re-type two twenty-digit ids would not be
- * caution, it would be a transposition risk introduced on a disclosure decision. Neither offers a
- * button that cannot send the right precondition, which is the rule both are keeping.
+ * **The first version of this did NOT do that, and the defect is worth keeping written down.** It
+ * unbound the channel and bound it again with `If-Match: *`, on the reasoning that the wildcard
+ * refuses a binding that already exists. It does — and none existed, because the same flow had
+ * deleted it one request earlier. So the precondition was a precondition over state this code had
+ * just created: a second officer's change landing between the LIST and the button press was
+ * destroyed unseen, and the stale value from the rendered row was written back over it. A channel
+ * somebody had just made visible silently became ephemeral again, with the wrong officer named in
+ * the audit log. Two requests with no precondition between them are not made safe by a
+ * precondition inside them.
+ *
+ * The tag closes the gap between the read and the write. [driftedSince] closes the longer one the
+ * tag cannot see — between the list and the press — by comparing the fresh read against the row
+ * the officer actually acted on and refusing rather than writing.
  */
 function BindingRow({ binding, onDone }: { binding: DiscordChannelBinding; onDone: () => void }) {
   const [busy, setBusy] = useState(false)
   const [confirming, setConfirming] = useState<'visible' | 'unbind' | null>(null)
-  const [unbound, setUnbound] = useState(false)
+  const [moved, setMoved] = useState<Drift[] | null>(null)
   // Held here rather than handed to the screen header: the way out of a `step_up_required` is
   // rendered ON the failure, and a failure rendered at the top of a long page is an affordance the
   // officer has to go and find after pressing a button at the bottom of it.
   const [error, setError] = useState<Error | null>(null)
 
-  // Narrowing is one press; widening is two. The asymmetry is the point: turning the switch off
-  // reduces what this channel discloses, and a confirmation on the safe direction only teaches
-  // people to click through the one that matters.
-  const rebind = (allowVisible: boolean) => {
-    const plan = rebindFor(binding, allowVisible)
+  // The one control the switch has, and whether it confirms first. Narrowing is one press;
+  // widening is two. The asymmetry is the point: turning the switch off reduces what this channel
+  // discloses, and a confirmation on the safe direction only teaches people to click through the
+  // one that matters — so [widensDisclosure] decides, rather than the button deciding twice.
+  const desired = !binding.allow_visible
+  const confirmFirst = widensDisclosure(binding, desired)
+
+  const setVisible = (allowVisible: boolean) => {
     setBusy(true)
     setConfirming(null)
-    setUnbound(false)
+    setMoved(null)
     setError(null)
     api
-      .unbindCircleDiscordChannel({
+      .getCircleDiscordChannel({
         circle_id: binding.circle_id,
         discord_channel_id: binding.discord_channel_id,
       })
-      .then(() =>
-        api
+      .then((current) => {
+        const fresh = body(current)
+        // Refuse rather than write. See [driftedSince]: the tag below covers the gap between this
+        // read and that write, and nothing covers the gap between the LIST and the button press
+        // except this comparison. Reloading afterwards is what puts the colleague's decision in
+        // front of the officer, which is the only way they get to make an informed second attempt.
+        const drift = driftedSince(binding, fresh)
+        if (drift.length > 0) {
+          setMoved(drift)
+          return
+        }
+        return api
           .bindCircleDiscordChannel(
             {
               circle_id: binding.circle_id,
               discord_channel_id: binding.discord_channel_id,
-              body: {
-                discord_guild_id: binding.discord_guild_id,
-                allow_visible: plan.allow_visible,
-              },
+              // The guild the READ returned, never the rendered row's. They are equal here — the
+              // drift check just said so — and taking it from the fresh side is what keeps that
+              // true if a field is ever added to the comparison and missed on this line.
+              body: { discord_guild_id: fresh.discord_guild_id, allow_visible: allowVisible },
             },
-            // A create, because the unbind above removed the row. The wildcard means "and it must
-            // not exist yet", so a channel some other officer bound in the gap is a refusal here
-            // rather than a silent overwrite of their decision.
-            { ifMatch: '*' },
+            // The tag that read returned. `*` is NOT a fallback: it means "and it must not exist",
+            // so it would be refused here — correctly — and a missing tag is a `428` naming the
+            // header, which is the honest answer to a read that did not carry one.
+            current.etag ? { ifMatch: current.etag } : {},
           )
-          .catch((err: unknown) => {
-            // The half-completed state, said out loud. It is the SAFE half — `worstOutcome` is
-            // `unbound`, and an unbound channel discloses nothing — but somebody has to be told
-            // that the channel they were reconfiguring now answers no commands.
-            setUnbound(true)
-            throw err
-          }),
-      )
+          .then(() => undefined)
+      })
       .catch((err: unknown) => setError(toError(err)))
       .finally(() => {
         setBusy(false)
@@ -722,6 +741,11 @@ function BindingRow({ binding, onDone }: { binding: DiscordChannelBinding; onDon
       })
   }
 
+  // Unbinding carries no precondition, and that asymmetry with the flip above is the API's rather
+  // than an omission here: `unbindCircleDiscordChannel` declares no `If-Match`, because removing a
+  // binding takes ALL disclosure away rather than changing it. There is no decision of somebody
+  // else's for it to reverse — the worst it can do is destroy work, which the confirmation below
+  // is for, and never widen what a channel discloses.
   const unbind = () => {
     setBusy(true)
     setConfirming(null)
@@ -760,11 +784,22 @@ function BindingRow({ binding, onDone }: { binding: DiscordChannelBinding; onDon
 
       {error && <ProblemNotice error={error} />}
 
-      {unbound && (
-        <Banner tone="warn" title="This channel is now unbound, and the change did not land">
-          The binding was removed and re-creating it failed, so the channel answers no commands
-          until you bind it again below. That is the safe half of the two — an unbound channel
-          discloses nothing — but it is not what you asked for.
+      {moved && (
+        <Banner tone="warn" title="Somebody else changed this binding, so nothing was written">
+          <p>
+            What you pressed was decided against the row above, and that row is out of date. The
+            change is theirs to have made and yours to read before you reverse it:
+          </p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {moved.map((d) => (
+              <li key={d.field}>
+                {d.field}: you saw <Mono>{d.seen}</Mono>, it is now <Mono>{d.now}</Mono>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1">
+            The list has been refreshed. Read what it says now and press again if you still mean it.
+          </p>
         </Banner>
       )}
 
@@ -786,12 +821,12 @@ function BindingRow({ binding, onDone }: { binding: DiscordChannelBinding; onDon
             configuration, and the bot never posts unprompted.
           </p>
           <p className="mt-1 opacity-90">
-            This unbinds the channel and binds it again — there is no in-place edit — so the binding
-            will be re-dated and recorded as yours. If the second step fails the channel is left
-            unbound, never more visible than it is now.
+            This replaces the binding in one request, quoting back the tag of a read taken just
+            before it — so if somebody else has changed this channel since the list was drawn,
+            nothing is written and you are shown what they did instead.
           </p>
           <div className="mt-2 flex gap-2">
-            <Button variant="danger" onClick={() => rebind(true)} disabled={busy}>
+            <Button variant="danger" onClick={() => setVisible(desired)} disabled={busy}>
               Yes, allow visible replies here
             </Button>
             <Button onClick={() => setConfirming(null)}>Keep it ephemeral</Button>
@@ -819,15 +854,16 @@ function BindingRow({ binding, onDone }: { binding: DiscordChannelBinding; onDon
       )}
 
       <div className="mt-2 flex flex-wrap justify-end gap-2">
-        {binding.allow_visible ? (
-          <Button onClick={() => rebind(false)} disabled={busy}>
-            {busy ? 'Working…' : 'Make replies ephemeral again'}
-          </Button>
-        ) : (
-          <Button onClick={() => setConfirming('visible')} disabled={busy || confirming !== null}>
-            Allow visible replies…
-          </Button>
-        )}
+        <Button
+          onClick={() => (confirmFirst ? setConfirming('visible') : setVisible(desired))}
+          disabled={busy || (confirmFirst && confirming !== null)}
+        >
+          {busy
+            ? 'Working…'
+            : confirmFirst
+              ? 'Allow visible replies…'
+              : 'Make replies ephemeral again'}
+        </Button>
         <Button
           variant="danger"
           onClick={() => setConfirming('unbind')}
