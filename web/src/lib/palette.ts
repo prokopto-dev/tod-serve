@@ -99,3 +99,110 @@ export function hueGap(a: Rgb, b: Rgb): number | null {
   const d = Math.abs(ha - hb) % 360
   return d > 180 ? 360 - d : d
 }
+
+/**
+ * Annotation is one measured pair the stylesheet CLAIMS, read out of the comment beside a token.
+ *
+ * The point of parsing them rather than keeping a list beside the gate: a hand-maintained list is
+ * the thing that drifts. It shipped one review round ago missing `--color-ink-100` and
+ * `--color-accent-500`, both of which could have gone under AA with the gate still green, which is
+ * precisely the failure the gate exists to prevent.
+ */
+export interface Annotation {
+  /** The token the comment is attached to. */
+  token: string
+  /** The colour being measured as text — usually `token`, but see the `on it` form. */
+  fg: string
+  /** How to build the ground it sits on. */
+  ground: { kind: 'token'; token: string } | { kind: 'tint'; tint: string; pct: number; over: string }
+  /** The ratio the stylesheet states, to two decimals, exactly as written. */
+  stated: string
+  /** 4.5 for text, 3 for a control's edge — WCAG 1.4.11 rather than an exemption. */
+  floor: number
+  /** The whole annotation, for a failure message that can be found with a grep. */
+  raw: string
+}
+
+/**
+ * themeBlock returns just the `@theme { … }` declarations.
+ *
+ * Scoped deliberately: the file header DESCRIBES the annotation grammar, so it contains ratios that
+ * are documentation rather than claims. Widening this to the whole file would make the completeness
+ * check below fail on the sentence explaining it.
+ */
+export function themeBlock(css: string): string {
+  const start = css.indexOf('@theme {')
+  if (start < 0) return ''
+  const end = css.indexOf('\n}', start)
+  return end < 0 ? '' : css.slice(start, end)
+}
+
+const DIRECT = /(\d+(?:\.\d+)?):1 on (--color-[a-z0-9-]+)(?!\/)/
+const TINT = /(\d+(?:\.\d+)?):1 on (--color-[a-z0-9-]+)\/(\d+) over (--color-[a-z0-9-]+)/
+const ON_IT = /(--color-[a-z0-9-]+) on it: (\d+(?:\.\d+)?):1/
+
+/**
+ * annotations reads every ratio the `@theme` block states, in the three forms the stylesheet's own
+ * header documents.
+ *
+ * One annotation per declaration line, which is what keeps `statedRatios` below a usable
+ * completeness check: a line stating two ratios would count two and parse one.
+ */
+export function annotations(css: string): Annotation[] {
+  const found: Annotation[] = []
+  for (const line of themeBlock(css).split('\n')) {
+    const decl = line.match(/^\s*(--color-[a-z0-9-]+)\s*:/)
+    if (!decl?.[1] || !line.includes(':1')) continue
+    const token = decl[1]
+    const floor = line.includes('(edge)') ? 3 : 4.5
+
+    const tint = line.match(TINT)
+    if (tint?.[1] && tint[2] && tint[3] && tint[4]) {
+      found.push({
+        token,
+        fg: token,
+        ground: { kind: 'tint', tint: tint[2], pct: Number(tint[3]), over: tint[4] },
+        stated: tint[1],
+        floor,
+        raw: tint[0],
+      })
+      continue
+    }
+    const onIt = line.match(ON_IT)
+    if (onIt?.[1] && onIt[2]) {
+      found.push({
+        token,
+        fg: onIt[1],
+        ground: { kind: 'token', token },
+        stated: onIt[2],
+        floor,
+        raw: onIt[0],
+      })
+      continue
+    }
+    const direct = line.match(DIRECT)
+    if (direct?.[1] && direct[2]) {
+      found.push({
+        token,
+        fg: token,
+        ground: { kind: 'token', token: direct[2] },
+        stated: direct[1],
+        floor,
+        raw: direct[0],
+      })
+    }
+  }
+  return found
+}
+
+/**
+ * statedRatios counts every `N:1` written in the `@theme` block, parsed or not.
+ *
+ * This is the half that makes the gate closed rather than best-effort: if this disagrees with
+ * `annotations().length`, somebody has stated a ratio in a form the parser skips, and a skipped
+ * ratio is an unenforced claim — which is the exact defect this whole mechanism was rewritten to
+ * remove.
+ */
+export function statedRatios(css: string): string[] {
+  return [...themeBlock(css).matchAll(/\d+(?:\.\d+)?:1/g)].map((m) => m[0])
+}

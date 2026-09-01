@@ -4,7 +4,9 @@
 // comment stating them is not enough. Each is broken by somebody with good intentions and a colour
 // picker, and none of them fails visibly on the machine of the person who breaks it:
 //
-//   every declared pair clears WCAG AA      the ratios in index.css are recomputed, not trusted
+//   every STATED ratio is true and clears   recomputed from the shipped sheet, and the set of
+//   its floor                                pairs is DERIVED from index.css's own annotations
+//                                            rather than listed here, because a list drifts
 //   overdue is never red                    the distinction the status set is built around
 //   hue is never the only carrier           six statuses, six shapes, six words
 //   the version is never baked into the bundle
@@ -18,7 +20,16 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { contrast, hueGap, over, parseHex, tokens, type Rgb } from './palette.ts'
+import {
+  annotations,
+  contrast,
+  hueGap,
+  over,
+  parseHex,
+  statedRatios,
+  tokens,
+  type Rgb,
+} from './palette.ts'
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8')
 
@@ -48,80 +59,49 @@ test('the palette parsed out of index.css is complete', () => {
   }
 })
 
-test('every text pair the stylesheet declares clears WCAG AA', () => {
-  const page = at('--color-ink-900')
-  const plate = at('--color-plate')
+test('every ratio the stylesheet states is true, and clears its floor', () => {
+  const stated = statedRatios(CSS)
+  const claims = annotations(CSS)
+
+  // THE CLOSED HALF, and the reason this gate is derived rather than listed. A hand-maintained list
+  // of pairs shipped one review round ago missing `--color-ink-100` and `--color-accent-500`: both
+  // carried a stated ratio, neither was measured, and either could have gone under AA with this
+  // file still green. Counting what the block SAYS and comparing it to what the parser UNDERSTOOD
+  // is what makes that impossible — a ratio written in a form the parser skips is now a failure,
+  // not a silent omission.
+  assert.equal(
+    claims.length,
+    stated.length,
+    `the @theme block states ${stated.length} ratios and this gate could parse ${claims.length}. ` +
+      'A ratio it cannot parse is a claim nothing enforces — write it in one of the three forms ' +
+      "index.css's header documents, or take the number out of the block.",
+  )
+  // A gate that measured nothing would pass every assertion below it.
+  assert.ok(claims.length >= 20, `only ${claims.length} annotated pairs; the gate is vacant`)
+
   const measured: string[] = []
+  const wrong: string[] = []
+  for (const claim of claims) {
+    const ground =
+      claim.ground.kind === 'token'
+        ? at(claim.ground.token)
+        : over(at(claim.ground.tint), at(claim.ground.over), claim.ground.pct / 100)
+    const ratio = contrast(at(claim.fg), ground)
+    const actual = ratio.toFixed(2)
 
-  // AA is 4.5:1 for text. A control's EDGE is non-text contrast under WCAG 1.4.11 and its floor is
-  // 3:1, which is why it carries a different minimum rather than an exemption.
-  const pairs: Array<[string, Rgb, string, Rgb, number, string]> = [
-    ['--color-ink-200', at('--color-ink-200'), 'page', page, 4.5, 'body text'],
-    ['--color-ink-300', at('--color-ink-300'), 'page', page, 4.5, 'secondary text'],
-    ['--color-ink-400', at('--color-ink-400'), 'page', page, 4.5, 'captions and table heads'],
-    ['--color-ink-500', at('--color-ink-500'), 'page', page, 4.5, 'hints, which are text'],
-    ['--color-accent-400', at('--color-accent-400'), 'page', page, 4.5, 'links and the kicker'],
-    // The warn and danger inks never sit on the bare page: `Banner`'s warn tone and the danger
-    // button both lay their own colour under the text first. Measure the ground they are actually
-    // on — the tint is lighter, so the page would be the flattering answer rather than the true one.
-    [
-      '--color-warn',
-      at('--color-warn'),
-      'its 12% band',
-      over(at('--color-warn'), at('--color-ink-850'), 0.12),
-      4.5,
-      'a stale notice and the warn banner',
-    ],
-    [
-      '--color-danger-ink',
-      at('--color-danger-ink'),
-      '--color-danger at 15%',
-      over(at('--color-danger'), at('--color-ink-850'), 0.15),
-      4.5,
-      'a destructive control',
-    ],
-    ['--color-ink-600', at('--color-ink-600'), 'page', page, 3.0, "a control's edge"],
-    ['--color-plate-fg', at('--color-plate-fg'), 'plate', plate, 4.5, "the rail's text"],
-    ['--color-plate-muted', at('--color-plate-muted'), 'plate', plate, 4.5, "the rail's muted text"],
-    ['--color-plate-accent', at('--color-plate-accent'), 'plate', plate, 4.5, 'the active section'],
-  ]
-
-  // Every status ink, measured on its own 14% band rather than on the bare page — the band is the
-  // lighter ground and therefore the worse one. 14% is skins.py's own `_tints` band alpha.
-  for (const s of STATUSES) {
-    const fill = at(`--color-status-${s}`)
-    pairs.push([
-      `--color-status-${s}-ink`,
-      at(`--color-status-${s}-ink`),
-      `its 14% band`,
-      over(fill, page, 0.14),
-      4.5,
-      `the ${s} chip`,
-    ])
-  }
-
-  // The two filled chips put the deepest ground's colour ON the status fill.
-  for (const s of ['inwindow', 'up'] as const) {
-    pairs.push([
-      '--color-ink-950',
-      at('--color-ink-950'),
-      `--color-status-${s}`,
-      at(`--color-status-${s}`),
-      4.5,
-      `the filled ${s} chip`,
-    ])
-  }
-
-  const under: string[] = []
-  for (const [fgName, fg, bgName, bg, min, what] of pairs) {
-    const ratio = contrast(fg, bg)
-    measured.push(`${ratio.toFixed(2).padStart(5)}:1  ${fgName} on ${bgName} — ${what}`)
-    if (ratio < min) under.push(`${fgName} on ${bgName} is ${ratio.toFixed(2)}:1, under ${min}:1 (${what})`)
+    measured.push(`${actual.padStart(5)}:1  ${claim.token} — ${claim.raw}`)
+    // Both directions. The ratio must be what the file SAYS it is, because a stale number beside a
+    // token is the same defect as an unmeasured one — somebody reads it and believes it.
+    if (actual !== Number(claim.stated).toFixed(2)) {
+      wrong.push(`${claim.token} states ${claim.stated}:1 and measures ${actual}:1 (${claim.raw})`)
+    }
+    if (ratio < claim.floor) {
+      wrong.push(`${claim.token} is ${actual}:1, under its ${claim.floor}:1 floor (${claim.raw})`)
+    }
   }
 
   console.log(measured.join('\n'))
-  assert.ok(measured.length >= 19, 'the contrast gate measured almost nothing; it is vacant')
-  assert.deepEqual(under, [], 'a pair went under its floor')
+  assert.deepEqual(wrong, [], 'a stated ratio is wrong, or a pair went under its floor')
 })
 
 // BRAND002, restated. The registry's version bans a gold BACKGROUND; this one bans the thing that

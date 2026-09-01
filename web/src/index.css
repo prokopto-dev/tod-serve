@@ -24,10 +24,22 @@
  *   engraving, never on a large field — a gold bar is off-brand and hard to read against. Every
  *   gold here is text, a hairline or a 2px edge. Nothing in this file paints a gold background.
  *
- *   ONE VALUE CANNOT CLEAR BOTH GROUNDS. #6b5a3a is 2.83:1 on this ground — under the 3:1 WCAG
- *   1.4.11 holds a control's edge to — so the edge is #968c7b (5.70:1), which is the value regserve
- *   reached for the same reason. This console is read at 2am on a second monitor beside a game
- *   client; the ratios are in the comments beside the tokens and none of them is under AA.
+ *   ONE VALUE CANNOT CLEAR BOTH GROUNDS. The plate border does not clear the 3:1 WCAG 1.4.11
+ *   holds a control's edge to on this ground, so the edge is `#968c7b` — the value regserve
+ *   reached for the same reason.
+ *
+ * EVERY RATIO IS ANNOTATED AND EVERY ANNOTATION IS RECOMPUTED. This console is read at 2am on a
+ * second monitor beside a game client, so each token that is rendered as text or as an edge carries
+ * its measured ratio and the GROUND it was measured on, in one of three forms:
+ *
+ *     <ratio>:1 on <token>                          this colour as text on that one
+ *     <ratio>:1 on <token>/<pct> over <token>       ... on a tint of one laid over another
+ *     <token> on it: <ratio>:1                      that colour as text on THIS one
+ *
+ * A trailing `(edge)` marks a non-text pair, whose floor is 3:1 rather than AA's 4.5:1.
+ * `lib/palette.test.ts` parses these, recomputes every one, and fails BOTH ways: a stated ratio
+ * that no longer holds, and a ratio written anywhere in this block that it could not parse. So the
+ * numbers below cannot drift, and a new one cannot be added in a form the gate quietly skips.
  *
  * WHERE THE TWO SIBLINGS AGREE, WE FOLLOW BOTH. dragonkillparty's neutral ramp steps 100/200/300
  * are #f3f5fe / #e4e7f5 / #cfd3e5 — which are exactly skins.py's `value_color`, VELIOUS `name_color`
@@ -47,35 +59,38 @@
   --color-ink-800: #1d1f24;
   /* regserve `--line` = skins.py VELIOUS.plate light stop. Every hairline and card ring. */
   --color-ink-700: #3a3122;
-  /* regserve `--field`. A CONTROL'S EDGE, and the reason it is not #6b5a3a is contrast: 5.70:1
-   * here against the 3:1 floor, where the plate border lands at 2.83:1. */
-  --color-ink-600: #968c7b;
+  /* regserve `--field`. A CONTROL'S EDGE, and the reason it is not the plate border is contrast:
+   * that value does not clear the floor WCAG 1.4.11 holds an edge to on this ground. */
+  --color-ink-600: #968c7b; /* 5.70:1 on --color-ink-900 (edge) — inputs, selects, buttons */
 
   /* -- the text ramp — dragonkillparty tokens.css --color-neutral-*, whose top three steps are
-   * skins.py's own overlay text values. Ratios are against the page, #0f1116. */
-  --color-ink-500: #9397ab; /*  6.52:1 — hints, placeholders */
-  --color-ink-400: #b2b6ca; /*  9.39:1 — captions, table heads */
-  --color-ink-300: #cfd3e5; /* 12.68:1 — secondary body */
-  --color-ink-200: #e4e7f5; /* 15.33:1 — body */
-  --color-ink-100: #f3f5fe; /* 17.36:1 — headings and numbers */
+   * skins.py's own overlay text values. */
+  --color-ink-500: #9397ab; /*  6.52:1 on --color-ink-900 — hints, placeholders */
+  --color-ink-400: #b2b6ca; /*  9.39:1 on --color-ink-900 — captions, table heads */
+  --color-ink-300: #cfd3e5; /* 12.68:1 on --color-ink-900 — secondary body */
+  --color-ink-200: #e4e7f5; /* 15.33:1 on --color-ink-900 — body */
+  --color-ink-100: #f3f5fe; /* 17.36:1 on --color-ink-900 — headings and numbers */
 
   /* -- the plate: the nav rail and the brand band, verbatim from regserve's header ------------ */
   --color-plate: #241e14;
   --color-plate-hi: #3a3122;
-  --color-plate-fg: #e6dfd0; /* 12.46:1 on the plate */
-  --color-plate-muted: #968c7b; /*  4.98:1 on the plate — AA and only just, so nothing smaller */
+  --color-plate-fg: #e6dfd0; /* 12.46:1 on --color-plate */
+  --color-plate-muted: #968c7b; /*  4.98:1 on --color-plate — AA and only just, nothing smaller */
   --color-plate-line: #6b5a3a;
-  --color-plate-accent: #e2c882; /* 10.09:1 on the plate */
+  --color-plate-accent: #e2c882; /* 10.09:1 on --color-plate */
 
   /* -- the one accent voice. Gold, and only ever as text, a hairline or an edge. -------------- */
-  --color-accent-400: #e2c882; /* skins.py VELIOUS.mark_color — 11.53:1 on the page */
-  --color-accent-500: #c8a951; /* skins.py DUXA.mark_color / chrome_accent — 8.32:1 */
+  --color-accent-400: #e2c882; /* VELIOUS.mark_color — 11.53:1 on --color-ink-900 */
+  --color-accent-500: #c8a951; /* DUXA.mark_color / chrome_accent — 8.32:1 on --color-ink-900 */
   --color-accent-600: #8a7549; /* skins.py LEDGER.title_color — the muted gold, for edges */
 
   /* -- semantic, from chrome.py's named accents ---------------------------------------------- */
-  --color-warn: #e0a45c; /* regserve `--warn` (dark) — 8.66:1 */
+  /* regserve `--warn` (dark). `Banner`'s warn tone lays 12% of it under the text first, so that
+   * tint is the ground it is measured on rather than the page, which would be the flattering
+   * answer instead of the true one. */
+  --color-warn: #e0a45c; /* 6.67:1 on --color-warn/12 over --color-ink-850 */
   --color-danger: #c0392b; /* chrome.py BAD — a fill and a border, never text on this ground */
-  --color-danger-ink: #ef9184; /* skins.py LEDGER detrimental header tint — 8.14:1 */
+  --color-danger-ink: #ef9184; /* LEDGER detrimental tint — 6.91:1 on --color-danger/15 over --color-ink-850 */
 
   /* THE SIX STATUS TREATMENTS.
    *
@@ -115,21 +130,21 @@
    * skins.shade(fill, 0.34) — the same function at VELIOUS's own `bar_lighten`. Ratios are the ink
    * on its own 14% band, which is the worst ground it actually sits on. */
   --color-status-unknown: #5a5e69; /* theme.py DARK.disabled */
-  --color-status-unknown-ink: #9397ab; /* neutral-500 — 5.88:1 */
+  --color-status-unknown-ink: #9397ab; /* neutral-500 — 5.88:1 on --color-status-unknown/14 over --color-ink-900 */
   --color-status-notimer: #d99b2b; /* chrome.py ROLL, "wants attention" */
-  --color-status-notimer-ink: #d4b675; /* skins.py DUXA.title_color — 7.85:1 */
+  --color-status-notimer-ink: #d4b675; /* DUXA.title_color — 7.85:1 on --color-status-notimer/14 over --color-ink-900 */
   --color-status-prewindow: #3a7bd5; /* chrome.py COOLDOWN — dead, timer running */
-  --color-status-prewindow-ink: #7da8e3; /* shade(COOLDOWN, 0.34) — 6.69:1 */
-  --color-status-inwindow: #e07b39; /* chrome.py POP_WINDOW */
-  --color-status-inwindow-ink: #eba87c; /* shade(POP_WINDOW, 0.34) — 7.84:1 */
+  --color-status-prewindow-ink: #7da8e3; /* shade(COOLDOWN, 0.34) — 6.69:1 on --color-status-prewindow/14 over --color-ink-900 */
+  --color-status-inwindow: #e07b39; /* chrome.py POP_WINDOW — filled: --color-ink-950 on it: 6.61:1 */
+  --color-status-inwindow-ink: #eba87c; /* shade(POP_WINDOW, 0.34) — 7.84:1 on --color-status-inwindow/14 over --color-ink-900 */
   --color-status-overdue: #8e5bd1; /* chrome.py TIMER — NOT chrome.py BAD. See above. */
-  --color-status-overdue-ink: #c6b3ea; /* skins.py DUXA timer header tint — 8.73:1 */
-  --color-status-up: #2f9e6e; /* chrome.py GOOD */
+  --color-status-overdue-ink: #c6b3ea; /* DUXA timer tint — 8.73:1 on --color-status-overdue/14 over --color-ink-900 */
+  --color-status-up: #2f9e6e; /* chrome.py GOOD — filled: --color-ink-950 on it: 5.84:1 */
   /* The one ink no screen renders today: `up` is a filled chip, so it wears the deep ground rather
    * than its own ink. It is declared and measured anyway, for the reason the registry measures its
    * plate pairs twice — a token that is re-pointed at a new value should meet a red test, not a
    * reviewer. */
-  --color-status-up-ink: #5cc79a; /* skins.py LEDGER player header tint — 7.67:1 */
+  --color-status-up-ink: #5cc79a; /* LEDGER player tint — 7.67:1 on --color-status-up/14 over --color-ink-900 */
 
   /* Discord's brand colours: the only two in this file that are not ours to pick. They are named
    * after the vendor rather than given a palette step so that nothing else reaches for them —
