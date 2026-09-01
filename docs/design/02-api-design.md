@@ -6,6 +6,13 @@ Base path `/api/v1`. Path ids are ULIDs. **Permission** is the `x-tod-permission
 **Scope** is `x-tod-scopes`; a dash means no PAT scope exists — session-only. Effective capability is
 `role permissions ∩ token scopes`.
 
+A dash may be followed by **`step-up:routine`** or **`step-up:sensitive`**, which is how recently
+that session must have proved its identity — [canonical §6](00-canonical-conventions.md#step-up-is-a-second-question-and-it-is-graded).
+The tier is always spelled out: a bare `step-up` meaning "the strict one unless somebody says
+otherwise" is the implicit default that drifts. A dash with no annotation is session-only and asks
+for no recency proof, which `listCircleAudit` is: no token reaches a circle's audit log, and
+reading your own circle's audit log is not a privilege escalation.
+
 Cross-circle access returns **`404`, never `403`** — see
 [canonical §7](00-canonical-conventions.md#cross-circle-access-returns-404-never-403).
 
@@ -34,6 +41,7 @@ not the other is a red test rather than a review catch.
 | POST | `/invites/preview` | `previewInvite` | public | — | Code **in the body, never the path**. Returns circle name, server, granted role, accepted providers, `revocation_strength`. Hard rate limit. |
 | POST | `/join` | `redeemInvite` | public | — | Redeem, verify credential, create identity + membership, mint a PAT. `Idempotency-Key` required. |
 | POST | `/sessions` | `authenticateIdentity` | public | — | Re-auth an existing membership on a new device, no invite. `403 membership_revoked` if revoked; `404` if no membership. |
+| POST | `/sessions/step-up` | `stepUpSession` | self | — | Re-prove my identity for the session I already hold. **Mints no token and creates no device**: same session id, same expiry, fresh `stepped_up_at`. Takes no `circle_id` — the circle is the session's. `401 credential_invalid` if the credential proves a different identity from the session's. |
 | DELETE | `/sessions` | `signOut` | self | — | End **my own** browser session and clear the cookie. The session id comes off the verified cookie, so no caller can name somebody else's. Writes `session_revocation`, so a cookie copied before the sign-out is refused too. **Ends this session only** and revokes no personal access token — the response says how many are still live. |
 | GET | `/tokens` | `listMyTokens` | self | any | My devices only. Officers see nobody's. |
 | DELETE | `/tokens/{token_id}` | `revokeToken` | self | — | Revoke my own device |
@@ -117,11 +125,11 @@ and `bearer_token` remain for clients that have no browser to redirect.
 | Method | Path | OperationID | Permission | Scope |
 |---|---|---|---|---|
 | GET | `/circles` | `listCircles` | self | `circle:read` |
-| POST | `/circles` | `createCircle` | `instance.circle.create` | — step-up |
+| POST | `/circles` | `createCircle` | `instance.circle.create` | — step-up:sensitive |
 | GET | `/circles/{circle_id}` | `getCircle` | `circle.read` | `circle:read` |
-| PATCH | `/circles/{circle_id}` | `updateCircle` | `circle.manage` | — step-up |
-| PUT | `/circles/{circle_id}/providers` | `setCircleProviders` | `circle.security.manage` | — step-up |
-| DELETE | `/circles/{circle_id}` | `deleteCircle` | `circle.delete` | — step-up |
+| PATCH | `/circles/{circle_id}` | `updateCircle` | `circle.manage` | — step-up:routine |
+| PUT | `/circles/{circle_id}/providers` | `setCircleProviders` | `circle.security.manage` | — step-up:sensitive |
+| DELETE | `/circles/{circle_id}` | `deleteCircle` | `circle.delete` | — step-up:sensitive |
 
 `listCircles` returns only circles the caller is a member of; a PAT is bound to one membership, so it
 returns one. **There is no "list all circles on this instance" operation, at any permission level.**
@@ -171,13 +179,13 @@ with a different name, and it is not this one.
 |---|---|---|---|---|
 | GET | `/circles/{circle_id}/members` | `listMembers` | `member.read` | `member:read` |
 | GET | `/circles/{circle_id}/members/{member_id}` | `getMember` | `member.read` | `member:read` |
-| PATCH | `/circles/{circle_id}/members/{member_id}` | `updateMember` | `member.manage` | — step-up |
-| POST | `/circles/{circle_id}/members/{member_id}/revoke` | `revokeMember` | `member.revoke` | — step-up |
-| POST | `/circles/{circle_id}/members/{member_id}/reinstate` | `reinstateMember` | `member.revoke` | — step-up |
-| POST | `/circles/{circle_id}/service-members` | `createServiceMember` | `token.mint` | — step-up |
+| PATCH | `/circles/{circle_id}/members/{member_id}` | `updateMember` | `member.manage` | — step-up:sensitive |
+| POST | `/circles/{circle_id}/members/{member_id}/revoke` | `revokeMember` | `member.revoke` | — step-up:sensitive |
+| POST | `/circles/{circle_id}/members/{member_id}/reinstate` | `reinstateMember` | `member.revoke` | — step-up:sensitive |
+| POST | `/circles/{circle_id}/service-members` | `createServiceMember` | `token.mint` | — step-up:sensitive |
 | GET | `/circles/{circle_id}/invites` | `listInvites` | `invite.read` | `invite:read` |
 | POST | `/circles/{circle_id}/invites` | `createInvite` | `invite.create` | `invite:create` |
-| DELETE | `/circles/{circle_id}/invites/{invite_id}` | `revokeInvite` | `invite.revoke` | — step-up |
+| DELETE | `/circles/{circle_id}/invites/{invite_id}` | `revokeInvite` | `invite.revoke` | — step-up:routine |
 
 Tokens are minted by `/join`, `/sessions` and `createServiceMember` only. There is no "mint me an
 arbitrary token" operation and no `admin:*` scope.
@@ -206,7 +214,7 @@ is invented; the representation already says it.
 | GET | `/circles/{circle_id}/quakes` | `listQuakes` | `tod.read` | `tod:read` | |
 | GET | `/circles/{circle_id}/events` | `subscribeCircleEvents` | `tod.read` | `events:subscribe` | SSE: `tod.changed`, `report.created`, `quake.reported`, `member.revoked` |
 | GET | `/circles/{circle_id}/events/replay` | `replayCircleEvents` | `tod.read` | `events:subscribe` | `?since_seq=` — the only place it is legal |
-| GET | `/circles/{circle_id}/audit` | `listCircleAudit` | `audit.read` | — step-up | |
+| GET | `/circles/{circle_id}/audit` | `listCircleAudit` | `audit.read` | — | |
 
 ### `createTodReport`
 
@@ -313,12 +321,12 @@ them, and which is what the console did until
 | GET | `/raid-targets` | `listRaidTargets` | `catalogue.read` | `catalogue:read` |
 | GET | `/raid-targets/{target_id}` | `getRaidTarget` | `catalogue.read` | `catalogue:read` |
 | POST | `/raid-targets/resolve` | `resolveRaidTarget` | `catalogue.read` | `catalogue:read` |
-| POST | `/raid-targets` | `createRaidTarget` | `catalogue.manage` | — step-up |
-| PATCH | `/raid-targets/{target_id}` | `updateRaidTarget` | `catalogue.manage` | — step-up |
-| PUT | `/raid-targets/{target_id}/timers/{server}` | `putRaidTargetTimer` | `catalogue.manage` | — step-up |
-| GET | `/circles/{circle_id}/timer-overrides` | `listCircleTimerOverrides` | `circle.manage` | — step-up |
-| PUT | `/circles/{circle_id}/timer-overrides/{target_id}` | `putCircleTimerOverride` | `circle.manage` | — step-up |
-| DELETE | `/circles/{circle_id}/timer-overrides/{target_id}` | `deleteCircleTimerOverride` | `circle.manage` | — step-up |
+| POST | `/raid-targets` | `createRaidTarget` | `catalogue.manage` | — step-up:routine |
+| PATCH | `/raid-targets/{target_id}` | `updateRaidTarget` | `catalogue.manage` | — step-up:routine |
+| PUT | `/raid-targets/{target_id}/timers/{server}` | `putRaidTargetTimer` | `catalogue.manage` | — step-up:routine |
+| GET | `/circles/{circle_id}/timer-overrides` | `listCircleTimerOverrides` | `circle.manage` | — step-up:routine |
+| PUT | `/circles/{circle_id}/timer-overrides/{target_id}` | `putCircleTimerOverride` | `circle.manage` | — step-up:routine |
+| DELETE | `/circles/{circle_id}/timer-overrides/{target_id}` | `deleteCircleTimerOverride` | `circle.manage` | — step-up:routine |
 
 The catalogue is instance-wide, not circle-scoped: a mob's existence is a game fact.
 `listRaidTargets?server=blue` folds that server's timer into each row.
@@ -437,12 +445,12 @@ forbids a duplicate, so it cannot.
 
 | Method | Path | OperationID | Permission | Scope |
 |---|---|---|---|---|
-| GET | `/admin/instance` | `getInstanceSettings` | `instance.security.manage` | — step-up |
-| PATCH | `/admin/instance` | `updateInstanceSettings` | `instance.security.manage` | — step-up |
-| GET | `/admin/identity-providers` | `listAdminIdentityProviders` | `instance.security.manage` | — step-up |
-| POST | `/admin/identity-providers` | `createIdentityProvider` | `instance.security.manage` | — step-up |
-| PATCH | `/admin/identity-providers/{provider_id}` | `updateIdentityProvider` | `instance.security.manage` | — step-up |
-| DELETE | `/admin/identity-providers/{provider_id}` | `deleteIdentityProvider` | `instance.security.manage` | — step-up |
+| GET | `/admin/instance` | `getInstanceSettings` | `instance.security.manage` | — step-up:sensitive |
+| PATCH | `/admin/instance` | `updateInstanceSettings` | `instance.security.manage` | — step-up:sensitive |
+| GET | `/admin/identity-providers` | `listAdminIdentityProviders` | `instance.security.manage` | — step-up:sensitive |
+| POST | `/admin/identity-providers` | `createIdentityProvider` | `instance.security.manage` | — step-up:sensitive |
+| PATCH | `/admin/identity-providers/{provider_id}` | `updateIdentityProvider` | `instance.security.manage` | — step-up:sensitive |
+| DELETE | `/admin/identity-providers/{provider_id}` | `deleteIdentityProvider` | `instance.security.manage` | — step-up:sensitive |
 | GET | `/admin/doctor` | `getDoctorReport` | `ops.read` | — |
 | GET | `/admin/jobs` | `listJobs` | `ops.read` | — |
 | GET | `/healthz` | `getLiveness` | public | — |

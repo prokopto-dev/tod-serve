@@ -496,6 +496,8 @@ export type Meta = {
   request_id?: string
   /** Seconds to wait before retrying */
   retry_after_seconds?: number
+  /** Which step-up tier the operation asks for */
+  step_up_tier?: string
   /** Required re-authentication recency */
   step_up_window_seconds?: number
 }
@@ -660,6 +662,7 @@ export type PrincipalView = {
   permissions: Array<string> | null
   role: string
   scopes: Array<string> | null
+  step_up: Array<StepUpTierView> | null
   step_up_window_seconds: number
   stepped_up: boolean
   /** RFC 3339 with microsecond precision, always UTC. */
@@ -1036,6 +1039,33 @@ export type SignOutResponse = {
   tokens_kept: number
 }
 
+export type StepUpResponse = {
+  /** RFC 3339 with microsecond precision, always UTC. */
+  as_of: string
+  step_up: Array<StepUpTierView> | null
+  /** RFC 3339 with microsecond precision, always UTC. */
+  stepped_up_at: string
+  /** Always false: re-proving a session mints no personal access token */
+  token_minted: boolean
+}
+
+export type StepUpSessionInputBody = {
+  credential: CredentialBody
+  /** Required for local; used to verify, never to rename */
+  display_name?: string
+  /** A provider key this circle accepts */
+  provider: string
+}
+
+export type StepUpTierView = {
+  /** RFC 3339 with microsecond precision, always UTC. */
+  expires_at: string
+  satisfied: boolean
+  /** routine or sensitive */
+  tier: string
+  window_seconds: number
+}
+
 export type Target = {
   /** Every spelling that resolves to this target */
   aliases: Array<string> | null
@@ -1355,6 +1385,7 @@ export type OperationId =
   | 'runSetup'
   | 'setCircleProviders'
   | 'signOut'
+  | 'stepUpSession'
   | 'updateCircle'
   | 'updateIdentityProvider'
   | 'updateInstanceSettings'
@@ -1692,7 +1723,7 @@ export const OPERATIONS = {
     queryParams: ['cursor', 'limit'],
     scopes: [],
     sessionOnly: true,
-    stepUp: true,
+    stepUp: false,
     circleScoped: true,
     idempotency: '',
     etag: false,
@@ -2024,6 +2055,20 @@ export const OPERATIONS = {
     id: 'signOut',
     method: 'DELETE',
     path: '/api/v1/sessions',
+    pathParams: [],
+    queryParams: [],
+    scopes: [],
+    sessionOnly: true,
+    stepUp: false,
+    circleScoped: false,
+    idempotency: '',
+    etag: false,
+    ifMatch: false,
+  },
+  stepUpSession: {
+    id: 'stepUpSession',
+    method: 'POST',
+    path: '/api/v1/sessions/step-up',
     pathParams: [],
     queryParams: [],
     scopes: [],
@@ -2481,6 +2526,12 @@ export type SetCircleProvidersResult = CircleResponse
 export type SignOutInput = EmptyInput
 export type SignOutResult = SignOutResponse
 
+/** Re-prove my identity for the session I already have. Mints no token and creates no device */
+export interface StepUpSessionInput {
+  body: StepUpSessionInputBody
+}
+export type StepUpSessionResult = StepUpResponse
+
 /** Rename the circle or change its settings. `server` is immutable */
 export interface UpdateCircleInput {
   /** The circle */
@@ -2621,6 +2672,8 @@ export const api = {
     send(OPERATIONS.setCircleProviders, input, opts),
   signOut: (input: SignOutInput, opts?: CallOptions): Promise<Result<SignOutResult>> =>
     send(OPERATIONS.signOut, input, opts),
+  stepUpSession: (input: StepUpSessionInput, opts?: CallOptions): Promise<Result<StepUpSessionResult>> =>
+    send(OPERATIONS.stepUpSession, input, opts),
   updateCircle: (input: UpdateCircleInput, opts?: CallOptions): Promise<Result<UpdateCircleResult>> =>
     send(OPERATIONS.updateCircle, input, opts),
   updateIdentityProvider: (input: UpdateIdentityProviderInput, opts?: CallOptions): Promise<Result<UpdateIdentityProviderResult>> =>

@@ -7,6 +7,7 @@ import (
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
 	"github.com/prokopto-dev/tod-serve/internal/auth"
+	"github.com/prokopto-dev/tod-serve/internal/authz"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/store"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
@@ -123,13 +124,62 @@ type PrincipalView struct {
 	TokenPrefix string `json:"token_prefix"`
 	// TokenExpiresAt is when the token stops working, null when it does not expire.
 	TokenExpiresAt *core.Micros `json:"token_expires_at"`
-	// SteppedUp says whether this session has re-authenticated recently enough for a
-	// capability-floor operation. Always false for a token, which never reaches one.
+	// SteppedUp says whether this session satisfies the STRICTEST step-up tier — `sensitive`,
+	// the one a role change or a minted credential asks for. Always false for a token, which
+	// reaches no floor operation at all.
+	//
+	// It keeps its old meaning exactly: it answered the five-minute window when there was only
+	// one, and `sensitive` is still five minutes. A client that never learned about tiers is
+	// therefore still right, just pessimistic about the routine ones — which is the safe
+	// direction for a client to be wrong in.
 	SteppedUp bool `json:"stepped_up"`
-	// StepUpWindowSeconds is how recently a session must have proved its identity.
+	// StepUpWindowSeconds is the `sensitive` window, for the same reason.
 	StepUpWindowSeconds int `json:"step_up_window_seconds"`
+	// StepUp is every graded tier, so a console can say which capabilities it still has and for
+	// how long rather than discovering it one 403 at a time.
+	StepUp []StepUpTierView `json:"step_up"`
 	// AsOf is the instant this answer was computed.
 	AsOf core.Micros `json:"as_of"`
+}
+
+// StepUpTierView is one step-up tier as it stands for this credential right now.
+//
+// `expires_at` is an instant and not a countdown, because the console renders every countdown as a
+// signed offset from `as_of` — a machine four minutes fast would otherwise draw a window that is
+// wrong on screen and right in the database (WEB002).
+type StepUpTierView struct {
+	// Tier is `routine` or `sensitive`. `none` is not here: it is the absence of a bar, and a row
+	// saying "this tier is always satisfied" is a row that invites somebody to check it.
+	Tier string `json:"tier" doc:"routine or sensitive"`
+	// WindowSeconds is how recently the identity must have been proved for this tier.
+	WindowSeconds int `json:"window_seconds"`
+	// Satisfied says whether this credential meets the tier at `as_of`.
+	Satisfied bool `json:"satisfied"`
+	// ExpiresAt is when this credential stops satisfying the tier. Null for a token, which never
+	// satisfies one, and in the past for a session whose proof has already lapsed.
+	ExpiresAt *core.Micros `json:"expires_at"`
+}
+
+// stepUpTiers renders every graded tier for a principal.
+func stepUpTiers(p auth.Principal, windows auth.StepUpWindows, now core.Micros) []StepUpTierView {
+	out := make([]StepUpTierView, 0, len(authz.StepUpTiers()))
+	for _, tier := range authz.StepUpTiers() {
+		if tier == authz.StepUpNone {
+			continue
+		}
+		window := windows.For(tier)
+		view := StepUpTierView{
+			Tier:          string(tier),
+			WindowSeconds: int(window.Seconds()),
+			Satisfied:     p.SteppedUpWithin(now, window),
+		}
+		if p.Kind == auth.KindSession && !p.SteppedUpAt.IsZero() {
+			expires := p.SteppedUpAt.Add(window)
+			view.ExpiresAt = &expires
+		}
+		out = append(out, view)
+	}
+	return out
 }
 
 type currentPrincipalInput struct{}
@@ -148,6 +198,7 @@ func (s *Server) registerPrincipal() error {
 				return nil, apierr.New(apierr.CodeUnauthenticated, "no principal on the request")
 			}
 			now := s.cfg.Clock.Now()
+			windows := s.cfg.Auth.StepUpWindows()
 			view := PrincipalView{
 				Kind:                string(p.Kind),
 				MembershipID:        p.MembershipID,
@@ -157,8 +208,9 @@ func (s *Server) registerPrincipal() error {
 				Permissions:         permissionNames(p),
 				Scopes:              scopeNames(p),
 				TokenPrefix:         p.TokenPrefix,
-				SteppedUp:           p.SteppedUpWithin(now, s.cfg.Auth.StepUpWindow()),
-				StepUpWindowSeconds: int(s.cfg.Auth.StepUpWindow().Seconds()),
+				SteppedUp:           p.SteppedUpWithin(now, windows.Sensitive),
+				StepUpWindowSeconds: int(windows.Sensitive.Seconds()),
+				StepUp:              stepUpTiers(p, windows, now),
 				AsOf:                now,
 			}
 			if !p.TokenExpiresAt.IsZero() {

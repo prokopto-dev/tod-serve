@@ -1,9 +1,13 @@
 // The audit log.
 //
-// `audit.read` is in the capability floor: no personal access token reaches it at any scope, and
-// the session has to have re-authenticated recently. A bulk export of who did what is exactly the
-// kind of thing a leaked bot token must not be able to do, so when this screen answers
-// `step_up_required` it SAYS SO rather than showing an empty table.
+// `audit.read` is in the capability floor — no personal access token reaches it at any scope,
+// because a bulk export of who did what is exactly what a leaked bot token must not buy — and it
+// asks for NO re-authentication. Reading your own circle's audit log is not a privilege escalation.
+//
+// It used to ask, and that was the sharpest of the three symptoms behind ADR-0024: the nav offered
+// the section, the page refused to load it five minutes after signing in, and the only remedy
+// anybody found was signing out. A screen you can see and cannot read, with no way forward, is the
+// half-authenticated state the operator was describing.
 //
 // Every row carries the hash chain. `prev_hash` is rendered because that is what makes the chain
 // checkable by somebody who does not trust this page.
@@ -33,7 +37,7 @@ export function AuditLog() {
   return (
     <Card
       title="Audit log"
-      subtitle="Append-only and hash-chained. Reading it needs a re-authenticated browser session; no token reaches it."
+      subtitle="Append-only and hash-chained. Reading it needs a browser session — no token reaches it at any scope — and no re-authentication."
     >
       <StaleNotice resource={audit} />
       {audit.error && (

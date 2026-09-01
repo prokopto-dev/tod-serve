@@ -1,5 +1,9 @@
 // Devices — my own tokens, and nobody else's.
 //
+// This screen is where the complaint behind ADR-0024 was visible: one person, one browser, a page
+// of rows all named `device`, one per re-authentication. Re-proving a session no longer mints one
+// — `stepUpSession` keeps the session it was given — so this list now grows once per sign-in.
+//
 // `listMyTokens` is a `self` operation: officers see nobody's tokens, including their own members'.
 // A device list is the thing you scan to find the laptop you no longer have, and it is not an
 // administrative view of other people.
@@ -15,6 +19,18 @@ import { useResource } from '../app/useResource'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { Button, Card, Empty, Mono, Spinner, Td, Th } from '../components/ui'
 import { hasInstant, instant } from '../lib/format'
+
+/**
+ * TIER_LABEL names each step-up tier in terms of what it guards rather than by its key.
+ *
+ * `sensitive` and `routine` are the vocabulary of the catalogue and the problem body; neither is
+ * the vocabulary of somebody reading their own session state, who is asking "can I revoke a member
+ * right now" and not "which enum am I in".
+ */
+const TIER_LABEL: Record<string, string> = {
+  sensitive: 'roles, revocations, tokens:',
+  routine: 'settings, timers, invites:',
+}
 
 export function Devices() {
   const principal = usePrincipal()
@@ -58,14 +74,22 @@ export function Devices() {
           <div>
             <dt
               className="text-[11px] tracking-wide text-ink-400 uppercase"
-              title="Capability-floor operations need a session that has re-authenticated within this window."
+              title="How recently this session proved your identity. The bar depends on what the operation costs if it is wrong."
             >
-              Stepped up
+              Proof of identity
             </dt>
-            <dd className="mt-0.5 text-ink-100">
-              {principal.steppedUp
-                ? `yes, for ${Math.round(principal.view.step_up_window_seconds / 60)} minutes from sign-in`
-                : 'no — sign in again to revoke, manage or audit'}
+            <dd className="mt-0.5 space-y-0.5 text-ink-100">
+              {(principal.view.step_up ?? []).map((tier) => (
+                <p key={tier.tier}>
+                  <span className="text-ink-400">{TIER_LABEL[tier.tier] ?? tier.tier}</span>{' '}
+                  {tier.satisfied ? 'yes' : 'needs re-proving'}
+                  <span className="text-ink-500">
+                    {' '}
+                    · {Math.round(tier.window_seconds / 60)} min
+                  </span>
+                </p>
+              ))}
+              {(principal.view.step_up ?? []).length === 0 && <p>not applicable to a token</p>}
             </dd>
           </div>
         </dl>
@@ -89,8 +113,9 @@ export function Devices() {
         {tokens.loading && !tokens.data && <Spinner label="Reading devices" />}
         {tokens.data && rows.length === 0 && (
           <Empty title="No device tokens.">
-            A token is minted when you join or re-authenticate, and by the service-member form on
-            Members. There is no “mint me an arbitrary token” operation.
+            A token is minted when you join or sign in on a device, and by the service-member form
+            on Members. Re-proving your identity for a step-up mints nothing. There is no “mint me
+            an arbitrary token” operation.
           </Empty>
         )}
         {rows.length > 0 && (

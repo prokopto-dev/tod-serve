@@ -18,6 +18,7 @@ import { classes } from '../lib/format'
 import { rememberCircle, rememberedCircles } from '../lib/storage'
 import { usePrincipalState } from './principal'
 import { signedOutState } from './signedOut'
+import { StepUpProvider } from './stepup'
 import { useResource } from './useResource'
 
 interface Section {
@@ -69,7 +70,11 @@ export function Shell() {
   }
   if (!principal) return null
 
+  // The step-up affordance wraps the whole authenticated frame, because the control belongs on the
+  // FAILURE and a failure can be rendered by any screen. Outside this tree [useStepUp] answers
+  // null, so `ProblemNotice` on the sign-in and join pages draws no button it cannot honour.
   return (
+    <StepUpProvider>
     <div className="flex h-full">
       <nav className="flex w-44 shrink-0 flex-col border-r border-ink-800 bg-ink-900">
         <div className="border-b border-ink-800 px-4 py-3">
@@ -116,6 +121,7 @@ export function Shell() {
         </main>
       </div>
     </div>
+    </StepUpProvider>
   )
 }
 

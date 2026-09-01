@@ -29,6 +29,7 @@ import { useState } from 'react'
 
 import { api, body, toError, type CircleResponse, type CreateCircleInputBody } from '../api'
 import { usePrincipal } from '../app/principal'
+import { useStepUp } from '../app/stepup'
 import { ProblemNotice } from '../components/Problem'
 import { Banner, Button, Card, Field, Input, Mono, Select } from '../components/ui'
 
@@ -50,6 +51,7 @@ const EMPTY: Draft = { name: '', server: '', description: '', timezone: '' }
 
 export function NewCircle() {
   const principal = usePrincipal()
+  const stepUp = useStepUp()
   const [draft, setDraft] = useState<Draft>(EMPTY)
   // The retry key for this exact draft. The transport mints one per call when nobody supplies one,
   // which is right for an operation a duplicate of is recoverable — and this is not one of those:
@@ -122,11 +124,18 @@ export function NewCircle() {
       {created && <Created circle={created} />}
 
       {!principal.steppedUp && (
-        <Banner tone="accent" title="This one needs you to have signed in recently">
+        <Banner tone="accent" title="This one needs you to have proved who you are recently">
           Creating a circle is in the capability floor: no API token reaches it at any scope, and a
-          browser session has to have proved who you are inside the step-up window. If the save is
-          refused with <Mono>step_up_required</Mono>, sign in again and come back — nothing you
-          have typed is sent until you press the button.
+          browser session has to have proved who you are inside the step-up window — the strict
+          one, because it hands you a circle you own. If the save is refused with{' '}
+          <Mono>step_up_required</Mono>, the banner it raises carries a{' '}
+          <strong>Prove it&rsquo;s you</strong> button that keeps this session and returns you to
+          this page. Do not sign out: nothing you have typed is sent until you press the button,
+          and signing back in is what fills your device list. See{' '}
+          <button className="underline" onClick={() => stepUp?.request()}>
+            prove it now
+          </button>
+          .
         </Banner>
       )}
 

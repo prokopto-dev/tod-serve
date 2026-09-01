@@ -1922,6 +1922,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "step_up_tier": {
+            "description": "Which step-up tier the operation asks for",
+            "type": "string"
+          },
           "step_up_window_seconds": {
             "description": "Required re-authentication recency",
             "format": "int64",
@@ -2639,6 +2643,15 @@
               "null"
             ]
           },
+          "step_up": {
+            "items": {
+              "$ref": "#/components/schemas/StepUpTierView"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "step_up_window_seconds": {
             "format": "int64",
             "type": "integer"
@@ -2670,6 +2683,7 @@
           "token_expires_at",
           "stepped_up",
           "step_up_window_seconds",
+          "step_up",
           "as_of"
         ],
         "type": "object"
@@ -4079,6 +4093,100 @@
         ],
         "type": "object"
       },
+      "StepUpResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "step_up": {
+            "items": {
+              "$ref": "#/components/schemas/StepUpTierView"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "stepped_up_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "token_minted": {
+            "description": "Always false: re-proving a session mints no personal access token",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stepped_up_at",
+          "step_up",
+          "token_minted",
+          "as_of"
+        ],
+        "type": "object"
+      },
+      "StepUpSessionInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "credential": {
+            "$ref": "#/components/schemas/CredentialBody"
+          },
+          "display_name": {
+            "description": "Required for local; used to verify, never to rename",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "provider": {
+            "description": "A provider key this circle accepts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "credential"
+        ],
+        "type": "object"
+      },
+      "StepUpTierView": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "description": "RFC 3339 with microsecond precision, always UTC.",
+            "examples": [
+              "2026-08-18T02:14:07.000000Z"
+            ],
+            "format": "date-time",
+            "type": "string"
+          },
+          "satisfied": {
+            "type": "boolean"
+          },
+          "tier": {
+            "description": "routine or sensitive",
+            "type": "string"
+          },
+          "window_seconds": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tier",
+          "window_seconds",
+          "satisfied",
+          "expires_at"
+        ],
+        "type": "object"
+      },
       "Target": {
         "additionalProperties": false,
         "properties": {
@@ -5421,12 +5529,15 @@
               "key": "instance.security.manage",
               "realm": "instance",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [],
               "scopes": [],
               "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -5534,12 +5645,15 @@
               "key": "instance.security.manage",
               "realm": "instance",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [],
               "scopes": [],
               "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -5651,12 +5765,15 @@
               "key": "instance.security.manage",
               "realm": "instance",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [],
               "scopes": [],
               "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -5812,12 +5929,15 @@
               "key": "instance.security.manage",
               "realm": "instance",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [],
               "scopes": [],
               "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -5936,12 +6056,15 @@
               "key": "instance.security.manage",
               "realm": "instance",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [],
               "scopes": [],
               "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -6077,12 +6200,15 @@
               "key": "instance.security.manage",
               "realm": "instance",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [],
               "scopes": [],
               "summary": "Configure how this instance admits and authorises people: its identity providers, and the instance-wide policy switches such as self-service circle creation"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -6155,7 +6281,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "public",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false
@@ -6245,7 +6372,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "self",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "circle:read"
@@ -6355,12 +6483,15 @@
               "key": "instance.circle.create",
               "realm": "instance",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [],
               "scopes": [],
               "summary": "Create a circle on this instance"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -6472,6 +6603,8 @@
               "key": "circle.delete",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [
                 "owner"
               ],
@@ -6479,7 +6612,8 @@
               "summary": "Delete the circle and every report in it"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -6621,6 +6755,8 @@
               "key": "circle.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "observer",
                 "member",
@@ -6633,7 +6769,8 @@
               "summary": "Read the circle's name, server, settings and revocation strength"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "circle:read"
@@ -6791,6 +6928,8 @@
               "key": "circle.manage",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "routine",
+              "floor": true,
               "roles": [
                 "officer",
                 "owner"
@@ -6799,7 +6938,8 @@
               "summary": "Rename the circle, change its settings, and set its timer overrides"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "routine"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -6933,7 +7073,9 @@
             {
               "key": "audit.read",
               "realm": "circle",
-              "requires_step_up": true,
+              "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": true,
               "roles": [
                 "officer",
                 "owner"
@@ -6942,7 +7084,8 @@
               "summary": "Read the circle's audit log"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -7082,6 +7225,8 @@
               "key": "invite.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "officer",
                 "owner"
@@ -7092,7 +7237,8 @@
               "summary": "List the circle's invites"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "invite:read"
@@ -7229,6 +7375,8 @@
               "key": "invite.create",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "officer",
                 "owner"
@@ -7239,7 +7387,8 @@
               "summary": "Mint an invite code; one minted by a PAT is hard-narrowed to one use, 24 hours and a role below owner"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "invite:create"
@@ -7363,6 +7512,8 @@
               "key": "invite.revoke",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "routine",
+              "floor": true,
               "roles": [
                 "officer",
                 "owner"
@@ -7371,7 +7522,8 @@
               "summary": "Revoke an invite before it expires"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "routine"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -7511,6 +7663,8 @@
               "key": "member.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "member",
                 "officer",
@@ -7522,7 +7676,8 @@
               "summary": "List the circle's members and read one"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "member:read"
@@ -7669,6 +7824,8 @@
               "key": "member.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "member",
                 "officer",
@@ -7680,7 +7837,8 @@
               "summary": "List the circle's members and read one"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "member:read"
@@ -7848,6 +8006,8 @@
               "key": "member.manage",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [
                 "officer",
                 "owner"
@@ -7856,7 +8016,8 @@
               "summary": "Change a member's role or display name"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -8014,6 +8175,8 @@
               "key": "member.revoke",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [
                 "officer",
                 "owner"
@@ -8022,7 +8185,8 @@
               "summary": "Revoke a membership, and reinstate a revoked one"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -8183,6 +8347,8 @@
               "key": "member.revoke",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [
                 "officer",
                 "owner"
@@ -8191,7 +8357,8 @@
               "summary": "Revoke a membership, and reinstate a revoked one"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -8349,6 +8516,8 @@
               "key": "circle.security.manage",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [
                 "owner"
               ],
@@ -8356,7 +8525,8 @@
               "summary": "Change which identity providers the circle accepts, which changes its revocation strength"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -8496,6 +8666,8 @@
               "key": "tod.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "observer",
                 "member",
@@ -8509,7 +8681,8 @@
               "summary": "Read the board, the reports behind it, and the quake log"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "tod:read"
@@ -8641,6 +8814,8 @@
               "key": "tod.quake.report",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "officer",
                 "owner"
@@ -8649,7 +8824,8 @@
               "summary": "Record a server-wide earthquake; a false one wipes the whole board"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -8781,6 +8957,8 @@
               "key": "token.mint",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "sensitive",
+              "floor": true,
               "roles": [
                 "owner"
               ],
@@ -8788,7 +8966,8 @@
               "summary": "Create a service membership and mint its token"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "sensitive"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -8900,6 +9079,8 @@
               "key": "circle.manage",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "routine",
+              "floor": true,
               "roles": [
                 "officer",
                 "owner"
@@ -8908,7 +9089,8 @@
               "summary": "Rename the circle, change its settings, and set its timer overrides"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "routine"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -9030,6 +9212,8 @@
               "key": "circle.manage",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "routine",
+              "floor": true,
               "roles": [
                 "officer",
                 "owner"
@@ -9038,7 +9222,8 @@
               "summary": "Rename the circle, change its settings, and set its timer overrides"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "routine"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -9204,6 +9389,8 @@
               "key": "circle.manage",
               "realm": "circle",
               "requires_step_up": true,
+              "step_up_tier": "routine",
+              "floor": true,
               "roles": [
                 "officer",
                 "owner"
@@ -9212,7 +9399,8 @@
               "summary": "Rename the circle, change its settings, and set its timer overrides"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "routine"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -9402,6 +9590,8 @@
               "key": "tod.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "observer",
                 "member",
@@ -9415,7 +9605,8 @@
               "summary": "Read the board, the reports behind it, and the quake log"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "tod:read"
@@ -9559,6 +9750,8 @@
               "key": "tod.report",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "member",
                 "officer",
@@ -9570,7 +9763,8 @@
               "summary": "Append a time-of-death report"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "tod:report"
@@ -9699,6 +9893,8 @@
               "key": "tod.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "observer",
                 "member",
@@ -9712,7 +9908,8 @@
               "summary": "Read the board, the reports behind it, and the quake log"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "tod:read"
@@ -9861,6 +10058,8 @@
               "key": "tod.retract",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "member",
                 "officer",
@@ -9875,6 +10074,8 @@
               "key": "tod.retract.any",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "officer",
                 "owner"
@@ -9885,7 +10086,8 @@
               "summary": "Retract another member's report"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "tod:retract"
@@ -10121,6 +10323,8 @@
               "key": "tod.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "observer",
                 "member",
@@ -10134,7 +10338,8 @@
               "summary": "Read the board, the reports behind it, and the quake log"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "tod:read"
@@ -10290,6 +10495,8 @@
               "key": "tod.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "observer",
                 "member",
@@ -10303,7 +10510,8 @@
               "summary": "Read the board, the reports behind it, and the quake log"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "tod:read"
@@ -10368,7 +10576,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "public",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false
@@ -10441,7 +10650,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "public",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false
@@ -10531,7 +10741,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "public",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false
@@ -10619,7 +10830,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "self",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false
@@ -10682,7 +10894,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "public",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false
@@ -10860,6 +11073,8 @@
               "key": "catalogue.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "observer",
                 "member",
@@ -10872,7 +11087,8 @@
               "summary": "Read the raid-target catalogue and resolve a target name"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "catalogue:read"
@@ -10982,12 +11198,15 @@
               "key": "catalogue.manage",
               "realm": "instance",
               "requires_step_up": true,
+              "step_up_tier": "routine",
+              "floor": true,
               "roles": [],
               "scopes": [],
               "summary": "Add or change raid targets and their per-server timers, for every circle on the instance"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "routine"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -11092,6 +11311,8 @@
               "key": "catalogue.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "observer",
                 "member",
@@ -11104,7 +11325,8 @@
               "summary": "Read the raid-target catalogue and resolve a target name"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "catalogue:read"
@@ -11250,6 +11472,8 @@
               "key": "catalogue.read",
               "realm": "circle",
               "requires_step_up": false,
+              "step_up_tier": "none",
+              "floor": false,
               "roles": [
                 "observer",
                 "member",
@@ -11262,7 +11486,8 @@
               "summary": "Read the raid-target catalogue and resolve a target name"
             }
           ],
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [
           "catalogue:read"
@@ -11420,12 +11645,15 @@
               "key": "catalogue.manage",
               "realm": "instance",
               "requires_step_up": true,
+              "step_up_tier": "routine",
+              "floor": true,
               "roles": [],
               "scopes": [],
               "summary": "Add or change raid targets and their per-server timers, for every circle on the instance"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "routine"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -11598,12 +11826,15 @@
               "key": "catalogue.manage",
               "realm": "instance",
               "requires_step_up": true,
+              "step_up_tier": "routine",
+              "floor": true,
               "roles": [],
               "scopes": [],
               "summary": "Add or change raid targets and their per-server timers, for every circle on the instance"
             }
           ],
-          "requires_step_up": true
+          "requires_step_up": true,
+          "step_up_tier": "routine"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -11695,7 +11926,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "self",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true
@@ -11783,10 +12015,124 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "public",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false
+      }
+    },
+    "/api/v1/sessions/step-up": {
+      "post": {
+        "operationId": "stepUpSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepUpSessionInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepUpResponse"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Re-prove my identity for the session I already have. Mints no token and creates no device",
+        "x-tod-any-scope": false,
+        "x-tod-circle-scoped": false,
+        "x-tod-creates-state": false,
+        "x-tod-etag": false,
+        "x-tod-idempotency": "",
+        "x-tod-if-match-required": false,
+        "x-tod-permission": {
+          "kind": "self",
+          "requires_step_up": false,
+          "step_up_tier": "none"
+        },
+        "x-tod-scopes": [],
+        "x-tod-session-only": true
       }
     },
     "/api/v1/setup": {
@@ -11868,7 +12214,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "setup_token",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false
@@ -11961,7 +12308,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "setup_token",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false
@@ -12074,7 +12422,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "self",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": false
@@ -12181,7 +12530,8 @@
         "x-tod-if-match-required": false,
         "x-tod-permission": {
           "kind": "self",
-          "requires_step_up": false
+          "requires_step_up": false,
+          "step_up_tier": "none"
         },
         "x-tod-scopes": [],
         "x-tod-session-only": true

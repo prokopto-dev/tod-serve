@@ -519,7 +519,7 @@ func TestStepUp_AStaleSession_IsStepUpRequired(t *testing.T) {
 	member := h.seedMember(circle, authz.RoleOwner)
 	session := h.session(member, true)
 
-	h.advance(auth.DefaultStepUpWindow + time.Minute)
+	h.advance(auth.DefaultStepUpWindows().Sensitive + time.Minute)
 
 	// `/me` is not a floor operation, so the stale session still authenticates.
 	got := h.do(request{Method: http.MethodGet, Path: mePath, Session: session})
@@ -528,7 +528,7 @@ func TestStepUp_AStaleSession_IsStepUpRequired(t *testing.T) {
 	var view api.PrincipalView
 	require.NoError(t, json.Unmarshal([]byte(got.Body), &view))
 	require.False(t, view.SteppedUp, "the session is past the step-up window and says so")
-	require.Equal(t, int(auth.DefaultStepUpWindow.Seconds()), view.StepUpWindowSeconds)
+	require.Equal(t, int(auth.DefaultStepUpWindows().Sensitive.Seconds()), view.StepUpWindowSeconds)
 }
 
 // itoa avoids importing strconv into a file that otherwise has no use for it.

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -24,8 +25,29 @@ type docRoute struct {
 	OperationID string
 	Permission  string
 	Scope       string
-	StepUp      bool
+	StepUp      authz.StepUpTier
 	Line        int
+}
+
+// stepUpAnnotation is how the Scope column spells a step-up tier: `step-up:routine`,
+// `step-up:sensitive`. A bare `step-up` is NOT accepted — an annotation whose meaning depends on a
+// default is the annotation that was inconsistent before this gate existed.
+var stepUpAnnotation = regexp.MustCompile(`step-up:(\S+)`)
+
+// parseStepUp reads the tier out of a Scope cell and returns the cell without it.
+func parseStepUp(t *testing.T, cell, operationID string) (authz.StepUpTier, string) {
+	t.Helper()
+	rest := strings.TrimSpace(stepUpAnnotation.ReplaceAllString(cell, ""))
+	m := stepUpAnnotation.FindStringSubmatch(cell)
+	if m == nil {
+		require.NotContains(t, cell, "step-up",
+			"%s: the Scope cell says `step-up` without a tier; write `step-up:routine` or "+
+				"`step-up:sensitive`", operationID)
+		return authz.StepUpNone, rest
+	}
+	tier, err := authz.ParseStepUpTier(m[1])
+	require.NoError(t, err, "%s: the Scope cell names step-up tier %q", operationID, m[1])
+	return tier, rest
 }
 
 // operationTables reads every operation table in the API design.
@@ -52,15 +74,15 @@ func operationTables(t *testing.T) []docRoute {
 		}
 		tables++
 		for _, row := range table.Rows {
-			scope := row[4]
-			stepUp := strings.Contains(scope, "step-up")
+			operationID := canondoc.Unquote(row[2])
+			tier, scope := parseStepUp(t, row[4], operationID)
 			out = append(out, docRoute{
 				Method:      strings.TrimSpace(row[0]),
 				Path:        canondoc.Unquote(row[1]),
-				OperationID: canondoc.Unquote(row[2]),
+				OperationID: operationID,
 				Permission:  row[3],
-				Scope:       strings.TrimSpace(strings.ReplaceAll(scope, "step-up", "")),
-				StepUp:      stepUp,
+				Scope:       scope,
+				StepUp:      tier,
 				Line:        table.Line,
 			})
 		}
@@ -143,33 +165,88 @@ func scopeCell(r api.Route) string {
 	}
 }
 
-// The `step-up` annotation in the document is compared against internal/authz rather than against
-// the registry, because the capability floor has exactly one definition and it is not in either of
+// The `step-up:<tier>` annotation in the document is compared against internal/authz rather than
+// against the registry, because the tier has exactly one definition and it is not in either of
 // these files. The annotation was inconsistent before this gate existed, which is what an
 // unenforced annotation always eventually is.
+//
+// It compares the TIER and not merely "is there step-up", so a sensitive operation quietly
+// demoted to the hour-long window is as red as one that lost the annotation altogether.
 func TestRouteRegistry_StepUp_MatchesTheCapabilityFloor(t *testing.T) {
 	t.Parallel()
+	graded := 0
 	for _, want := range operationTables(t) {
 		got, ok := api.Lookup(api.OperationID(want.OperationID))
 		require.True(t, ok, "%s is documented and not registered", want.OperationID)
-		require.Equal(t, want.StepUp, got.RequiresStepUp(),
-			"%s: the document says step-up=%v and authz.RequiresStepUp says %v",
-			want.OperationID, want.StepUp, got.RequiresStepUp())
+		require.Equal(t, want.StepUp, got.StepUp(),
+			"%s: the document says step-up %q and the catalogue says %q",
+			want.OperationID, want.StepUp, got.StepUp())
+		if want.StepUp != authz.StepUpNone {
+			graded++
+		}
 	}
+	// A parser that silently stopped finding annotations would agree with a registry that had
+	// silently stopped requiring them, and both sides of that would be green.
+	require.Positive(t, graded, "no documented operation carries a step-up tier; the parser is wrong")
 }
 
-// A capability-floor operation that carried a scope would be reachable by a token, which is the one
-// thing the floor exists to prevent.
+// An operation that asks for step-up and that a token could reach would be asking a credential
+// that has never proved anything to prove something. Step-up is a strict subset of the floor —
+// TestStepUp_OutsideTheFloor_IsAlwaysNone is the catalogue half, this is the route half.
 func TestRouteRegistry_EveryStepUpRoute_ReachesNoToken(t *testing.T) {
 	t.Parallel()
 	for _, r := range api.Routes() {
 		if !r.RequiresStepUp() {
 			continue
 		}
-		require.Empty(t, r.Scopes, "%s is in the capability floor and declares scopes", r.ID)
-		require.False(t, r.AnyScope, "%s is in the capability floor and accepts any scope", r.ID)
-		require.True(t, r.SessionOnly(), "%s is in the capability floor and is not session-only", r.ID)
+		require.Empty(t, r.Scopes, "%s asks for step-up and declares scopes", r.ID)
+		require.False(t, r.AnyScope, "%s asks for step-up and accepts any scope", r.ID)
+		require.True(t, r.SessionOnly(), "%s asks for step-up and is not session-only", r.ID)
 	}
+}
+
+// `listCircleAudit` is the operation the floor and the step-up question disagree about, and it is
+// pinned by name rather than left to fall out of the two derivations above.
+//
+// Both halves matter and they fail differently. Losing the floor half would put a circle's audit
+// log — every actor, every action — within reach of a leaked bot token. Regaining the step-up half
+// would restore the state an operator described as being half-authenticated: a console showing the
+// Audit section, a page that refuses to load it, and no way out that was not a sign-out. ADR-0024.
+func TestRouteRegistry_ListCircleAudit_IsFlooredAndNotSteppedUp(t *testing.T) {
+	t.Parallel()
+	got, ok := api.Lookup(api.OpListCircleAudit)
+	require.True(t, ok)
+	require.True(t, got.SessionOnly(), "no token may reach a circle's audit log")
+	require.Equal(t, authz.StepUpNone, got.StepUp(),
+		"reading a circle's own audit log is not a privilege escalation")
+	require.True(t, authz.InFloor(authz.PermissionAuditRead))
+}
+
+// The tier a route enforces is the STRICTEST among its permissions, because the permissions are an
+// any-of: taking the weakest would let the cheapest key that opens an operation set the bar for it.
+func TestRouteRegistry_StepUp_TakesTheStrictestTier(t *testing.T) {
+	t.Parallel()
+	for _, r := range api.Routes() {
+		want := authz.StepUpNone
+		for _, p := range r.Permissions {
+			if got := authz.StepUpFor(p); got.AtLeast(want) {
+				want = got
+			}
+		}
+		require.Equal(t, want, r.StepUp(), "step-up tier of %s", r.ID)
+	}
+
+	// Driven over a route with more than one permission, so the "strictest" rule is compared
+	// somewhere the tiers actually differ rather than only where every permission agrees.
+	mixed := api.Route{Permissions: []authz.Permission{
+		authz.PermissionAuditRead,    // none
+		authz.PermissionCircleManage, // routine
+		authz.PermissionMemberRevoke, // sensitive
+	}}
+	require.Equal(t, authz.StepUpSensitive, mixed.StepUp())
+	require.Equal(t, authz.StepUpRoutine, api.Route{Permissions: []authz.Permission{
+		authz.PermissionAuditRead, authz.PermissionCircleManage,
+	}}.StepUp())
 }
 
 // Every route carrying an instance-realm permission is session-only, and this is derived from the

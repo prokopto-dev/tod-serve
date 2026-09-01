@@ -99,7 +99,7 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, err)
 	svc := newServices(t, db, clk, ids, minter, log)
 	authn, err := auth.NewAuthenticator(
-		db, minter, codec, svc.grants, clk, log, auth.DefaultStepUpWindow)
+		db, minter, codec, svc.grants, clk, log, auth.DefaultStepUpWindows())
 	require.NoError(t, err)
 	// The recorder WRAPS the real projection rather than standing in for it. Both questions are
 	// worth answering in this suite: "did the route push the invalidation" needs the record, and
@@ -244,7 +244,7 @@ func newHarnessWithConsole(t *testing.T) *harness {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := newServices(t, h.store, h.clock, h.ids, h.minter, log)
 	authn, err := auth.NewAuthenticator(
-		h.store, h.minter, h.codec, svc.grants, h.clock, log, auth.DefaultStepUpWindow)
+		h.store, h.minter, h.codec, svc.grants, h.clock, log, auth.DefaultStepUpWindows())
 	require.NoError(t, err)
 
 	server, err := api.New(api.Config{
@@ -283,7 +283,7 @@ func newHarnessWithoutMetrics(t *testing.T) *harness {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := newServices(t, h.store, h.clock, h.ids, h.minter, log)
 	authn, err := auth.NewAuthenticator(
-		h.store, h.minter, h.codec, svc.grants, h.clock, log, auth.DefaultStepUpWindow)
+		h.store, h.minter, h.codec, svc.grants, h.clock, log, auth.DefaultStepUpWindows())
 	require.NoError(t, err)
 
 	server, err := api.New(api.Config{
@@ -323,7 +323,7 @@ func newHarnessWithoutSetupToken(t *testing.T) *harness {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := newServices(t, h.store, h.clock, h.ids, h.minter, log)
 	authn, err := auth.NewAuthenticator(
-		h.store, h.minter, h.codec, svc.grants, h.clock, log, auth.DefaultStepUpWindow)
+		h.store, h.minter, h.codec, svc.grants, h.clock, log, auth.DefaultStepUpWindows())
 	require.NoError(t, err)
 
 	server, err := api.New(api.Config{
@@ -568,6 +568,26 @@ func (h *harness) session(membership core.MembershipID, steppedUp bool) string {
 		s.SteppedUpAt = h.clock.Now()
 	}
 	value, encodeErr := h.codec.Encode(s)
+	require.NoError(h.t, encodeErr)
+	return value
+}
+
+// sessionProvedAt returns a session cookie whose identity proof is `ago` old.
+//
+// [harness.session] can only say "stepped up now" or "never", which was enough when there was one
+// window. It is not enough for a graded one: the interesting sessions are the ones that satisfy a
+// routine tier and not a sensitive one, and they live between the two.
+func (h *harness) sessionProvedAt(membership core.MembershipID, ago time.Duration) string {
+	h.t.Helper()
+	id, err := h.ids.New(h.clock.Now())
+	require.NoError(h.t, err)
+	value, encodeErr := h.codec.Encode(auth.Session{
+		ID:           id.String(),
+		MembershipID: membership.String(),
+		IssuedAt:     h.clock.Now().Add(-ago),
+		ExpiresAt:    h.clock.Now().Add(auth.DefaultSessionTTL),
+		SteppedUpAt:  h.clock.Now().Add(-ago),
+	})
 	require.NoError(h.t, encodeErr)
 	return value
 }

@@ -10,9 +10,18 @@ cannot be.
 - You are using `local`, whose subject is a server-minted ULID attached to a self-asserted name.
   There is nothing to verify and `verifiable_subject = 0` is a `CHECK` against `kind`, not a
   setting somebody forgot to turn on.
+- You called `stepUpSession` naming a provider with no verifiable subject. Stepping up means
+  re-proving the identity this session already belongs to, and `local` mints a **new** subject on
+  every verification — so there is no request that could succeed.
 
 ## What the client should do
 
 Use `discord` or `oidc` for anything that has to survive a revocation. This is not a configuration
 problem to work around: an operation that needs durable identity genuinely cannot accept an
 unverifiable one.
+
+For `stepUpSession` specifically, the answer is not "try again with a better name". A membership
+whose only identity is `local` cannot satisfy a step-up at all, and a console must say so rather
+than offering a button that always fails: the operations behind the strict tier are unreachable for
+that membership until it holds an identity through a provider that can verify one. The refusal is
+deliberately this code and not `credential_invalid`, which would read as a typo.

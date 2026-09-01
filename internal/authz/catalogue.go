@@ -3,6 +3,7 @@ package authz
 import (
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // Permission is a `<resource>.<action>` key. It narrows a role.
@@ -86,15 +87,75 @@ var (
 	ErrUnknownRole = errors.New("unknown role")
 )
 
+// StepUpTier says how recently a session must have proved its identity before an operation
+// carrying this permission is allowed.
+//
+// It exists because one boolean was answering two different questions. "No personal access token
+// reaches this at any scope" is [PermissionDef.Floor]; "prove again that you are the person now
+// typing" is this. They travelled together because every floor permission happened to be a write —
+// and then `audit.read` joined the floor, which is a READ, and inherited a five-minute expiry
+// designed for granting a role. An operator reported the result as being "half-authenticated":
+// the console showed the Audit section, the page refused to load it, and the only exit anybody
+// found was signing out. ADR-0024.
+//
+// The tier is a property of the PERMISSION rather than of the route, for the same reason the floor
+// is: a second route reaching the same permission must not be able to answer a weaker question.
+type StepUpTier string
+
+const (
+	// StepUpNone asks for no recency proof at all. The session still has to exist, and for a floor
+	// permission no token reaches it — a tier of `none` narrows nothing about who may call.
+	StepUpNone StepUpTier = "none"
+	// StepUpRoutine is the window for an operation that changes circle state without changing who
+	// holds a capability: renaming a circle, revoking an invite, editing a timer. A hijacked tab
+	// reaching one of these is a nuisance and an audit row, not a takeover.
+	StepUpRoutine StepUpTier = "routine"
+	// StepUpSensitive is the window for an operation that changes WHO CAN DO WHAT, or that
+	// destroys data nothing can rebuild: a role, a revocation, a minted credential, the identity
+	// providers a circle accepts, the instance realm. This is the tier five minutes was chosen
+	// for, and it keeps it.
+	StepUpSensitive StepUpTier = "sensitive"
+)
+
+// String returns the tier name as the documents and the OpenAPI extension spell it.
+func (t StepUpTier) String() string { return string(t) }
+
+// StepUpTiers returns every tier, weakest first. The order is the ordering: a session satisfying
+// a later tier satisfies every earlier one, which is what [StepUpTier.AtLeast] rests on.
+func StepUpTiers() []StepUpTier { return []StepUpTier{StepUpNone, StepUpRoutine, StepUpSensitive} }
+
+// ErrUnknownStepUpTier is returned for a tier name outside the catalogue.
+var ErrUnknownStepUpTier = errors.New("unknown step-up tier")
+
+// ParseStepUpTier validates a tier name. It is what keeps the canonical document's fenced block
+// from naming a tier nothing implements.
+func ParseStepUpTier(s string) (StepUpTier, error) {
+	for _, t := range StepUpTiers() {
+		if string(t) == s {
+			return t, nil
+		}
+	}
+	return "", fmt.Errorf("%q: %w", s, ErrUnknownStepUpTier)
+}
+
+// AtLeast reports whether t is at least as strict as other.
+func (t StepUpTier) AtLeast(other StepUpTier) bool {
+	return slices.Index(StepUpTiers(), t) >= slices.Index(StepUpTiers(), other)
+}
+
 // PermissionDef is one permission and everything generated from it.
 type PermissionDef struct {
 	// Key is the permission itself.
 	Key Permission
 	// Realm says whether a circle role can grant it.
 	Realm Realm
-	// StepUp marks membership of the capability floor: session-only, re-authenticated, and
-	// reachable by no PAT scope at all.
-	StepUp bool
+	// Floor marks membership of the capability floor: no PAT reaches this permission at any
+	// scope, whatever its role holds.
+	Floor bool
+	// StepUp is how recently the session must have proved its identity. It is meaningful only
+	// on a floor permission — a permission a token can reach cannot ask a token to step up, and
+	// TestStepUp_OutsideTheFloor_IsAlwaysNone is what stops one claiming to.
+	StepUp StepUpTier
 	// Summary is one line, and appears in the generated seed and documentation page.
 	Summary string
 }
@@ -116,71 +177,103 @@ type ScopeDef struct {
 func Permissions() []PermissionDef {
 	return []PermissionDef{
 		{
-			PermissionCircleRead, RealmCircle, false,
+			PermissionCircleRead, RealmCircle, false, StepUpNone,
 			"Read the circle's name, server, settings and revocation strength",
 		},
 		{
-			PermissionCircleManage, RealmCircle, true,
+			PermissionCircleManage, RealmCircle, true, StepUpRoutine,
 			"Rename the circle, change its settings, and set its timer overrides",
 		},
 		{
-			PermissionCircleSecurityManage, RealmCircle, true,
+			PermissionCircleSecurityManage, RealmCircle, true, StepUpSensitive,
 			"Change which identity providers the circle accepts, which changes its revocation strength",
 		},
 		{
-			PermissionCircleDelete, RealmCircle, true,
+			PermissionCircleDelete, RealmCircle, true, StepUpSensitive,
 			"Delete the circle and every report in it",
 		},
 
-		{PermissionMemberRead, RealmCircle, false, "List the circle's members and read one"},
-		{PermissionMemberManage, RealmCircle, true, "Change a member's role or display name"},
 		{
-			PermissionMemberRevoke, RealmCircle, true,
+			PermissionMemberRead, RealmCircle, false, StepUpNone,
+			"List the circle's members and read one",
+		},
+		{
+			PermissionMemberManage, RealmCircle, true, StepUpSensitive,
+			"Change a member's role or display name",
+		},
+		{
+			PermissionMemberRevoke, RealmCircle, true, StepUpSensitive,
 			"Revoke a membership, and reinstate a revoked one",
 		},
 
-		{PermissionInviteRead, RealmCircle, false, "List the circle's invites"},
+		{PermissionInviteRead, RealmCircle, false, StepUpNone, "List the circle's invites"},
 		{
-			PermissionInviteCreate, RealmCircle, false,
+			PermissionInviteCreate, RealmCircle, false, StepUpNone,
 			"Mint an invite code; one minted by a PAT is hard-narrowed to one use, 24 hours and a role below owner",
 		},
-		{PermissionInviteRevoke, RealmCircle, true, "Revoke an invite before it expires"},
+		{
+			PermissionInviteRevoke, RealmCircle, true, StepUpRoutine,
+			"Revoke an invite before it expires",
+		},
 
 		{
-			PermissionTodRead, RealmCircle, false,
+			PermissionTodRead, RealmCircle, false, StepUpNone,
 			"Read the board, the reports behind it, and the quake log",
 		},
 		{
-			PermissionTodReadAttribution, RealmCircle, false,
+			PermissionTodReadAttribution, RealmCircle, false, StepUpNone,
 			"See which member reported a time of death; withholding this is what the observer role is",
 		},
-		{PermissionTodReport, RealmCircle, false, "Append a time-of-death report"},
-		{PermissionTodRetract, RealmCircle, false, "Retract one's own report"},
-		{PermissionTodRetractAny, RealmCircle, false, "Retract another member's report"},
 		{
-			PermissionTodQuakeReport, RealmCircle, false,
+			PermissionTodReport, RealmCircle, false, StepUpNone,
+			"Append a time-of-death report",
+		},
+		{PermissionTodRetract, RealmCircle, false, StepUpNone, "Retract one's own report"},
+		{
+			PermissionTodRetractAny, RealmCircle, false, StepUpNone,
+			"Retract another member's report",
+		},
+		{
+			PermissionTodQuakeReport, RealmCircle, false, StepUpNone,
 			"Record a server-wide earthquake; a false one wipes the whole board",
 		},
 
 		{
-			PermissionCatalogueRead, RealmCircle, false,
+			PermissionCatalogueRead, RealmCircle, false, StepUpNone,
 			"Read the raid-target catalogue and resolve a target name",
 		},
 		{
-			PermissionCatalogueManage, RealmInstance, true,
+			PermissionCatalogueManage, RealmInstance, true, StepUpRoutine,
 			"Add or change raid targets and their per-server timers, for every circle on the instance",
 		},
 
-		{PermissionAuditRead, RealmCircle, true, "Read the circle's audit log"},
-		{PermissionOpsRead, RealmInstance, false, "Read instance diagnostics and job status"},
+		{
+			// Floored and NOT stepped up, and the gap between those two is the whole of
+			// ADR-0024. A bulk export of who did what is exactly what a leaked bot token must
+			// not reach, so the floor keeps it; reading a circle's own audit log is not a
+			// privilege escalation, so demanding a fresh identity proof for it bought nothing
+			// and cost an operator the ability to look at all.
+			PermissionAuditRead, RealmCircle, true, StepUpNone,
+			"Read the circle's audit log",
+		},
+		{
+			PermissionOpsRead, RealmInstance, false, StepUpNone,
+			"Read instance diagnostics and job status",
+		},
 
 		{
-			PermissionTokenMint, RealmCircle, true,
+			PermissionTokenMint, RealmCircle, true, StepUpSensitive,
 			"Create a service membership and mint its token",
 		},
-		{PermissionTokenRevoke, RealmCircle, true, "Revoke another principal's token"},
+		{
+			PermissionTokenRevoke, RealmCircle, true, StepUpSensitive,
+			"Revoke another principal's token",
+		},
 
-		{PermissionInstanceCircleCreate, RealmInstance, true, "Create a circle on this instance"},
+		{
+			PermissionInstanceCircleCreate, RealmInstance, true, StepUpSensitive,
+			"Create a circle on this instance",
+		},
 		{
 			// The summary widened when `/admin/instance` landed, because this key had already
 			// reached further than it said: whoever may add a `local` identity provider can
@@ -188,12 +281,12 @@ func Permissions() []PermissionDef {
 			// The alternative — `instance.owner` — would have been the wider grant, not the
 			// narrower one: it expands to the whole instance realm (ADR-0015), so delegating one
 			// switch would mean handing over the providers, the catalogue and the ops dashboard.
-			PermissionInstanceSecurityManage, RealmInstance, true,
+			PermissionInstanceSecurityManage, RealmInstance, true, StepUpSensitive,
 			"Configure how this instance admits and authorises people: its identity providers, " +
 				"and the instance-wide policy switches such as self-service circle creation",
 		},
 		{
-			PermissionInstanceOwner, RealmInstance, true,
+			PermissionInstanceOwner, RealmInstance, true, StepUpSensitive,
 			"Instance ownership: whatever an instance administrator can do that has no narrower key",
 		},
 	}
@@ -362,28 +455,50 @@ func (p Permission) String() string { return string(p) }
 // String returns the scope key.
 func (s Scope) String() string { return string(s) }
 
-// CapabilityFloor returns the permissions that are session-and-step-up only: operations that alter
+// CapabilityFloor returns the permissions that are session-only: operations that alter
 // authentication, authorization or bulk-export state, which no token may reach at any scope.
 //
-// It is derived from [PermissionDef.StepUp] rather than being a second list, and
+// It is derived from [PermissionDef.Floor] rather than being a second list, and
 // TestCapabilityFloor_MatchesCanonicalConventions parses the fenced block in canonical
 // conventions §6 and compares in both directions, so neither this catalogue nor that document can
 // drift away from the other.
+//
+// It used to be derived from the step-up flag, when those were one field. They are two now, and
+// the floor is the wider of the two: `audit.read` is floored and asks for no step-up. See
+// [StepUpTier].
 func CapabilityFloor() []Permission {
 	var floor []Permission
 	for _, def := range Permissions() {
-		if def.StepUp {
+		if def.Floor {
 			floor = append(floor, def.Key)
 		}
 	}
 	return floor
 }
 
-// RequiresStepUp reports whether the permission is in the capability floor.
-func RequiresStepUp(p Permission) bool {
+// InFloor reports whether no personal access token reaches the permission at any scope.
+func InFloor(p Permission) bool {
 	def, ok := LookupPermission(p)
-	return ok && def.StepUp
+	return ok && def.Floor
 }
+
+// StepUpFor returns how recently a session must have proved its identity for the permission. An
+// unknown key answers [StepUpSensitive] rather than [StepUpNone]: a permission this catalogue has
+// never heard of is not one to wave through, and the caller is already going to be refused by
+// [LookupPermission] elsewhere.
+func StepUpFor(p Permission) StepUpTier {
+	def, ok := LookupPermission(p)
+	if !ok {
+		return StepUpSensitive
+	}
+	return def.StepUp
+}
+
+// RequiresStepUp reports whether the permission asks for any recency proof at all.
+//
+// It is `StepUpFor(p) != StepUpNone` and not "is in the floor", which is what it meant when one
+// boolean answered both questions. Callers that want the floor want [InFloor].
+func RequiresStepUp(p Permission) bool { return StepUpFor(p) != StepUpNone }
 
 // GrantedByScopes returns every permission the given scopes make reachable. A permission is only
 // effective if the role holds it too — see [EffectiveForToken].

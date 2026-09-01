@@ -333,10 +333,17 @@ func TestListCircleAudit_ReadsTheChainedLog(t *testing.T) {
 	require.Contains(t, detail, "revocation_strength")
 }
 
-// TestListCircleAudit_IsSessionAndStepUpOnly. `audit.read` is in the capability floor: no token
-// reaches it at any scope, because a bulk export of who did what is exactly what a leaked token
-// must not buy.
-func TestListCircleAudit_IsSessionAndStepUpOnly(t *testing.T) {
+// TestListCircleAudit_IsSessionOnlyAndNotSteppedUp. `audit.read` is in the capability floor — no
+// token reaches it at any scope, because a bulk export of who did what is exactly what a leaked
+// token must not buy — and it asks for NO re-authentication, because reading your own circle's
+// audit log is not a privilege escalation.
+//
+// Both halves are asserted over the wire, and they are the two failures ADR-0024 is about. The
+// first is the property the floor was always protecting. The second is the one that was taken
+// away by accident when a single boolean answered both questions: an officer whose session was
+// six minutes old saw the Audit section in the nav, opened it, and got a 403 whose only known
+// remedy was signing out — which minted another device on the way back in.
+func TestListCircleAudit_IsSessionOnlyAndNotSteppedUp(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	circleID := h.seedCircle("Riot")
@@ -347,9 +354,10 @@ func TestListCircleAudit_IsSessionAndStepUpOnly(t *testing.T) {
 		Method: http.MethodGet, Path: path, Token: h.seedToken(owner, allScopes()...),
 	}), apierr.CodeSessionRequired)
 
-	h.requireProblem(h.do(request{
-		Method: http.MethodGet, Path: path, Session: h.session(owner, false),
-	}), apierr.CodeStepUpRequired)
+	// A session that has NOT stepped up recently reads the log. This is the assertion that
+	// replaced a `step_up_required` one, and it is the behaviour change.
+	stale := h.do(request{Method: http.MethodGet, Path: path, Session: h.session(owner, false)})
+	require.Equal(t, http.StatusOK, stale.Status, stale.Body)
 
 	ok := h.do(request{Method: http.MethodGet, Path: path, Session: h.session(owner, true)})
 	require.Equal(t, http.StatusOK, ok.Status, ok.Body)

@@ -102,7 +102,7 @@ type Authenticator struct {
 	grants  InstanceGrants
 	clock   clock.Clock
 	log     *slog.Logger
-	stepUp  time.Duration
+	stepUp  StepUpWindows
 	touchAt time.Duration
 }
 
@@ -115,7 +115,7 @@ type Authenticator struct {
 // "no grants" would 403 every instance-realm route with nothing to point at.
 func NewAuthenticator(
 	db *store.DB, minter *Minter, codec *SessionCodec, grants InstanceGrants, clk clock.Clock,
-	log *slog.Logger, stepUpWindow time.Duration,
+	log *slog.Logger, stepUpWindows StepUpWindows,
 ) (*Authenticator, error) {
 	switch {
 	case db == nil:
@@ -130,17 +130,18 @@ func NewAuthenticator(
 		return nil, errors.New("new authenticator: clock is nil")
 	case log == nil:
 		return nil, errors.New("new authenticator: logger is nil")
-	case stepUpWindow <= 0:
-		return nil, errors.New("new authenticator: step-up window must be positive")
+	}
+	if err := stepUpWindows.Validate(); err != nil {
+		return nil, fmt.Errorf("new authenticator: %w", err)
 	}
 	return &Authenticator{
 		db: db, minter: minter, codec: codec, grants: grants, clock: clk, log: log,
-		stepUp: stepUpWindow, touchAt: touchInterval,
+		stepUp: stepUpWindows, touchAt: touchInterval,
 	}, nil
 }
 
-// StepUpWindow returns how recently a session must have proved its identity.
-func (a *Authenticator) StepUpWindow() time.Duration { return a.stepUp }
+// StepUpWindows returns how recently a session must have proved its identity, per tier.
+func (a *Authenticator) StepUpWindows() StepUpWindows { return a.stepUp }
 
 // Authenticate resolves a credential into a principal.
 //
@@ -284,6 +285,7 @@ func (a *Authenticator) authenticateSession(ctx context.Context, value string) (
 		InstanceGrants:  grants,
 		SteppedUpAt:     s.SteppedUpAt,
 		SessionID:       s.ID,
+		SessionIssuedAt: s.IssuedAt,
 		SessionExpiryAt: s.ExpiresAt,
 	}, nil
 }
