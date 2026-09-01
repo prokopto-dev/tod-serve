@@ -1,17 +1,83 @@
 package projection_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/tod-serve/internal/apierr"
+	"github.com/prokopto-dev/tod-serve/internal/catalogue"
 	"github.com/prokopto-dev/tod-serve/internal/core"
 	"github.com/prokopto-dev/tod-serve/internal/schemaenum"
 	"github.com/prokopto-dev/tod-serve/internal/store/sqlitegen"
 	"github.com/prokopto-dev/tod-serve/internal/tod"
 )
+
+// TestGet_AttributionVisible_SaysWhoMayLookAndNeverWhetherAnybodyReported.
+//
+// **The four cells, enumerated rather than reasoned about**, because two of them used to produce
+// the same wire shape and that collision is what shipped: a permitted principal looking at a
+// target nobody has reported got exactly the body of a refusal — no `reporters` — so the console
+// told every owner on a fresh instance that they lacked `tod.read.attribution`. Issue #52.
+//
+// A test driving one direction only would have stayed green throughout. So would a test asserting
+// `Reporters` alone, which is why the wire comparison at the end is here.
+func TestGet_AttributionVisible_SaysWhoMayLookAndNeverWhetherAnybodyReported(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+
+	reported := f.seedTarget("Vulak`Aerr", "Temple of Veeshan", false)
+	f.seedCatalogueTimer(reported, 5*24*time.Hour, 7*24*time.Hour)
+	f.report(reported, fixtureNow.Add(-2*time.Hour), schemaenum.TodReportSourceLogLine)
+
+	quiet := f.seedTarget("Lord Nagafen", "Nagafen's Lair", false)
+	f.seedCatalogueTimer(quiet, 5*time.Hour, 9*time.Hour)
+
+	tests := []struct {
+		name        string
+		target      catalogue.Target
+		attribution bool
+		wantVisible bool
+		wantNames   int
+	}{
+		{"a member on a target with reports is named", reported, true, true, 1},
+		{"a member on a target nobody reported is permitted and empty", quiet, true, true, 0},
+		{"an observer on a target with reports is refused", reported, false, false, 0},
+		{"an observer on a target nobody reported is refused", quiet, false, false, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := f.states.Get(t.Context(), f.circle, tc.target.ID, tc.attribution)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantVisible, got.AttributionVisible,
+				"the flag answers who may look, and reads the permission and nothing else")
+			require.Len(t, got.Reporters, tc.wantNames)
+		})
+	}
+
+	// The two cells that name nobody, compared as the client sees them. Both carry no `reporters`
+	// and they must still differ, because one is "nobody has reported this" and the other is "you
+	// may not see who did". Marshalled rather than compared field-by-field: the defect was in what
+	// reached the browser, not in the struct.
+	permitted, err := f.states.Get(t.Context(), f.circle, quiet.ID, true)
+	require.NoError(t, err)
+	denied, err := f.states.Get(t.Context(), f.circle, quiet.ID, false)
+	require.NoError(t, err)
+	require.Empty(t, permitted.Reporters, "nobody has reported this target either way")
+	require.Empty(t, denied.Reporters)
+
+	permittedJSON, err := json.Marshal(permitted)
+	require.NoError(t, err)
+	deniedJSON, err := json.Marshal(denied)
+	require.NoError(t, err)
+	require.NotEqual(t, string(deniedJSON), string(permittedJSON),
+		"an empty target and a refused principal must not be the same body")
+	require.Contains(t, string(permittedJSON), `"attribution_visible":true`)
+	require.Contains(t, string(deniedJSON), `"attribution_visible":false`)
+}
 
 // TestGet_Reporters_AppearOnlyWithAttribution.
 //
@@ -32,6 +98,7 @@ func TestGet_Reporters_AppearOnlyWithAttribution(t *testing.T) {
 	observer, err := f.states.Get(t.Context(), f.circle, target.ID, false)
 	require.NoError(t, err)
 	require.Empty(t, observer.Reporters, "an observer sees the state and not who reported it")
+	require.False(t, observer.AttributionVisible, "and is told that it is a refusal")
 	require.Equal(t, 2, observer.Evidence.ReportCount, "and the counts are still there")
 	require.Equal(t, 2, observer.Evidence.DistinctReporterCount)
 	require.Equal(t, 1, observer.Evidence.LogLineCount)
@@ -39,6 +106,7 @@ func TestGet_Reporters_AppearOnlyWithAttribution(t *testing.T) {
 
 	officer, err := f.states.Get(t.Context(), f.circle, target.ID, true)
 	require.NoError(t, err)
+	require.True(t, officer.AttributionVisible)
 	require.Len(t, officer.Reporters, 2)
 	names := []string{officer.Reporters[0].DisplayName, officer.Reporters[1].DisplayName}
 	require.ElementsMatch(t, []string{"Tankguy", "Sneakco"}, names)

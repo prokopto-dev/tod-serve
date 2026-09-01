@@ -289,6 +289,7 @@ them. What the cache actually buys is not reading and clustering the log.
   "alternatives": [],
   "evidence": { "report_count": 4, "distinct_reporter_count": 3, "log_line_count": 2,
                 "spread_seconds": 190, "revoked_reporter_count": 1, "report_ids": ["01K..."] },
+  "attribution_visible": true,
   "reporters": [ { "membership_id": "01K...", "display_name": "Tankguy", "revoked": false },
                  { "membership_id": "01K...", "display_name": "Sneakco", "revoked": true } ],
   "as_of": "2026-08-19T00:31:12.412000Z" }
@@ -296,6 +297,14 @@ them. What the cache actually buys is not reading and clustering the log.
 
 `reporters[]` is present only for principals holding `tod.read.attribution`. Revoked reporters render
 with `revoked: true` and **their reports still count** — the revocation rule, made visible.
+
+**`attribution_visible` is what says whether the principal holds it, and `reporters[]` never is.**
+The two are separate fields because they answer separate questions: one is about the caller, the
+other is about how much there is to name. A client reading the permission off `reporters[]` being
+absent gets it wrong for every target nobody has reported yet — which on a fresh instance is all of
+them, and which is what the console did until
+[issue #52](https://github.com/prokopto-dev/tod-serve/issues/52). An empty `reporters[]` under
+`attribution_visible: true` means "nobody has reported this target", and it is never a refusal.
 
 ## Raid-target catalogue
 

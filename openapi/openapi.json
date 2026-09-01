@@ -4320,6 +4320,9 @@
             "format": "date-time",
             "type": "string"
           },
+          "attribution_visible": {
+            "type": "boolean"
+          },
           "change_reason": {
             "type": [
               "string",
@@ -4442,6 +4445,7 @@
           "alternatives_total",
           "evidence",
           "implausible_report_ids",
+          "attribution_visible",
           "computed_at"
         ],
         "type": "object"

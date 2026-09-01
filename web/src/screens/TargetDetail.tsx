@@ -20,6 +20,7 @@ import { StatusChip } from '../components/StatusChip'
 import { NoWindow, WindowBar, hasWindow } from '../components/WindowBar'
 import { Button, Card, Empty, Field, Input, Mono, Spinner, Td, Th } from '../components/ui'
 import { countdown, offsetNow, type AsOf } from '../lib/asof'
+import { attributionOf, type Attribution } from '../lib/attribution'
 import { hasInstant, instant, plural, titleCase } from '../lib/format'
 
 export function TargetDetail() {
@@ -70,17 +71,7 @@ export function TargetDetail() {
         <AlternativesCard state={state.data} asOf={state.asOf} />
       )}
 
-      {state.data.reporters ? (
-        <ReportersCard reporters={state.data.reporters} />
-      ) : (
-        <Card title="Reporters">
-          <Empty title="You can see the evidence counts but not who reported.">
-            Attribution needs <Mono>tod.read.attribution</Mono>, which is what separates an{' '}
-            <code>observer</code> from a member: a board can be shared with an allied guild without
-            handing over the identity of your trackers.
-          </Empty>
-        </Card>
-      )}
+      <ReportersCard attribution={attributionOf(state.data)} />
 
       <ReportsCard
         reports={reports.data?.items ?? []}
@@ -212,7 +203,34 @@ function AlternativesCard({ state, asOf }: { state: TargetStateResponse; asOf: A
   )
 }
 
-function ReportersCard({ reporters }: { reporters: NonNullable<TargetStateResponse['reporters']> }) {
+// The card, and the three answers it can give.
+//
+// It takes the decided [Attribution] rather than the response, so the screen cannot re-derive a
+// permission from an empty list — which is the bug this shape exists to make unwritable. See
+// `../lib/attribution.ts`.
+function ReportersCard({ attribution }: { attribution: Attribution }) {
+  if (attribution.kind === 'denied') {
+    return (
+      <Card title="Reporters">
+        <Empty title="You can see the evidence counts but not who reported.">
+          Attribution needs <Mono>tod.read.attribution</Mono>, which is what separates an{' '}
+          <code>observer</code> from a member: a board can be shared with an allied guild without
+          handing over the identity of your trackers.
+        </Empty>
+      </Card>
+    )
+  }
+  if (attribution.kind === 'empty') {
+    return (
+      <Card title="Reporters">
+        <Empty title="No reports yet.">
+          Nobody has posted a time of death for this target. Post one and the members behind it
+          appear here.
+        </Empty>
+      </Card>
+    )
+  }
+  const { reporters } = attribution
   return (
     <Card title="Reporters" subtitle={plural(reporters.length, 'reporter')}>
       <ul className="flex flex-wrap gap-2 p-4">

@@ -124,6 +124,7 @@ func TestGetTargetState_Reporters_AppearOnlyForAttribution(t *testing.T) {
 	require.Equal(t, http.StatusOK, withAttribution.Status, withAttribution.Body)
 	var mine api.TargetStateResponse
 	require.NoError(t, json.Unmarshal([]byte(withAttribution.Body), &mine))
+	require.True(t, mine.AttributionVisible)
 	require.Len(t, mine.Reporters, 1)
 	require.Equal(t, member, mine.Reporters[0].MembershipID)
 	require.Equal(t, schemaenum.TargetStateStatusPreWindow, mine.Status)
@@ -139,10 +140,74 @@ func TestGetTargetState_Reporters_AppearOnlyForAttribution(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(got.Body), &raw))
 	require.NotContains(t, raw, "reporters",
 		"an observer sees the state, not the identity of the trackers behind it")
+	require.Equal(t, false, raw["attribution_visible"],
+		"and the body SAYS it is a refusal rather than leaving it to be inferred")
 	evidence, ok := raw["evidence"].(map[string]any)
 	require.True(t, ok)
 	require.EqualValues(t, 1, evidence["report_count"],
 		"a confidence figure with no denominator is worse than none")
+}
+
+// TestGetTargetState_AnOwnerOnATargetNobodyReported_IsNotToldTheyLackAPermission.
+//
+// The reported bug, at the edge that produced it. `reporters` is omitted for a principal WITHOUT
+// `tod.read.attribution` and for a target with no reports, so the console — which read the
+// permission off that field's absence — showed an owner on a fresh instance the observer's
+// permission copy for a permission they hold. Issue #52.
+//
+// Both directions, because either one alone passes while the bug is open: the owner below is
+// permitted with nothing to show, and the observer beside them is refused with something to hide.
+// The assertions are on the RAW body, so an omitted field is genuinely absent rather than
+// zero-valued — which is precisely the distinction that went wrong.
+func TestGetTargetState_AnOwnerOnATargetNobodyReported_IsNotToldTheyLackAPermission(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	circleID := h.seedCircle("Riot")
+	owner := h.seedToken(h.seedMember(circleID, authz.RoleOwner),
+		authz.ScopeTodRead, authz.ScopeTodReport)
+	observer := h.seedToken(h.seedMember(circleID, authz.RoleObserver), authz.ScopeTodRead)
+
+	quiet := h.seedTarget("Lord Nagafen", "Nagafen's Lair")
+	h.seedTimer(quiet, 5*time.Hour, 9*time.Hour)
+	loud := h.seedTarget("Lady Vox", "Permafrost Keep")
+	h.seedTimer(loud, 16*time.Hour, 24*time.Hour)
+
+	created := h.do(request{
+		Method: http.MethodPost, Path: reportsPath(circleID), Token: owner,
+		Headers: map[string]string{api.IdempotencyKeyHeader: "kill"},
+		Body:    reportBody(loud, fixtureNow.Add(-time.Hour)),
+	})
+	require.Equal(t, http.StatusOK, created.Status, created.Body)
+
+	tests := []struct {
+		name        string
+		token       core.Secret
+		target      catalogue.Target
+		wantVisible bool
+		wantNamed   bool
+	}{
+		{"an owner on a target nobody reported is permitted, and empty", owner, quiet, true, false},
+		{"an owner on a target with reports is permitted, and named", owner, loud, true, true},
+		{"an observer on a target nobody reported is refused", observer, quiet, false, false},
+		{"an observer on a target with reports is refused", observer, loud, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := h.do(request{
+				Method: http.MethodGet,
+				Path:   todsPath(circleID) + "/" + tc.target.ID.String(), Token: tc.token,
+			})
+			require.Equal(t, http.StatusOK, got.Status, got.Body)
+
+			var raw map[string]any
+			require.NoError(t, json.Unmarshal([]byte(got.Body), &raw))
+			require.Equal(t, tc.wantVisible, raw["attribution_visible"],
+				"the permission travels as its own field, not as the presence of data")
+			require.Equal(t, tc.wantNamed, raw["reporters"] != nil,
+				"and `reporters` says only how many there are to name")
+		})
+	}
 }
 
 // TestGetTargetState_AnUnknownTarget_IsNotFound, and a malformed id answers the same way: the shape
