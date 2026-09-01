@@ -50,11 +50,11 @@ export function Devices() {
       >
         <dl className="grid gap-3 p-4 text-xs md:grid-cols-4">
           <div>
-            <dt className="text-[11px] tracking-wide text-ink-400 uppercase">Role</dt>
+            <dt className="caps text-[11px] text-ink-400">Role</dt>
             <dd className="mt-0.5 text-ink-100">{principal.view.role}</dd>
           </div>
           <div>
-            <dt className="text-[11px] tracking-wide text-ink-400 uppercase">Credential</dt>
+            <dt className="caps text-[11px] text-ink-400">Credential</dt>
             <dd className="mt-0.5 text-ink-100">
               {principal.view.token_prefix ? (
                 <Mono>{principal.view.token_prefix}</Mono>
@@ -64,7 +64,7 @@ export function Devices() {
             </dd>
           </div>
           <div>
-            <dt className="text-[11px] tracking-wide text-ink-400 uppercase">Scopes</dt>
+            <dt className="caps text-[11px] text-ink-400">Scopes</dt>
             <dd className="mt-0.5 text-ink-100">
               {(principal.view.scopes ?? []).length > 0
                 ? (principal.view.scopes ?? []).join(', ')
@@ -73,7 +73,7 @@ export function Devices() {
           </div>
           <div>
             <dt
-              className="text-[11px] tracking-wide text-ink-400 uppercase"
+              className="caps text-[11px] text-ink-400"
               title="How recently this session proved your identity. The bar depends on what the operation costs if it is wrong."
             >
               Proof of identity

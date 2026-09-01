@@ -160,7 +160,7 @@ function StepUpButton() {
 export function StaleNotice({ resource }: { resource: Stale }) {
   if (!resource.stale) return null
   return (
-    <div className="border-b border-amber-900/60 bg-amber-950/30 px-4 py-2 text-[11px] text-amber-300">
+    <div className="border-b border-warn/40 bg-warn/12 px-4 py-2 text-[11px] text-warn">
       <span className="font-semibold">Not refreshed.</span> What you are looking at is real, and it
       is what the server last told us — but the most recent attempt to bring it up to date failed,
       so anything changed since then is missing.

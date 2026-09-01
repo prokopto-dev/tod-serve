@@ -242,7 +242,7 @@ function InstancePolicyCard({
                 This instance's stated policy on who may create a circle, published on{' '}
                 <Mono>/meta</Mono> so a client knows whether to offer the option.
               </span>
-              <span className="mt-0.5 block text-amber-400">
+              <span className="mt-0.5 block text-warn">
                 Published, not yet enforced: <Mono>createCircle</Mono> still requires a grant of{' '}
                 <Mono>instance.circle.create</Mono> whichever way this is set.
               </span>
@@ -277,7 +277,7 @@ function InstancePolicyCard({
           </div>
 
           <div>
-            <h3 className="mb-1 text-[11px] tracking-wide text-ink-500 uppercase">
+            <h3 className="caps mb-1 text-[11px] text-ink-500">
               Recorded changes
             </h3>
             {changes.length === 0 ? (
@@ -393,7 +393,7 @@ function ProviderRow({
       <Td>
         <Mono>{provider.client_id || '—'}</Mono>
       </Td>
-      <Td className={provider.client_secret_set ? 'text-ink-300' : 'text-amber-400'}>
+      <Td className={provider.client_secret_set ? 'text-ink-300' : 'text-warn'}>
         {provider.client_secret_set ? 'set' : 'not set'}
       </Td>
       <Td>
@@ -401,7 +401,7 @@ function ProviderRow({
           <span className="text-[var(--color-status-inwindow)]">durable</span>
         ) : (
           <span
-            className="text-amber-400"
+            className="text-warn"
             title="No third party can tell us this account is gone, so revocation through it is advisory."
           >
             advisory

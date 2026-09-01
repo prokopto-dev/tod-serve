@@ -254,7 +254,7 @@ function MintedCard({
         )}
 
         <div className="rounded border border-accent-600/40 bg-accent-600/5 p-3">
-          <p className="text-[11px] tracking-wide text-ink-400 uppercase">Paste this into Discord</p>
+          <p className="caps text-[11px] text-ink-400">Paste this into Discord</p>
           <p className="mt-1 font-mono text-sm break-all text-ink-100 select-all">{link}</p>
           <p className="mt-2 text-[11px] text-ink-500">
             The code is in the fragment, after the <code>#</code>. A fragment is never sent to any
@@ -273,21 +273,21 @@ function MintedCard({
 
         <dl className="grid gap-3 text-xs md:grid-cols-4">
           <div>
-            <dt className="text-[11px] tracking-wide text-ink-400 uppercase">Role</dt>
+            <dt className="caps text-[11px] text-ink-400">Role</dt>
             <dd className="mt-0.5 text-ink-100">{minted.role}</dd>
           </div>
           <div>
-            <dt className="text-[11px] tracking-wide text-ink-400 uppercase">Uses</dt>
+            <dt className="caps text-[11px] text-ink-400">Uses</dt>
             <dd className="mt-0.5 text-ink-100">
               {minted.max_uses === 1 ? 'one — a login link' : plural(minted.max_uses, 'use')}
             </dd>
           </div>
           <div>
-            <dt className="text-[11px] tracking-wide text-ink-400 uppercase">Expires</dt>
+            <dt className="caps text-[11px] text-ink-400">Expires</dt>
             <dd className="mt-0.5 text-ink-100 tnum">{instant(minted.expires_at)}</dd>
           </div>
           <div>
-            <dt className="text-[11px] tracking-wide text-ink-400 uppercase">Prefix</dt>
+            <dt className="caps text-[11px] text-ink-400">Prefix</dt>
             <dd className="mt-0.5">
               <Mono>{minted.code_prefix}</Mono>
             </dd>

@@ -10,7 +10,9 @@ import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useEffect, useMemo, useState } from 'react'
 
 import { api, body, toError } from '../api'
+import { Wordmark } from '../components/Mark'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
+import { ServerFooter } from '../components/ServerFooter'
 import { RevocationBanner } from '../components/RevocationBanner'
 import { Button, Spinner } from '../components/ui'
 import { circleChoices, serverIsAmbiguous, type CircleChoice } from '../lib/circles'
@@ -76,10 +78,15 @@ export function Shell() {
   return (
     <StepUpProvider>
     <div className="flex h-full">
-      <nav className="flex w-44 shrink-0 flex-col border-r border-ink-800 bg-ink-900">
-        <div className="border-b border-ink-800 px-4 py-3">
-          <p className="text-sm font-semibold tracking-tight text-ink-100">tod-serve</p>
-          <p className="text-[11px] text-ink-500">time of death</p>
+      {/* THE RAIL IS THE PLATE. regserve renders its header as a band of Velious stone across the
+          page — `linear-gradient(180deg, --plate-hi, --plate)` over a `--plate-line` rule — and the
+          mark sits ON it rather than in front of it. This console's chrome runs down the side
+          rather than across the top, so the same slab is turned on its end. Nothing here is gold
+          except the mark's engraving, the active section and the sub-line: the plate is the field
+          and the gold is what sits on it. */}
+      <nav className="flex w-44 shrink-0 flex-col border-r border-plate-line bg-plate">
+        <div className="border-b border-plate-line bg-gradient-to-b from-plate-hi to-plate px-3 py-3">
+          <Wordmark />
         </div>
         <ul className="flex-1 space-y-0.5 p-2">
           {SECTIONS.filter(
@@ -90,10 +97,11 @@ export function Shell() {
                 to={section.to}
                 className={({ isActive }) =>
                   classes(
-                    'block rounded px-2.5 py-1.5 text-xs transition-colors',
+                    // Hover states snap: none of the three siblings has a transition anywhere.
+                    'block rounded border-l-2 px-2.5 py-1.5 text-xs',
                     isActive
-                      ? 'bg-accent-600/15 text-accent-400'
-                      : 'text-ink-300 hover:bg-ink-800 hover:text-ink-100',
+                      ? 'border-plate-accent bg-plate-hi text-plate-accent'
+                      : 'border-transparent text-plate-muted hover:bg-plate-hi hover:text-plate-fg',
                   )
                 }
               >
@@ -102,10 +110,10 @@ export function Shell() {
             </li>
           ))}
         </ul>
-        <div className="space-y-2 border-t border-ink-800 px-3 py-2.5">
+        <div className="space-y-2 border-t border-plate-line px-3 py-2.5">
           <div>
-            <p className="truncate text-xs text-ink-200">{principal.view.display_name}</p>
-            <p className="text-[11px] text-ink-500">{principal.view.role}</p>
+            <p className="truncate text-xs text-plate-fg">{principal.view.display_name}</p>
+            <p className="text-[11px] text-plate-muted">{principal.view.role}</p>
           </div>
           <SignOut />
         </div>
@@ -119,6 +127,7 @@ export function Shell() {
         <main className="min-h-0 flex-1 overflow-auto p-4">
           <Outlet />
         </main>
+        <ServerFooter className="shrink-0" />
       </div>
     </div>
     </StepUpProvider>
@@ -228,10 +237,10 @@ function CircleHeader() {
   // whenever `here` came out of the browser's record instead of off this response.
   const data = listed.find((c) => c.id === currentID) ?? null
 
-  if (!here) return <header className="h-12 border-b border-ink-800 bg-ink-900/60" />
+  if (!here) return <header className="h-12 border-b border-ink-700 bg-ink-850" />
 
   return (
-    <header className="border-b border-ink-800 bg-ink-900/60">
+    <header className="border-b border-ink-700 bg-ink-850">
       <StaleNotice resource={circles} />
       <div className="flex items-baseline gap-3 px-4 py-2.5">
         <CircleSwitcher
@@ -297,14 +306,14 @@ function CircleSwitcher({
         aria-expanded={open}
         aria-haspopup="menu"
         className={classes(
-          'flex items-baseline gap-2 rounded px-1.5 py-0.5 -mx-1.5 transition-colors',
+          'flex items-baseline gap-2 rounded px-1.5 py-0.5 -mx-1.5',
           'hover:bg-ink-800 focus:outline-none focus-visible:bg-ink-800',
         )}
         title="Which circle you are in. Switching signs you in again."
       >
         <h1 className="text-sm font-semibold text-ink-100">{here.name}</h1>
         <span
-          className="rounded border border-ink-600 px-1.5 py-0.5 text-[10px] tracking-wide text-ink-300 uppercase"
+          className="caps rounded border border-ink-600 px-1.5 py-0.5 text-[10px] text-ink-300"
           title="A circle is pinned to one server, immutably. There is no combined view."
         >
           {here.server}
@@ -334,7 +343,9 @@ function CircleSwitcher({
             }}
             className={classes(
               'absolute top-full left-0 z-20 mt-1.5 w-96 rounded-lg border border-ink-700',
-              'bg-ink-900 shadow-lg shadow-black/50',
+              // Elevation is a hairline ring plus ambient darkness, never a drop shadow. This is
+              // Nocturne's `--shadow-lg` shape with this palette's ring colour.
+              'bg-ink-850 shadow-[0_0_0_1px_var(--color-ink-600),0_16px_40px_rgba(0,0,0,0.65)]',
             )}
           >
             <div className="border-b border-ink-800 px-3 py-2">
@@ -366,7 +377,7 @@ function CircleSwitcher({
                             by their names, and a clipped name is where two of them become one
                             row. */}
                         <span className="break-words">{circle.name}</span>
-                        <span className="shrink-0 text-[10px] tracking-wide text-ink-400 uppercase">
+                        <span className="caps shrink-0 text-[10px] text-ink-400">
                           {circle.server}
                         </span>
                       </span>

@@ -449,7 +449,7 @@ function SetupForm({
             Create and get my owner code
           </Button>
           {state.administrator_exists ? (
-            <p className="text-amber-400">
+            <p className="text-warn">
               An administrator already exists as of {instant(state.as_of)}; this will be refused.
             </p>
           ) : null}

@@ -1,38 +1,150 @@
 @import 'tailwindcss';
 
-/* The console's surface.
+/* The console's surface — the nParse+ house palette, joined rather than invented.
  *
- * Dark, dense and calm: this is read at 2am on a second monitor beside a game client, and a bright
- * panel in that position is a panel somebody turns away from. The palette is one blue accent over
- * six greys, and colour is spent almost entirely on the six status treatments — if everything is
- * coloured, nothing is.
+ * THE PALETTE IS MEASURED, NOT CHOSEN. Every value below is a real nParse+ colour, and this file
+ * names where each one came from. There are three sibling services by this author and they do NOT
+ * share one look, so the choice is recorded here rather than left to be re-derived:
+ *
+ *   nparse-plus@f8bc4e8   src/nparseplus/ui/theme.py, ui/skins.py, ui/chrome.py, data/assets/icon.svg
+ *                         and docs/assets/extra.css. The CLIENT. Gold-on-stone over black glass.
+ *   nparse-plugin-regserve@65a35ec   internal/api/webtmpl/layout.html. The same gold-on-stone,
+ *                         already measured onto a dark web ground, with BRAND001/BRAND002 behind it.
+ *   dragonkillparty@9da6ac5   web/src/styles/tokens.css. "Nocturne" — violet on indigo, from an
+ *                         EQDKPPlus mockup project. A DIFFERENT product's identity, not this family's.
+ *
+ * tod-serve takes regserve's palette, because regserve is the other nParse+ satellite: a raider's
+ * client reports into this server and installs plugins from that registry, and those two looking
+ * like one product line is the whole point. Nocturne is dragonkillparty's own brand and adopting it
+ * here would make the nParse+ family look like the DKP family.
+ *
+ * TWO RULES TRAVEL WITH THE PALETTE, from regserve's layout.html:
+ *
+ *   THE PLATE IS THE FIELD, THE GOLD IS WHAT SITS ON IT. The app puts gold on accents and
+ *   engraving, never on a large field — a gold bar is off-brand and hard to read against. Every
+ *   gold here is text, a hairline or a 2px edge. Nothing in this file paints a gold background.
+ *
+ *   ONE VALUE CANNOT CLEAR BOTH GROUNDS. The plate border does not clear the 3:1 WCAG 1.4.11
+ *   holds a control's edge to on this ground, so the edge is `#968c7b` — the value regserve
+ *   reached for the same reason.
+ *
+ * EVERY RATIO IS ANNOTATED AND EVERY ANNOTATION IS RECOMPUTED. This console is read at 2am on a
+ * second monitor beside a game client, so each token that is rendered as text or as an edge carries
+ * its measured ratio and the GROUND it was measured on, in one of three forms:
+ *
+ *     <ratio>:1 on <token>                          this colour as text on that one
+ *     <ratio>:1 on <token>/<pct> over <token>       ... on a tint of one laid over another
+ *     <token> on it: <ratio>:1                      that colour as text on THIS one
+ *
+ * A trailing `(edge)` marks a non-text pair, whose floor is 3:1 rather than AA's 4.5:1.
+ * `lib/palette.test.ts` parses these, recomputes every one, and fails BOTH ways: a stated ratio
+ * that no longer holds, and a ratio written anywhere in this block that it could not parse. So the
+ * numbers below cannot drift, and a new one cannot be added in a form the gate quietly skips.
+ *
+ * WHERE THE TWO SIBLINGS AGREE, WE FOLLOW BOTH. dragonkillparty's neutral ramp steps 100/200/300
+ * are #f3f5fe / #e4e7f5 / #cfd3e5 — which are exactly skins.py's `value_color`, VELIOUS `name_color`
+ * and DUXA `name_color`. That ramp is the one place the family already converged, so the page's text
+ * is cool (what nParse+ puts on black glass) while the plate wears stone (what regserve puts on its
+ * header). Both are quoting the same client.
  */
 @theme {
-  --color-ink-950: #070a0f;
-  --color-ink-900: #0b0f16;
-  --color-ink-850: #10151e;
-  --color-ink-800: #151b26;
-  --color-ink-700: #1d2534;
-  --color-ink-600: #2a3547;
-  --color-ink-500: #3d4a60;
-  --color-ink-400: #64748b;
-  --color-ink-300: #94a3b8;
-  --color-ink-200: #cbd5e1;
-  --color-ink-100: #e8eef7;
+  /* -- the grounds -------------------------------------------------------------------------- */
+  /* skins.py VELIOUS.glass — deeper than the page. Input wells and the modal scrim. */
+  --color-ink-950: #0a0b0f;
+  /* regserve layout.html `--bg` (dark scheme) = extra.css slate ground. THE PAGE. */
+  --color-ink-900: #0f1116;
+  /* theme.py DARK.surface — a raised row, a table hover. */
+  --color-ink-850: #16171b;
+  /* theme.py DARK.surface_alt — a button's face, a progress track. */
+  --color-ink-800: #1d1f24;
+  /* regserve `--line` = skins.py VELIOUS.plate light stop. Every hairline and card ring. */
+  --color-ink-700: #3a3122;
+  /* regserve `--field`. A CONTROL'S EDGE, and the reason it is not the plate border is contrast:
+   * that value does not clear the floor WCAG 1.4.11 holds an edge to on this ground. */
+  --color-ink-600: #968c7b; /* 5.70:1 on --color-ink-900 (edge) — inputs, selects, buttons */
 
-  --color-accent-600: #1a63d8;
-  --color-accent-500: #2b7fff;
-  --color-accent-400: #56a0ff;
+  /* -- the text ramp — dragonkillparty tokens.css --color-neutral-*, whose top three steps are
+   * skins.py's own overlay text values. */
+  --color-ink-500: #9397ab; /*  6.52:1 on --color-ink-900 — hints, placeholders */
+  --color-ink-400: #b2b6ca; /*  9.39:1 on --color-ink-900 — captions, table heads */
+  --color-ink-300: #cfd3e5; /* 12.68:1 on --color-ink-900 — secondary body */
+  --color-ink-200: #e4e7f5; /* 15.33:1 on --color-ink-900 — body */
+  --color-ink-100: #f3f5fe; /* 17.36:1 on --color-ink-900 — headings and numbers */
 
-  /* The six status treatments. `overdue` is deliberately NOT red: it is real, actionable intel —
-   * the ToD is wrong, the timer is wrong, or somebody killed it quietly — and rendering it as a
-   * failure teaches officers to dismiss the row that most needs looking at. */
-  --color-status-unknown: #64748b;
-  --color-status-notimer: #a1793f;
-  --color-status-prewindow: #4a7fd4;
-  --color-status-inwindow: #3fa96a;
-  --color-status-overdue: #9d6bd8;
-  --color-status-up: #21b8c9;
+  /* -- the plate: the nav rail and the brand band, verbatim from regserve's header ------------ */
+  --color-plate: #241e14;
+  --color-plate-hi: #3a3122;
+  --color-plate-fg: #e6dfd0; /* 12.46:1 on --color-plate */
+  --color-plate-muted: #968c7b; /*  4.98:1 on --color-plate — AA and only just, nothing smaller */
+  --color-plate-line: #6b5a3a;
+  --color-plate-accent: #e2c882; /* 10.09:1 on --color-plate */
+
+  /* -- the one accent voice. Gold, and only ever as text, a hairline or an edge. -------------- */
+  --color-accent-400: #e2c882; /* VELIOUS.mark_color — 11.53:1 on --color-ink-900 */
+  --color-accent-500: #c8a951; /* DUXA.mark_color / chrome_accent — 8.32:1 on --color-ink-900 */
+  --color-accent-600: #8a7549; /* skins.py LEDGER.title_color — the muted gold, for edges */
+
+  /* -- semantic, from chrome.py's named accents ---------------------------------------------- */
+  /* regserve `--warn` (dark). `Banner`'s warn tone lays 12% of it under the text first, so that
+   * tint is the ground it is measured on rather than the page, which would be the flattering
+   * answer instead of the true one. */
+  --color-warn: #e0a45c; /* 6.67:1 on --color-warn/12 over --color-ink-850 */
+  --color-danger: #c0392b; /* chrome.py BAD — a fill and a border, never text on this ground */
+  --color-danger-ink: #ef9184; /* LEDGER detrimental tint — 6.91:1 on --color-danger/15 over --color-ink-850 */
+
+  /* THE SIX STATUS TREATMENTS.
+   *
+   * Every fill is a chrome.py semantic token, because nParse+ already has a name for five of these
+   * six states and a name beats a hue we picked. `in_window` is the one that decides the set:
+   * chrome.py's POP_WINDOW is documented as "a respawn row inside its variable pop window", which
+   * is literally this status — so the console and the client colour the same fact the same way, and
+   * a raider glancing between them is not translating.
+   *
+   * COLOUR IS STILL SCARCE, AND THE BUDGET IS UNCHANGED — one accent plus these six, and nothing
+   * else in the console is coloured at all. nParse+ is more colourful than the old palette was, but
+   * it spends its colour the same way: theme.py's docstring is "the palette owns VALUE, the skin
+   * owns HUE", and hue lands only at accent positions. So these six ARE the accent positions.
+   *
+   * HOW SIX STAY DISTINGUISHABLE, now that two of them are neighbouring warms. Three carriers, not
+   * one — this is dragonkillparty's rule and it is right: "never use hue alone to carry meaning,
+   * because a red pill and a green pill are the same pill to a large minority of officers."
+   *   1. a WORD, always spelled out;
+   *   2. a SHAPE — components/StatusChip.tsx draws a different glyph per status as inline SVG, so
+   *      the set is separable in greyscale and needs no font to have the codepoint;
+   *   3. WEIGHT — `in_window` and `up` are the only filled chips, because they are the only two
+   *      that mean "look now". The other four are a tinted outline.
+   * chrome.py already defends the one pair that is close: POP_WINDOW sits at hue ~25 deg
+   * "far enough from ROLL to stay a distinct meaning".
+   *
+   * `overdue` IS DELIBERATELY NOT RED, and the re-skin does not change that. Past `close_at` means
+   * the ToD is wrong, the timer is wrong, or somebody killed it quietly — every one of which is a
+   * thing a raid leader wants to look at. Red is spoken for twice over in this palette: #c0392b is
+   * chrome.py's BAD, "detrimental, failed", and it is also spellwindow.py's FADE_TARGET, the colour
+   * every bar in the client drifts toward as it runs out. So red on this row would say both "a
+   * failure" and "nothing left to do", and it is neither. It takes TIMER instead — still a timer,
+   * still the row you are watching, just past its window.
+   *
+   * `-ink` is the text on a tint; the fill is too saturated to read as small type. That split is
+   * skins.py's own: a bar is painted in the row's colour and its header is painted in a lightened
+   * sibling. Where skins.py publishes that sibling we use it; where it does not, we lighten with
+   * skins.shade(fill, 0.34) — the same function at VELIOUS's own `bar_lighten`. Ratios are the ink
+   * on its own 14% band, which is the worst ground it actually sits on. */
+  --color-status-unknown: #5a5e69; /* theme.py DARK.disabled */
+  --color-status-unknown-ink: #9397ab; /* neutral-500 — 5.88:1 on --color-status-unknown/14 over --color-ink-900 */
+  --color-status-notimer: #d99b2b; /* chrome.py ROLL, "wants attention" */
+  --color-status-notimer-ink: #d4b675; /* DUXA.title_color — 7.85:1 on --color-status-notimer/14 over --color-ink-900 */
+  --color-status-prewindow: #3a7bd5; /* chrome.py COOLDOWN — dead, timer running */
+  --color-status-prewindow-ink: #7da8e3; /* shade(COOLDOWN, 0.34) — 6.69:1 on --color-status-prewindow/14 over --color-ink-900 */
+  --color-status-inwindow: #e07b39; /* chrome.py POP_WINDOW — filled: --color-ink-950 on it: 6.61:1 */
+  --color-status-inwindow-ink: #eba87c; /* shade(POP_WINDOW, 0.34) — 7.84:1 on --color-status-inwindow/14 over --color-ink-900 */
+  --color-status-overdue: #8e5bd1; /* chrome.py TIMER — NOT chrome.py BAD. See above. */
+  --color-status-overdue-ink: #c6b3ea; /* DUXA timer tint — 8.73:1 on --color-status-overdue/14 over --color-ink-900 */
+  --color-status-up: #2f9e6e; /* chrome.py GOOD — filled: --color-ink-950 on it: 5.84:1 */
+  /* The one ink no screen renders today: `up` is a filled chip, so it wears the deep ground rather
+   * than its own ink. It is declared and measured anyway, for the reason the registry measures its
+   * plate pairs twice — a token that is re-pointed at a new value should meet a red test, not a
+   * reviewer. */
+  --color-status-up-ink: #5cc79a; /* LEDGER player tint — 7.67:1 on --color-status-up/14 over --color-ink-900 */
 
   /* Discord's brand colours: the only two in this file that are not ours to pick. They are named
    * after the vendor rather than given a palette step so that nothing else reaches for them —
@@ -42,6 +154,12 @@
   --color-discord-blurple: #5865f2;
   --color-discord-blurple-dark: #4752c4;
 
+  /* nParse+ registers Noto Sans in every role (skins.py NOTO_SANS) and ships the faces in
+   * data/fonts. We name it first and ship nothing: a raider running the client already has it, and
+   * the alternative is either a webfont request — which law 7 and a deployment with no outbound
+   * network both forbid — or vendoring two more binaries into this repository for a typeface the
+   * console does not depend on. The system stack behind it is what everybody else gets. */
+  --font-sans: 'Noto Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 }
 
@@ -52,9 +170,9 @@ body,
 }
 
 body {
-  background-color: var(--color-ink-950);
+  background-color: var(--color-ink-900);
   color: var(--color-ink-200);
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
 }
@@ -64,17 +182,29 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* SECTION CAPS. skins.py's SMALL_DISPLAY role is bold at 0.18em tracking, and it is the same token
+ * nParse+ uses for a group header, a table head and a kicker. One class rather than a tracking
+ * value repeated at thirty call sites. */
+.caps {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-weight: 600;
+}
+
+/* The scrollbar, from chrome.py's `scrollbar_rules`: a transparent track, the field border as the
+ * thumb, the accent on hover. Wider than the overlays' 6px because this is dragged with a mouse in
+ * a form rather than glanced at over a raid. */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--color-ink-900);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--color-ink-700);
   border-radius: 5px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-ink-600);
+  background: var(--color-accent-600);
 }

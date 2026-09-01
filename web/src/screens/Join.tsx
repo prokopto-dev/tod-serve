@@ -335,17 +335,17 @@ function PreviewCard({
 
         <dl className="grid gap-3 text-xs md:grid-cols-3">
           <div>
-            <dt className="text-[11px] tracking-wide text-ink-400 uppercase">Role</dt>
+            <dt className="caps text-[11px] text-ink-400">Role</dt>
             <dd className="mt-0.5 text-ink-100">{preview.granted_role}</dd>
           </div>
           <div>
-            <dt className="text-[11px] tracking-wide text-ink-400 uppercase">Uses left</dt>
+            <dt className="caps text-[11px] text-ink-400">Uses left</dt>
             <dd className="mt-0.5 text-ink-100 tnum">
               {Math.max(0, preview.max_uses - preview.uses)} of {plural(preview.max_uses, 'use')}
             </dd>
           </div>
           <div>
-            <dt className="text-[11px] tracking-wide text-ink-400 uppercase">Expires</dt>
+            <dt className="caps text-[11px] text-ink-400">Expires</dt>
             <dd className="mt-0.5 text-ink-100 tnum">{instant(preview.expires_at)}</dd>
           </div>
         </dl>
@@ -358,7 +358,7 @@ function PreviewCard({
         )}
 
         <div>
-          <p className="mb-2 text-[11px] tracking-wide text-ink-400 uppercase">
+          <p className="caps mb-2 text-[11px] text-ink-400">
             Sign in with
           </p>
           {providers.length === 0 && (
@@ -418,7 +418,7 @@ function PreviewCard({
           )}
 
           {providers.some((p) => !p.available) && (
-            <p className="mt-2 text-[11px] text-amber-400">
+            <p className="mt-2 text-[11px] text-warn">
               A provider marked unavailable is one this circle accepts and the operator has since
               disabled. It is shown rather than hidden: the row is marked, not dropped.
             </p>

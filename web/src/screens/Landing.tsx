@@ -24,7 +24,9 @@ import { api } from '../api'
 import { usePrincipalState } from '../app/principal'
 import { useResource } from '../app/useResource'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
+import { Mark } from '../components/Mark'
 import { DiscordMark, ProviderButton } from '../components/ProviderButton'
+import { ServerLine } from '../components/ServerFooter'
 import { Banner, Button, Spinner } from '../components/ui'
 
 /** WHAT_IT_IS is the product in three claims, each of which the code actually keeps. */
@@ -82,18 +84,20 @@ export function Landing() {
       <StaleNotice resource={providers} />
 
       <div className="relative">
-        {/* One quiet wash of the accent behind the title. The console is read at 2am beside a game
-            client; this is as bright as the surface gets. */}
+        {/* One quiet wash behind the mark — the glow VELIOUS puts under its gem (`mark_glow`,
+            rgba(226,200,130,178)) at page scale, which means a far lower alpha. It is a GLOW and
+            not a field: at 14% it never becomes a gold background, which is the rule the registry
+            gates on. The console is read at 2am beside a game client; this is as bright as the
+            surface gets. */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-0 h-[32rem] bg-[radial-gradient(62rem_26rem_at_50%_-7rem,rgba(43,127,255,0.28),transparent)]"
+          className="pointer-events-none absolute inset-x-0 top-0 h-[32rem] bg-[radial-gradient(62rem_26rem_at_50%_-7rem,rgba(226,200,130,0.14),transparent)]"
         />
 
         <div className="relative mx-auto max-w-4xl px-6 pt-20 pb-16">
           <header className="text-center">
-            <p className="text-[11px] font-medium tracking-[0.2em] text-accent-400 uppercase">
-              time of death
-            </p>
+            <Mark className="mx-auto mb-5 h-16 w-16" title="tod-serve" />
+            <p className="caps text-[11px] text-accent-400">time of death</p>
             <h1 className="mt-3 text-4xl font-semibold tracking-tight text-ink-100 sm:text-5xl">
               {instance}
             </h1>
@@ -112,7 +116,7 @@ export function Landing() {
             {WHAT_IT_IS.map((claim) => (
               <div
                 key={claim.title}
-                className="rounded-lg border border-ink-700 bg-ink-900/70 p-4 shadow-sm shadow-black/30"
+                className="rounded-lg border border-ink-700 bg-ink-900/70 p-4"
               >
                 <h2 className="text-sm font-semibold text-ink-100">{claim.title}</h2>
                 <p className="mt-2 text-xs leading-relaxed text-ink-400">{claim.body}</p>
@@ -120,7 +124,7 @@ export function Landing() {
             ))}
           </section>
 
-          <section className="mx-auto mt-12 max-w-xl rounded-lg border border-ink-700 bg-ink-900/70 shadow-sm shadow-black/30">
+          <section className="mx-auto mt-12 max-w-xl rounded-lg border border-ink-700 bg-ink-900/70">
             <div className="space-y-4 p-5">
               <div>
                 <h2 className="text-sm font-semibold text-ink-100">Sign in</h2>
@@ -175,15 +179,11 @@ export function Landing() {
             </div>
           </section>
 
-          <footer className="mt-12 text-center text-[11px] text-ink-500">
-            {meta.data ? (
-              <p>
-                {meta.data.name} · tod-serve {meta.data.version}
-                {meta.data.configured ? '' : ' · not set up yet'}
-              </p>
-            ) : (
-              <p>tod-serve</p>
-            )}
+          {/* The same line the console's footer carries, rendered from the `/meta` this page has
+              ALREADY read to decide whether to route to setup — one request, not two. It is never a
+              build-time constant: see components/ServerFooter.tsx. */}
+          <footer className="mt-12 flex justify-center">
+            <ServerLine meta={meta.data} />
           </footer>
         </div>
       </div>
