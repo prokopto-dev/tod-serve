@@ -382,11 +382,12 @@ The operator's side is [discord-bot.md](../operations/discord-bot.md).
 | Method | Path | OperationID | Permission | Scope |
 |---|---|---|---|---|
 | GET | `/circles/{circle_id}/discord-channels` | `listCircleDiscordChannels` | `circle.security.manage` | — step-up:sensitive |
+| GET | `/circles/{circle_id}/discord-channels/{discord_channel_id}` | `getCircleDiscordChannel` | `circle.security.manage` | — step-up:sensitive |
 | PUT | `/circles/{circle_id}/discord-channels/{discord_channel_id}` | `bindCircleDiscordChannel` | `circle.security.manage` | — step-up:sensitive |
 | DELETE | `/circles/{circle_id}/discord-channels/{discord_channel_id}` | `unbindCircleDiscordChannel` | `circle.security.manage` | — step-up:sensitive |
 | POST | `/integrations/discord/interactions` | `handleDiscordInteraction` | `X-Signature-Ed25519` | — |
 
-The three binding operations carry **`circle.security.manage`**, the same key as
+The four binding operations carry **`circle.security.manage`**, the same key as
 `setCircleProviders`, because a binding is the same kind of decision: it changes who can see the
 circle's data, not what the circle is called. That key is **floored and graded
 `step-up:sensitive`** ([ADR-0024](../adr/0024-step-up-is-graded-and-re-authentication-is-not-a-sign-in.md)): no token
@@ -394,6 +395,19 @@ reaches these at any scope, and the session has to have proved its identity with
 window. Both halves are the right ones here — a binding decides who can read a circle's board, which
 is the "changes WHO CAN DO WHAT" test the sensitive tier is for, and it is not the `routine` tier's
 "a nuisance and an audit row".
+
+**Only `getCircleDiscordChannel` returns an `ETag`, and that is the whole reason it exists.**
+`bindCircleDiscordChannel` is create-or-replace: a create takes `If-Match: *`, and a replace takes
+the binding's exact tag, so an officer cannot reverse a disclosure decision they have not read. The
+LIST deliberately carries no tag — per item or otherwise — so until this read landed the only
+response that carried one was that same PUT's, and a client that had not created the binding itself
+could not modify it at all. What such a client did instead was unbind and bind again, and **that
+sequence has no precondition anywhere**: `If-Match: *` on the second request asserts nothing exists,
+which is true because the first request deleted it, so a change another officer made in between is
+destroyed unseen. Two requests with no precondition between them are not made safe by a
+precondition inside them. `DELETE` takes no precondition either, and that one is deliberate: it
+removes all disclosure rather than changing it, so there is no decision of somebody else's for it
+to reverse.
 
 **`handleDiscordInteraction` is graded `none`, and that is forced rather than chosen.** It carries
 no catalogue permission at the edge — the invoker's permissions are checked per command, inside —

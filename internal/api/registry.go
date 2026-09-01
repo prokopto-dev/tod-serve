@@ -79,6 +79,7 @@ const (
 	OpUpdateRaidTarget           OperationID = "updateRaidTarget"
 	OpPutRaidTargetTimer         OperationID = "putRaidTargetTimer"
 	OpListCircleDiscordChannels  OperationID = "listCircleDiscordChannels"
+	OpGetCircleDiscordChannel    OperationID = "getCircleDiscordChannel"
 	OpBindCircleDiscordChannel   OperationID = "bindCircleDiscordChannel"
 	OpUnbindCircleDiscordChannel OperationID = "unbindCircleDiscordChannel"
 	OpHandleDiscordInteraction   OperationID = "handleDiscordInteraction"
@@ -700,6 +701,23 @@ func routes() []Route {
 			// before a raid and an audit asks afterwards, and it is the only place the answer is
 			// legible: members read the channel, they do not read `circle_discord_channel`.
 			Summary: "The Discord channels bound to this circle, and which of them may be replied to visibly",
+		},
+		{
+			ID: OpGetCircleDiscordChannel, Method: http.MethodGet,
+			Path: "/circles/{circle_id}/discord-channels/{discord_channel_id}", Versioned: true,
+			Auth:         AuthPermission,
+			Permissions:  []authz.Permission{authz.PermissionCircleSecurityManage},
+			CircleScoped: true, ETag: true, ConditionalRead: true,
+			// **This route exists so the concurrency rule on the PUT is reachable.** A replace
+			// takes the binding's exact entity tag, and until this landed the ONLY response that
+			// carried one was that same PUT's — the list answers no `ETag`, per-item or
+			// otherwise. So a client that had merely listed could not modify a binding at all: it
+			// had to unbind and bind again, and that two-request sequence has no precondition
+			// anywhere. `If-Match: *` on the second half only proves nothing exists *now*, which
+			// is true because the first half deleted it — so a change another officer made
+			// between the read and the press was destroyed unseen, which is the exact reversal
+			// the tag exists to prevent.
+			Summary: "One Discord channel binding, and the ETag a change to it must quote back",
 		},
 		{
 			ID: OpBindCircleDiscordChannel, Method: http.MethodPut,

@@ -11,6 +11,14 @@
 // providers on `circle.security.manage`, the name on `circle.manage`, deletion on `circle.delete`.
 // A screen with one gate would have re-made the mistake it exists to fix, one realm down.
 //
+// The Discord channel bindings are here for the same realm reason the providers are, and because
+// they are the same KIND of decision: `bindCircleDiscordChannel` takes `circle.security.manage`
+// rather than `circle.manage` because a binding says where this circle's data may be repeated,
+// which is the family the identity gate is in. Both are in the capability floor, so no token
+// reaches either at any scope and the session has to have been proved recently — which is why this
+// screen offers the in-place re-authentication rather than letting an officer fill in a form and
+// lose it to a `step_up_required`.
+//
 // The provider list comes from `listIdentityProviders` — the PUBLIC one — rather than from
 // `listAdminIdentityProviders`, for the same reason: the admin list is instance-realm and would
 // have 403'd for exactly the person this screen is for. The public list carries only ENABLED
@@ -25,13 +33,30 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { api, type Circle, type PublicIdentityProvider, toError } from '../api'
+import {
+  api,
+  body,
+  type Circle,
+  type DiscordChannelBinding,
+  type PublicIdentityProvider,
+  toError,
+} from '../api'
 import { usePrincipal } from '../app/principal'
+import { useStepUp } from '../app/stepup'
 import { useResource } from '../app/useResource'
 import { ProblemNotice, StaleNotice } from '../components/Problem'
 import { DiscordMark } from '../components/ProviderButton'
 import { RevocationBanner } from '../components/RevocationBanner'
 import { Banner, Button, Card, Empty, Field, Input, Mono, Spinner } from '../components/ui'
+import {
+  driftedSince,
+  isSnowflake,
+  parseChannelReference,
+  SNOWFLAKE_HINT,
+  widensDisclosure,
+  type Drift,
+} from '../lib/discord'
+import { instant, plural } from '../lib/format'
 import { choicesFor, gateState, saveSet, type Choice, type GateState } from '../lib/gate'
 import { forgetCircle } from '../lib/storage'
 
@@ -112,16 +137,18 @@ export function CircleSettings() {
         />
       )}
 
+      {data && canSecurity && <DiscordChannelsCard circle={data} />}
+
       {principal.can('instance.circle.create') && <AnotherCircleCard />}
 
       {data && canDelete && <DeleteCircleCard circle={data} onError={setError} />}
 
       {data && !canSecurity && !canManage && !canDelete && (
         <Banner tone="info" title="You can see this circle's settings and change none of them">
-          Renaming needs <Mono>circle.manage</Mono>, the identity gate needs{' '}
-          <Mono>circle.security.manage</Mono>, and deletion needs <Mono>circle.delete</Mono>. All
-          three are circle-realm: an owner of this circle can grant them, and no instance operator
-          has to be involved.
+          Renaming needs <Mono>circle.manage</Mono>, deletion needs <Mono>circle.delete</Mono>, and{' '}
+          <Mono>circle.security.manage</Mono> covers both disclosure decisions — the identity gate
+          and the Discord channels this circle answers in. All three are circle-realm: an owner of
+          this circle can grant them, and no instance operator has to be involved.
         </Banner>
       )}
     </div>
@@ -471,6 +498,546 @@ function GateSummary({ state, roleCount }: { state: GateState; roleCount: number
       </strong>{' '}
       Any ONE of them admits — not all of them. A second role lets MORE people in, never fewer.
     </p>
+  )
+}
+
+/**
+ * DiscordChannelsCard is where this circle's Discord channel bindings are made and unmade.
+ *
+ * It is here rather than on a screen of its own because a binding is a per-circle disclosure
+ * decision behind `circle.security.manage` — the same realm, the same permission and the same
+ * capability floor as the identity gate above it.
+ *
+ * **The three things this card exists to say are all counter-intuitive**, and until now they lived
+ * only in `docs/operations/discord-bot.md §6`, which is a page an officer reads once and a page an
+ * officer does not read at all:
+ *
+ *  1. Binding a channel makes NOTHING visible. Visible replies are a second switch and it is off.
+ *  2. A channel is not a circle. Guild membership is not circle membership.
+ *  3. One guild may carry several circles, including two on the same P99 server.
+ *
+ * They are rendered beside the controls rather than summarised in a subtitle, because the decision
+ * they qualify is taken here and a document cannot be read at the moment somebody ticks a box.
+ */
+function DiscordChannelsCard({ circle }: { circle: Circle }) {
+  const principal = usePrincipal()
+  const stepUp = useStepUp()
+  const bindings = useResource(
+    (signal) =>
+      api.listCircleDiscordChannels({ circle_id: circle.id }, { signal }).then((r) => r.data),
+    [circle.id],
+  )
+
+  const items = bindings.data?.items ?? []
+  const visible = items.filter((b) => b.allow_visible)
+
+  return (
+    <Card
+      title="Discord channels"
+      subtitle="Which channels answer this circle's commands — and, separately, which of them a reply may be posted into where everyone can read it."
+    >
+      {/* The list is this card's whole subject and every reload here follows a write, so a refresh
+          that failed silently would show a binding that is no longer there — or hide one that is. */}
+      <StaleNotice resource={bindings} />
+
+      <div className="space-y-3 p-4">
+        <ProofNotice proved={principal.steppedUp} onProve={() => stepUp?.request()} />
+
+        <Banner tone="warn" title="Binding a channel does not make anything visible">
+          <p>
+            There are <strong>two switches, not one</strong>. Binding says which circle a{' '}
+            <Mono>/tod</Mono> command in that channel is about. Whether the answer is posted where
+            the channel can read it is a second decision, and it is <strong>off</strong> on every
+            new binding — the default is in the database, not in this form.
+          </p>
+          <p className="mt-1">
+            The reason it is a decision rather than a setting: Discord has{' '}
+            <strong>no channel-membership API</strong>. There is no call that answers &ldquo;who can
+            read this channel&rdquo;, so this server cannot tell you who would see a visible message
+            and does not pretend to. You can. That is the whole reason the switch is yours.
+          </p>
+        </Banner>
+
+        <Banner tone="warn" title="A channel is not a circle">
+          <p>
+            Guild membership is not circle membership. Anybody who can read the channel reads a
+            visible reply: guild members who were never in this circle, members you have{' '}
+            <strong>revoked</strong> from the circle but not from Discord, and anybody a role change
+            lets in next year — Discord keeps scrollback, and unbinding unsays nothing already
+            posted.
+          </p>
+          <p className="mt-1">
+            A visible reply is also composed with the <strong>invoker&rsquo;s</strong> permissions.
+            An officer who can see reporter attribution and asks for a visible answer publishes that
+            attribution to the channel.
+          </p>
+        </Banner>
+
+        <Banner tone="info" title="One Discord server can carry several circles">
+          <p>
+            Including two on the same P99 server — your guild&rsquo;s own Blue roster and an
+            alliance&rsquo;s Blue roster are two circles, and a person can be in both. Nothing here
+            keys on the guild or on the server: a command resolves{' '}
+            <strong>channel → circle id</strong>, which is the only thing that identifies a circle
+            at all.
+          </p>
+          <p className="mt-1">
+            So two circles in one guild need <strong>two channels</strong>, never one channel and a
+            flag. This list is <strong>this circle&rsquo;s</strong> bindings; another circle in the
+            same guild has its own and they are not readable from here. Binding a channel a live
+            circle already holds is refused, and the refusal names no circle — saying which one held
+            it would confirm that circle exists.
+          </p>
+        </Banner>
+
+        {bindings.error && <ProblemNotice error={bindings.error} onRetry={bindings.reload} />}
+        {bindings.loading && !bindings.data && <Spinner label="Reading the bindings" />}
+
+        {bindings.data && items.length === 0 && (
+          <Empty title="No channel is bound to this circle.">
+            The bot still works in an unbound channel: it answers only the person who ran the
+            command, and asks which of their circles they meant. Binding removes that question — it
+            is not what makes the bot answer at all.
+          </Empty>
+        )}
+
+        {items.map((binding) => (
+          <BindingRow key={binding.discord_channel_id} binding={binding} onDone={bindings.reload} />
+        ))}
+
+        {visible.length > 0 && (
+          <Banner
+            tone="warn"
+            title={`${plural(visible.length, 'channel')} here may be replied to visibly`}
+          >
+            Everyone who can read {visible.length === 1 ? 'that channel' : 'those channels'} sees
+            those replies, for as long as Discord keeps them. Nothing on this instance can tell you
+            who that is.
+          </Banner>
+        )}
+
+        <BindChannelForm circle={circle} onDone={bindings.reload} />
+      </div>
+    </Card>
+  )
+}
+
+/**
+ * ProofNotice offers the re-authentication BEFORE the form rather than after the refusal.
+ *
+ * Every operation on this card is in the capability floor at the `sensitive` tier, and step-up is a
+ * REDIRECT: proving it leaves the page and comes back to it. An officer who fills in two twenty-
+ * digit ids, presses Bind and is answered `step_up_required` loses both of them on the way to
+ * Discord and back. `ProblemNotice` still offers the way out when that happens — it is the same
+ * affordance — but offering it first is the difference between one round trip and two.
+ *
+ * It draws only when the proof is KNOWN to be missing. `/me` is read when the shell mounts and the
+ * window is minutes long, so `stepped_up: true` can go stale between that read and this render:
+ * the honest thing is to warn on the direction that was true when it was read and to promise
+ * nothing on the other, which is why there is no "you are proved" state here.
+ */
+function ProofNotice({ proved, onProve }: { proved: boolean; onProve: () => void }) {
+  if (proved) return null
+  return (
+    <Banner tone="accent" title="These actions need a recent proof that you are still here">
+      <p>
+        Binding and unbinding are disclosure decisions, so they sit at the strict step-up tier.
+        Prove it now and the form below will not throw your work away: proving it{' '}
+        <strong>leaves this page</strong> and comes back, so doing it after you have typed two
+        twenty-digit ids costs you both of them.
+      </p>
+      <p className="mt-1">
+        It keeps this session and mints no new device. Signing out and back in is the wrong answer —
+        that is a sign-in, and a sign-in mints a token.
+      </p>
+      <Button variant="primary" className="mt-2" onClick={onProve}>
+        Prove it&rsquo;s you
+      </Button>
+    </Banner>
+  )
+}
+
+/**
+ * BindingRow is one live binding: what it discloses, and the two ways to change that.
+ *
+ * **The flip is read-then-conditional-replace, which is the idiom every other write on this screen
+ * uses.** `getCircleDiscordChannel` returns the binding and the entity tag a change to it must
+ * quote back; `bindCircleDiscordChannel` is sent with that tag. One request pair, atomic on the
+ * server, no window in which the channel is unbound, and `created_at` and the founding officer are
+ * preserved because a replace is not a delete.
+ *
+ * **The first version of this did NOT do that, and the defect is worth keeping written down.** It
+ * unbound the channel and bound it again with `If-Match: *`, on the reasoning that the wildcard
+ * refuses a binding that already exists. It does — and none existed, because the same flow had
+ * deleted it one request earlier. So the precondition was a precondition over state this code had
+ * just created: a second officer's change landing between the LIST and the button press was
+ * destroyed unseen, and the stale value from the rendered row was written back over it. A channel
+ * somebody had just made visible silently became ephemeral again, with the wrong officer named in
+ * the audit log. Two requests with no precondition between them are not made safe by a
+ * precondition inside them.
+ *
+ * The tag closes the gap between the read and the write. [driftedSince] closes the longer one the
+ * tag cannot see — between the list and the press — by comparing the fresh read against the row
+ * the officer actually acted on and refusing rather than writing.
+ */
+function BindingRow({ binding, onDone }: { binding: DiscordChannelBinding; onDone: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [confirming, setConfirming] = useState<'visible' | 'unbind' | null>(null)
+  const [moved, setMoved] = useState<Drift[] | null>(null)
+  // Held here rather than handed to the screen header: the way out of a `step_up_required` is
+  // rendered ON the failure, and a failure rendered at the top of a long page is an affordance the
+  // officer has to go and find after pressing a button at the bottom of it.
+  const [error, setError] = useState<Error | null>(null)
+
+  // The one control the switch has, and whether it confirms first. Narrowing is one press;
+  // widening is two. The asymmetry is the point: turning the switch off reduces what this channel
+  // discloses, and a confirmation on the safe direction only teaches people to click through the
+  // one that matters — so [widensDisclosure] decides, rather than the button deciding twice.
+  const desired = !binding.allow_visible
+  const confirmFirst = widensDisclosure(binding, desired)
+
+  const setVisible = (allowVisible: boolean) => {
+    setBusy(true)
+    setConfirming(null)
+    setMoved(null)
+    setError(null)
+    api
+      .getCircleDiscordChannel({
+        circle_id: binding.circle_id,
+        discord_channel_id: binding.discord_channel_id,
+      })
+      .then((current) => {
+        const fresh = body(current)
+        // Refuse rather than write. See [driftedSince]: the tag below covers the gap between this
+        // read and that write, and nothing covers the gap between the LIST and the button press
+        // except this comparison. Reloading afterwards is what puts the colleague's decision in
+        // front of the officer, which is the only way they get to make an informed second attempt.
+        const drift = driftedSince(binding, fresh)
+        if (drift.length > 0) {
+          setMoved(drift)
+          return
+        }
+        return api
+          .bindCircleDiscordChannel(
+            {
+              circle_id: binding.circle_id,
+              discord_channel_id: binding.discord_channel_id,
+              // The guild the READ returned, never the rendered row's. They are equal here — the
+              // drift check just said so — and taking it from the fresh side is what keeps that
+              // true if a field is ever added to the comparison and missed on this line.
+              body: { discord_guild_id: fresh.discord_guild_id, allow_visible: allowVisible },
+            },
+            // The tag that read returned. `*` is NOT a fallback: it means "and it must not exist",
+            // so it would be refused here — correctly — and a missing tag is a `428` naming the
+            // header, which is the honest answer to a read that did not carry one.
+            current.etag ? { ifMatch: current.etag } : {},
+          )
+          .then(() => undefined)
+      })
+      .catch((err: unknown) => setError(toError(err)))
+      .finally(() => {
+        setBusy(false)
+        onDone()
+      })
+  }
+
+  // Unbinding carries no precondition, and that asymmetry with the flip above is the API's rather
+  // than an omission here: `unbindCircleDiscordChannel` declares no `If-Match`, because removing a
+  // binding takes ALL disclosure away rather than changing it. There is no decision of somebody
+  // else's for it to reverse — the worst it can do is destroy work, which the confirmation below
+  // is for, and never widen what a channel discloses.
+  const unbind = () => {
+    setBusy(true)
+    setConfirming(null)
+    setError(null)
+    api
+      .unbindCircleDiscordChannel({
+        circle_id: binding.circle_id,
+        discord_channel_id: binding.discord_channel_id,
+      })
+      .catch((err: unknown) => setError(toError(err)))
+      .finally(() => {
+        setBusy(false)
+        onDone()
+      })
+  }
+
+  return (
+    <div className="rounded border border-ink-700 bg-ink-850 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <p className="flex items-center gap-2 text-xs text-ink-100">
+            <DiscordMark className="text-discord-blurple" />
+            <span className="text-ink-400">channel</span> <Mono>{binding.discord_channel_id}</Mono>
+          </p>
+          <p className="text-[11px] text-ink-400">
+            in server <Mono>{binding.discord_guild_id}</Mono> — an interaction carrying this channel
+            from any other guild resolves to nothing.
+          </p>
+          <p className="text-[11px] text-ink-500">
+            bound {instant(binding.created_at)} by membership{' '}
+            <Mono>{binding.created_by_membership_id}</Mono>
+          </p>
+        </div>
+        <Disclosure allowVisible={binding.allow_visible} />
+      </div>
+
+      {error && <ProblemNotice error={error} />}
+
+      {moved && (
+        <Banner tone="warn" title="Somebody else changed this binding, so nothing was written">
+          <p>
+            What you pressed was decided against the row above, and that row is out of date. The
+            change is theirs to have made and yours to read before you reverse it:
+          </p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {moved.map((d) => (
+              <li key={d.field}>
+                {d.field}: you saw <Mono>{d.seen}</Mono>, it is now <Mono>{d.now}</Mono>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1">
+            The list has been refreshed. Read what it says now and press again if you still mean it.
+          </p>
+        </Banner>
+      )}
+
+      {confirming === 'visible' && (
+        <div className="mt-2 rounded border border-amber-800/70 bg-amber-950/40 p-2.5 text-[11px] text-amber-200">
+          <p className="font-semibold">
+            Everyone who can read this channel will see the replies. You are the only one who knows
+            who that is.
+          </p>
+          <p className="mt-1">
+            Not just this circle&rsquo;s members: anyone in the Discord server with access to the
+            channel, members you have revoked from the circle but not from Discord, and anyone a
+            role change admits later. Replies stay in scrollback and are searchable; unbinding
+            afterwards does not unsay them.
+          </p>
+          <p className="mt-1">
+            Only <Mono>/tod board</Mono> and <Mono>/tod status</Mono> can ever be visible.{' '}
+            <Mono>/tod report</Mono> and <Mono>/tod circles</Mono> are never visible in any
+            configuration, and the bot never posts unprompted.
+          </p>
+          <p className="mt-1 opacity-90">
+            This replaces the binding in one request, quoting back the tag of a read taken just
+            before it — so if somebody else has changed this channel since the list was drawn,
+            nothing is written and you are shown what they did instead.
+          </p>
+          <div className="mt-2 flex gap-2">
+            <Button variant="danger" onClick={() => setVisible(desired)} disabled={busy}>
+              Yes, allow visible replies here
+            </Button>
+            <Button onClick={() => setConfirming(null)}>Keep it ephemeral</Button>
+          </div>
+        </div>
+      )}
+
+      {confirming === 'unbind' && (
+        <div className="mt-2 rounded border border-ink-600 bg-ink-900 p-2.5 text-[11px] text-ink-200">
+          <p className="font-semibold">
+            Unbinding stops the next reply. It unsays nothing already posted.
+          </p>
+          <p className="mt-1">
+            Messages in the channel are Discord&rsquo;s and Discord keeps them. Afterwards{' '}
+            <Mono>/tod</Mono> still works there — ephemerally, asking which of their circles the
+            person meant — and the channel can be bound to a different circle straight away.
+          </p>
+          <div className="mt-2 flex gap-2">
+            <Button variant="danger" onClick={unbind} disabled={busy}>
+              Yes, unbind this channel
+            </Button>
+            <Button onClick={() => setConfirming(null)}>Leave it bound</Button>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-2 flex flex-wrap justify-end gap-2">
+        <Button
+          onClick={() => (confirmFirst ? setConfirming('visible') : setVisible(desired))}
+          disabled={busy || (confirmFirst && confirming !== null)}
+        >
+          {busy
+            ? 'Working…'
+            : confirmFirst
+              ? 'Allow visible replies…'
+              : 'Make replies ephemeral again'}
+        </Button>
+        <Button
+          variant="danger"
+          onClick={() => setConfirming('unbind')}
+          disabled={busy || confirming !== null}
+        >
+          Unbind…
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Disclosure says what a binding exposes, in the words the decision was made in.
+ *
+ * "allow_visible: false" is the wire value and it is the wrong thing to render: it describes a
+ * field rather than an outcome, and the outcome is the only part an officer is deciding.
+ */
+function Disclosure({ allowVisible }: { allowVisible: boolean }) {
+  if (!allowVisible) {
+    return (
+      <p className="rounded border border-ink-600 bg-ink-900 px-2.5 py-1.5 text-[11px] text-ink-200">
+        <strong>Replies only to the person who ran the command.</strong> Nothing this channel
+        answers is posted where anyone else can read it. This is the default and it is the safe one.
+      </p>
+    )
+  }
+  return (
+    <p className="rounded border border-amber-800/70 bg-amber-950/40 px-2.5 py-1.5 text-[11px] text-amber-200">
+      <strong>Replies here may be visible to the whole channel.</strong> Board and status answers
+      can be posted where everybody who reads this channel — circle member or not — sees them and
+      keeps seeing them.
+    </p>
+  )
+}
+
+/**
+ * BindChannelForm binds a new channel.
+ *
+ * The paste field is generous on purpose — see [parseChannelReference]. The runbook's instruction
+ * is Developer Mode → *Copy Channel ID*, which produces bare digits; what is actually on somebody's
+ * clipboard is usually a channel link or a mention, and a link carries the GUILD as well. That
+ * matters more than convenience: the two ids are twenty digits each, they are stored and compared
+ * separately, and a transposed pair is accepted by every validation here and then resolves to
+ * nothing at 2am. One paste that fills both cannot be transposed.
+ */
+function BindChannelForm({ circle, onDone }: { circle: Circle; onDone: () => void }) {
+  const [pasted, setPasted] = useState('')
+  const [channelID, setChannelID] = useState('')
+  const [guildID, setGuildID] = useState('')
+  const [allowVisible, setAllowVisible] = useState(false)
+  const [parseError, setParseError] = useState<string | null>(null)
+  const [error, setError] = useState<Error | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const accept = (raw: string) => {
+    setPasted(raw)
+    if (raw.trim() === '') {
+      setParseError(null)
+      return
+    }
+    const parsed = parseChannelReference(raw)
+    if (!parsed.ok) {
+      setParseError(parsed.reason)
+      return
+    }
+    setParseError(null)
+    setChannelID(parsed.ref.channel_id)
+    // Only when the paste CARRIED one. A bare id names no guild, and overwriting a guild the
+    // officer typed with an empty string would be the form losing their work silently.
+    if (parsed.ref.guild_id) setGuildID(parsed.ref.guild_id)
+  }
+
+  const ready = isSnowflake(channelID) && isSnowflake(guildID)
+
+  const bind = () => {
+    setBusy(true)
+    setError(null)
+    api
+      .bindCircleDiscordChannel(
+        {
+          circle_id: circle.id,
+          discord_channel_id: channelID.trim(),
+          body: { discord_guild_id: guildID.trim(), allow_visible: allowVisible },
+        },
+        // "And it must not exist yet". The server refuses `*` at a binding that is already there —
+        // 412, carrying the current representation — which is exactly the collision this form must
+        // not paper over: the field being overwritten decides who reads this circle's data.
+        { ifMatch: '*' },
+      )
+      .then(() => {
+        setPasted('')
+        setChannelID('')
+        setGuildID('')
+        setAllowVisible(false)
+        onDone()
+      })
+      .catch((err: unknown) => setError(toError(err)))
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <div className="rounded border border-ink-700 bg-ink-850 p-3">
+      <p className="text-xs font-semibold text-ink-100">Bind a channel</p>
+      <div className="mt-2 space-y-3">
+        {/* The refusal, and the way out of it, next to the button that earned them — a
+            `step_up_required` renders its own "Prove it's you" here rather than at the top of the
+            page, where nobody who just pressed Bind is looking. */}
+        {error && <ProblemNotice error={error} />}
+        <Field
+          label="Paste the channel"
+          hint="Right-click the channel → Copy Link fills both ids below. A Copy Channel ID, or a <#…> mention pasted out of a message, fills the channel only."
+          error={parseError ?? undefined}
+        >
+          <Input
+            value={pasted}
+            placeholder="https://discord.com/channels/…"
+            onChange={(e) => accept(e.target.value)}
+          />
+        </Field>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field
+            label="Channel id"
+            hint={`${SNOWFLAKE_HINT}. One channel belongs to at most one circle — two circles in one Discord server need two channels.`}
+          >
+            <Input value={channelID} onChange={(e) => setChannelID(e.target.value.trim())} />
+          </Field>
+          <Field
+            label="Discord server (guild) id"
+            hint={`${SNOWFLAKE_HINT}. Stored and compared: an interaction naming this channel from a different server resolves to nothing.`}
+          >
+            <Input value={guildID} onChange={(e) => setGuildID(e.target.value.trim())} />
+          </Field>
+        </div>
+
+        <label className="flex items-start gap-2 text-xs text-ink-100">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={allowVisible}
+            onChange={() => setAllowVisible(!allowVisible)}
+          />
+          <span>
+            Allow replies the whole channel can read
+            <span className="mt-0.5 block text-[11px] text-ink-500">
+              Leave this off unless you have decided otherwise. It is the second switch, and binding
+              without it is complete: the bot answers, only to the person who asked.
+            </span>
+          </span>
+        </label>
+
+        {allowVisible && (
+          <Banner tone="warn" title="You are choosing to disclose this circle to a Discord channel">
+            <p>
+              Everyone who can read that channel will see board and status answers — guild members
+              who are not in this circle, members you have revoked from the circle but not from
+              Discord, and anyone a role change admits later. This server has no way to enumerate
+              them, and unbinding later does not remove what was posted.
+            </p>
+            <p className="mt-1">
+              <Mono>/tod report</Mono> and <Mono>/tod circles</Mono> stay private in every
+              configuration, and the bot never posts unprompted.
+            </p>
+          </Banner>
+        )}
+
+        <div className="flex justify-end">
+          <Button variant="primary" onClick={bind} disabled={!ready || busy}>
+            {busy ? 'Binding…' : allowVisible ? 'Bind, with visible replies' : 'Bind this channel'}
+          </Button>
+        </div>
+      </div>
+    </div>
   )
 }
 

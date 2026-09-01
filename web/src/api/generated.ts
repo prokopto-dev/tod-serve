@@ -1421,6 +1421,7 @@ export type OperationId =
   | 'deleteCircleTimerOverride'
   | 'deleteIdentityProvider'
   | 'getCircle'
+  | 'getCircleDiscordChannel'
   | 'getCurrentPrincipal'
   | 'getInstanceSettings'
   | 'getMember'
@@ -1671,6 +1672,20 @@ export const OPERATIONS = {
     scopes: ['circle:read'],
     sessionOnly: false,
     stepUp: false,
+    circleScoped: true,
+    idempotency: '',
+    etag: true,
+    ifMatch: false,
+  },
+  getCircleDiscordChannel: {
+    id: 'getCircleDiscordChannel',
+    method: 'GET',
+    path: '/api/v1/circles/{circle_id}/discord-channels/{discord_channel_id}',
+    pathParams: ['circle_id', 'discord_channel_id'],
+    queryParams: [],
+    scopes: [],
+    sessionOnly: true,
+    stepUp: true,
     circleScoped: true,
     idempotency: '',
     etag: true,
@@ -2374,6 +2389,15 @@ export interface GetCircleInput {
 }
 export type GetCircleResult = CircleResponse
 
+/** One Discord channel binding, and the ETag a change to it must quote back */
+export interface GetCircleDiscordChannelInput {
+  /** The circle */
+  circle_id: string
+  /** The Discord channel id */
+  discord_channel_id: string
+}
+export type GetCircleDiscordChannelResult = DiscordChannelBindingResponse
+
 /** The calling principal: membership, circle, role, effective permissions, token prefix, scopes, expiry */
 export type GetCurrentPrincipalInput = EmptyInput
 export type GetCurrentPrincipalResult = PrincipalView
@@ -2765,6 +2789,8 @@ export const api = {
     send(OPERATIONS.deleteIdentityProvider, input, opts),
   getCircle: (input: GetCircleInput, opts?: CallOptions): Promise<Result<GetCircleResult>> =>
     send(OPERATIONS.getCircle, input, opts),
+  getCircleDiscordChannel: (input: GetCircleDiscordChannelInput, opts?: CallOptions): Promise<Result<GetCircleDiscordChannelResult>> =>
+    send(OPERATIONS.getCircleDiscordChannel, input, opts),
   getCurrentPrincipal: (input: GetCurrentPrincipalInput, opts?: CallOptions): Promise<Result<GetCurrentPrincipalResult>> =>
     send(OPERATIONS.getCurrentPrincipal, input, opts),
   getInstanceSettings: (input: GetInstanceSettingsInput, opts?: CallOptions): Promise<Result<GetInstanceSettingsResult>> =>
