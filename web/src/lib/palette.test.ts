@@ -61,8 +61,25 @@ test('every text pair the stylesheet declares clears WCAG AA', () => {
     ['--color-ink-400', at('--color-ink-400'), 'page', page, 4.5, 'captions and table heads'],
     ['--color-ink-500', at('--color-ink-500'), 'page', page, 4.5, 'hints, which are text'],
     ['--color-accent-400', at('--color-accent-400'), 'page', page, 4.5, 'links and the kicker'],
-    ['--color-warn', at('--color-warn'), 'page', page, 4.5, 'a stale notice'],
-    ['--color-danger-ink', at('--color-danger-ink'), 'page', page, 4.5, 'a destructive control'],
+    // The warn and danger inks never sit on the bare page: `Banner`'s warn tone and the danger
+    // button both lay their own colour under the text first. Measure the ground they are actually
+    // on — the tint is lighter, so the page would be the flattering answer rather than the true one.
+    [
+      '--color-warn',
+      at('--color-warn'),
+      'its 12% band',
+      over(at('--color-warn'), at('--color-ink-850'), 0.12),
+      4.5,
+      'a stale notice and the warn banner',
+    ],
+    [
+      '--color-danger-ink',
+      at('--color-danger-ink'),
+      '--color-danger at 15%',
+      over(at('--color-danger'), at('--color-ink-850'), 0.15),
+      4.5,
+      'a destructive control',
+    ],
     ['--color-ink-600', at('--color-ink-600'), 'page', page, 3.0, "a control's edge"],
     ['--color-plate-fg', at('--color-plate-fg'), 'plate', plate, 4.5, "the rail's text"],
     ['--color-plate-muted', at('--color-plate-muted'), 'plate', plate, 4.5, "the rail's muted text"],
