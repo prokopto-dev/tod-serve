@@ -429,3 +429,30 @@ func IsUniqueViolation(err error) bool {
 	code := e.Code()
 	return code == sqliteConstraintUnique || code == sqliteConstraintPrimaryKey
 }
+
+// sqliteBusy is SQLITE_BUSY, the PRIMARY result code SQLite reports when another connection holds
+// a lock this one needs. The extended codes that carry it — SQLITE_BUSY_RECOVERY,
+// SQLITE_BUSY_SNAPSHOT, SQLITE_BUSY_TIMEOUT — all have it in their low byte, which is how SQLite
+// defines the relationship between the two.
+const sqliteBusy = 5
+
+// IsBusy reports whether err is SQLite refusing an operation because another connection holds the
+// lock it needs.
+//
+// **It means contended, never wrong.** WAL serialises writers, `busy_timeout` retries for five
+// seconds — see [connectionString] — and what reaches a caller is what was still contended after
+// that. A caller that can legitimately try again has to be able to tell that apart from an answer
+// that came back incorrect, and this is the only package that may name the driver to answer it,
+// for the reason [IsNotFound] and [IsUniqueViolation] give: the alternative is a string match that
+// stops matching after a driver upgrade, silently.
+//
+// The comparison is on the primary code rather than on an enumerated list of extended ones,
+// because that list grows: SQLITE_BUSY_TIMEOUT arrived in SQLite 3.41, after the other two, and a
+// list written before it would have stopped recognising contention on the day it appeared.
+func IsBusy(err error) bool {
+	var e *sqlite.Error
+	if !errors.As(err, &e) {
+		return false
+	}
+	return e.Code()&0xff == sqliteBusy
+}
