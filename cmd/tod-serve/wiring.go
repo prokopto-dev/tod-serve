@@ -15,6 +15,7 @@ import (
 	"github.com/prokopto-dev/tod-serve/internal/circle"
 	"github.com/prokopto-dev/tod-serve/internal/clock"
 	"github.com/prokopto-dev/tod-serve/internal/core"
+	"github.com/prokopto-dev/tod-serve/internal/discord"
 	"github.com/prokopto-dev/tod-serve/internal/identity"
 	"github.com/prokopto-dev/tod-serve/internal/identity/identitysql"
 	"github.com/prokopto-dev/tod-serve/internal/instancegrant"
@@ -47,6 +48,15 @@ type services struct {
 	states    *projection.Service
 	setup     *setup.Service
 	settings  *instancesettings.Service
+	// bindings and commands are the Discord surface. `commands` composes almost everything above
+	// it rather than reaching past them, which is what makes a slash command take the same path a
+	// console request does: one resolve ladder, one report log, one board.
+	bindings *discord.Service
+	commands *discord.Commander
+	// verifier holds the Discord application's public key. Its zero value is a usable one that
+	// refuses every interaction, which is the state of an instance whose operator has not set
+	// `TOD_DISCORD_PUBLIC_KEY`.
+	verifier *discord.Verifier
 }
 
 // identityConfig builds the configuration `identity.New` is given.
@@ -130,7 +140,7 @@ func dataServices(db *store.DB, clk clock.Clock, ids *core.Generator, log *slog.
 // makes a value the operator has to have registered with Discord exactly.
 func wire(
 	ctx context.Context, db *store.DB, log *slog.Logger, pepper, sessionKey core.Secret,
-	public string,
+	public, discordPublicKey string,
 ) (*services, error) {
 	clk := clock.System{}
 	ids := core.NewGenerator(rand.Reader)
@@ -222,12 +232,52 @@ func wire(
 		return nil, err
 	}
 
+	bindings, commands, err := discordServices(db, clk, ids, identities, circles, states,
+		catalogues, tods, log)
+	if err != nil {
+		return nil, err
+	}
+	// An EMPTY key is not an error: it is an instance whose operator has not set up the bot, and
+	// the verifier it produces refuses every interaction. A key that is present and unusable IS an
+	// error, and it is reported here at boot rather than by the first person to run a command.
+	verifier, err := discord.NewVerifier(discordPublicKey, clk.Now)
+	if err != nil {
+		return nil, err
+	}
+
 	return &services{
 		store: db, clock: clk, ids: ids, log: log, minter: minter, codec: codec,
 		authn: authn, grants: grants, identity: identities, circles: circles, invites: invites,
 		members: members, catalogue: catalogues, tods: tods, states: states, setup: first,
-		settings: settings,
+		settings: settings, bindings: bindings, commands: commands, verifier: verifier,
 	}, nil
+}
+
+// discordServices wires the channel bindings and the command dispatcher over the services that
+// already exist.
+//
+// Every dependency is one of those, and none of them is a copy: the whole argument for building
+// the bot into this binary rather than beside it (ADR-0017) is that there is ONE circle-to-guild
+// map, ONE tenancy decision and ONE resolve ladder. A separate service would need its own answer to
+// "which circle is this?", which is the duplicated-load-bearing-list failure this repository has
+// already hit twice.
+func discordServices(
+	db *store.DB, clk clock.Clock, ids *core.Generator, identities *identity.Service,
+	circles *circle.Service, states *projection.Service, catalogues *catalogue.Service,
+	tods *tod.Service, log *slog.Logger,
+) (*discord.Service, *discord.Commander, error) {
+	bindings, err := discord.New(discord.Config{Store: db, Clock: clk, IDs: ids, Log: log})
+	if err != nil {
+		return nil, nil, err
+	}
+	commands, err := discord.NewCommander(discord.CommanderConfig{
+		Bindings: bindings, Providers: identities, Circles: circles, Boards: states,
+		Targets: catalogues, Reports: tods, Clock: clk, Log: log,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return bindings, commands, nil
 }
 
 // todServices wires the report log and the projection over it, both onto the catalogue that is

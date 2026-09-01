@@ -372,6 +372,91 @@ The catalogue timer folded into a `listRaidTargets?server=` row is the **instanc
 board's own resolution applies that. Feeding this field to the derivation would ignore every
 override a circle had set.
 
+## Discord
+
+The design is [ADR-0017](../adr/0017-discord-interactions-in-the-binary.md) and the rules the
+endpoint is held to are
+[04-identity §9](04-identity-and-revocation.md#9-discord-interactions-what-is-disclosed-and-where).
+The operator's side is [discord-bot.md](../operations/discord-bot.md).
+
+| Method | Path | OperationID | Permission | Scope |
+|---|---|---|---|---|
+| GET | `/circles/{circle_id}/discord-channels` | `listCircleDiscordChannels` | `circle.security.manage` | — step-up |
+| PUT | `/circles/{circle_id}/discord-channels/{discord_channel_id}` | `bindCircleDiscordChannel` | `circle.security.manage` | — step-up |
+| DELETE | `/circles/{circle_id}/discord-channels/{discord_channel_id}` | `unbindCircleDiscordChannel` | `circle.security.manage` | — step-up |
+| POST | `/integrations/discord/interactions` | `handleDiscordInteraction` | `X-Signature-Ed25519` | — |
+
+The three binding operations carry **`circle.security.manage`**, the same key as
+`setCircleProviders`, because a binding is the same kind of decision: it changes who can see the
+circle's data, not what the circle is called. They are in the capability floor, so no token reaches
+them at any scope and the session has to be recently re-authenticated.
+
+`bindCircleDiscordChannel` both creates and replaces, with `putCircleTimerOverride`'s precondition
+rule: `If-Match: *` is "and it must NOT exist", and `*` on an existing binding is refused with
+`412`. It matters more here than it does for a timer — the field being overwritten is whether this
+channel may be posted into visibly, and an officer overwriting an update they have not seen is an
+officer silently reversing somebody else's disclosure decision.
+
+**A bind naming a channel that already belongs to a live circle answers `409` and names no circle.**
+Redirecting it silently would move a disclosure decision a different circle's officer made, and the
+members reading that channel would be the last to know; naming the circle would confirm to an
+officer of one circle that another exists. `unbindCircleDiscordChannel` answers `404` for a channel
+this circle does not hold, which is law 5 through the query's own `WHERE`.
+
+### `handleDiscordInteraction`
+
+**It authenticates a sender, not a principal.** Discord POSTs an interaction signed with the
+application's Ed25519 key over `X-Signature-Timestamp` concatenated with the raw body; this server
+verifies that signature and nothing else at the edge. Who typed the command is a fact *inside* the
+verified payload, and it is resolved in the handler: Discord user → `identity` → `membership` in the
+circle the channel binding resolved to → **that** principal's permissions. The bot holds no
+credential of its own, so there is nothing for a confused deputy to spend.
+
+**Every refusal is one `401`** — a missing header, a malformed one, a wrong key, an edited body, a
+timestamp outside a five-minute window, and an instance with no public key configured. That is two
+rules at once: an unverified interaction is an unauthenticated write, so telling a forger which part
+was wrong tells them what to fix — and Discord's own endpoint validation POSTs a deliberately
+invalid signature when an operator saves the URL and will not accept an endpoint that answers
+anything else.
+
+**The circle is derived and never a parameter.** The route carries no `{circle_id}`, and no command
+has an option that could hold one: the resolve is `channel_id → circle_discord_channel → circle`,
+and the interaction's `guild_id` must equal the binding's. **Nothing keys on the server**, which is
+not merely unnecessary but wrong: `membership` has no per-server uniqueness and
+`ux_circle_name_norm_server` makes a name unique only within a server, so one guild can bind two
+channels to two circles on blue and one person can be in both. That is why law 5 for this route is
+`TestDiscordInteraction_ACrossCircleTarget_IsAnsweredAsAbsent` rather than
+`TestTenancy_CrossCircle_EveryOperationDenies`, which walks routes that name a circle in their path.
+
+**It declares `CreatesState: false` although `/tod report` appends to the log**, and that is a
+stated cost rather than an oversight. `CreatesState` is what makes `Idempotency-Key` required, and
+Discord does not send one — it POSTs an interaction once, the reply is the body of that response,
+and there is no client-side retry to replay. What stands in its place is `ux_tod_report_natural`:
+the same reporter cannot lodge the same kill twice, so a repeated command is a **replay**, and the
+reply says "already recorded" rather than pretending a second row was appended.
+`TestDiscordInteraction_ARepeatedReport_AppendsOneRow` is the gate.
+
+The response body is Discord's interaction-callback shape with `as_of` beside it. Discord ignores
+the extra member; exempting the one route whose body somebody else designed would be a second answer
+to "does every response carry `as_of`", and the reply renders instants that need a clock to be read
+against.
+
+**Every reply is written into the response to Discord's own POST, and there is no deferred one.**
+Discord's `DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE` buys more than three seconds by promising a
+follow-up on a webhook — an **outbound** request, which law 6 confines to `internal/identity`. So
+the three-second budget is hard here: an answer that cannot be computed inside it is one a member
+sees as "the application did not respond". `/tod board` is the command with any real work in it, and
+it reads the board through the same snapshot the API's own board does. If that budget ever stops
+holding, the fix is a narrower command rather than a `NET001` exception — deferring would put an
+outbound HTTP client in the reply path of every interaction to save one of them.
+
+**Commands are registered by the operator, not by this binary.** Registering them is an outbound
+request to Discord, and [law 6](../../AGENTS.md) confines outbound HTTP to `internal/identity`
+through one guarded client. `tod-serve discord commands` prints the exact body Discord's
+`PUT /applications/{id}/commands` takes, generated from the same catalogue the dispatcher switches
+on. **That is also why no bot token is configured on this instance at all:** the only thing it would
+have been for is a request this binary may not make.
+
 ## Instance administration
 
 **Every permission in this table is instance-realm: no circle role grants one, and no PAT reaches

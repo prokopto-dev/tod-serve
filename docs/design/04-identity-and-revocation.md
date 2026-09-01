@@ -650,12 +650,31 @@ report or member answers as though it does not exist — the `404` shape, never 
 confirms the row was found and the caller merely lacks rights, and a circle's *existence* is part of
 what it hides. The reply is ephemeral, so the refusal itself discloses nothing to the channel.
 
-**Mechanism.** The Interactions endpoint is a route, so it is declared in the registry (law 1) and
-`TestTenancy_CrossCircle_EveryOperationDenies` — derived from that registry — covers rule 5 the
-moment the route exists, without anyone adding it to a list. **Rules 1 to 4 have no mechanism until
-the implementation lands**, and saying otherwise here would be the confident mistake this project is
-built against; they are named in
-[invariants.md](../concepts/invariants.md) with what will hold them.
+**Mechanism.** The Interactions endpoint is a route, so it is declared in the registry (law 1).
+
+**It is NOT covered by `TestTenancy_CrossCircle_EveryOperationDenies`, and the sentence that used to
+say it would was wrong.** That test walks `CircleScopedRoutes()`, and `Route.CircleScoped` is
+asserted against the path by `TestRouteRegistry_CircleScoped_MatchesThePath` — a circle-scoped route
+is one whose path contains `{circle_id}`. This route deliberately has none, because rule 1 says the
+circle is derived rather than supplied, so it is not in that set and could not be. Law 5 for it is
+`TestDiscordInteraction_ACrossCircleTarget_IsAnsweredAsAbsent`, which drives the case ADR-0017
+exists for: two circles in one guild, a bound channel each, and a report in one that the other's
+channel must be answered as though it never happened. The prediction was made before the
+implementation and asserted the wrong side of it; this is what actually holds the rule.
+
+Rules 1 to 4 now have mechanisms, each named in [invariants.md](../concepts/invariants.md):
+
+| Rule | Held by |
+|---|---|
+| 1 — the circle is derived, never a parameter | `discord.Service.Resolve` takes a channel and a guild and no circle id, and no `discord.Command` carries an option that could hold one. `TestDispatch_AChannelIdFromAnotherGuild_DoesNotResolve` and `TestDispatch_AnUnboundChannel_OffersTheInvokersOwnCirclesAndPicksNone` |
+| 2 — the bot acts as the invoking user | `discord.Service.Principal` resolves the Discord subject to a live membership and returns THAT principal; `TestDispatch_ThePermission_IsTheInvokersAndNotTheBots` drives one role that holds `tod.report` and one that does not, and `TestDispatch_ARevokedMember_IsAnsweredAsAStranger` proves the membership is read on every command |
+| 3 — ephemeral by default | `discord.Ephemeral` is the constructor with no visibility argument, and `discord.Visible` has one caller past both halves of the test. `TestDispatch_AVisibleRequest_InAnUnpermittedChannel_StaysEphemeral`, `TestDispatch_APermittedChannel_WithoutAsking_IsStillEphemeral` and `TestDispatch_AVisibleRequest_InAPermittedChannel_IsVisible` drive all three combinations |
+| 4 — a channel is not a circle | `TestDispatch_AGuildMemberWhoIsNotInTheCircle_IsAnsweredAsAStranger`, and `TestBind_AChannelBoundToALiveCircle_IsRefusedAndNamesNoCircle` for the refusal that names no circle |
+
+The signature itself is `TestDiscordRoutes_EveryRoute_RefusesAnUnsignedBody`, which walks
+`api.DiscordRoutes()` rather than a list, and `TestVerify_AnUnsignedOrForgedInteraction_IsRefused`,
+which drives eleven forgeries — a suite that drove only valid signatures would pass with the check
+removed, and an unverified interaction is an unauthenticated write.
 
 ## 10. SSRF
 

@@ -129,7 +129,25 @@ type foreignSubResources map[string]string
 // row is probed by TestTenancy_ATimerOverride_OfAnotherCircle_IsInvisible below rather than here,
 // because the id in the path names the target and not the override.
 func instanceScopedPathParams() map[string]bool {
-	return map[string]bool{"target_id": true, "server": true}
+	return map[string]bool{
+		"target_id": true,
+		"server":    true,
+		// A Discord channel id is DISCORD's identifier, not a row on this instance -- the same
+		// kind of thing `server` is. The row it addresses, `circle_discord_channel`, is very much
+		// circle-scoped, and it is covered: the two verbs answer DIFFERENTLY and neither answer
+		// is the one this loop asserts, so they get a test each rather than a seeded fixture that
+		// would have to expect one of them to be wrong.
+		//
+		// `unbindCircleDiscordChannel` answers `404` for another circle's binding, because its
+		// DELETE names `circle_id` in the WHERE and matches nothing --
+		// TestUnbindCircleDiscordChannel_AnotherCirclesBinding_Is404.
+		// `bindCircleDiscordChannel` answers `409` and NAMES NO CIRCLE, which is what
+		// [04-identity section 9] rule 4 requires: silently redirecting a bound channel would move
+		// a disclosure decision that a different circle's officer made, and the members reading
+		// that channel would be the last to know --
+		// TestBindCircleDiscordChannel_AChannelBoundElsewhere_IsRefusedAndNamesNoCircle.
+		"discord_channel_id": true,
+	}
 }
 
 // subResourceParams returns a route's path parameters other than the circle.

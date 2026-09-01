@@ -261,20 +261,35 @@ func CallbackBaseURL(publicURL string) (string, error) {
 		return "", fmt.Errorf("%s is %q: %w", OpCompleteAuthorization, route.FullPath(), ErrCallbackPathChanged)
 	}
 
-	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(publicURL), "/"))
+	u, err := originOf(publicURL)
 	if err != nil {
-		return "", fmt.Errorf("parse public url %q: %w", publicURL, err)
-	}
-	if u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("public url %q is not absolute", publicURL)
-	}
-	// Checked on the PARSED url rather than by looking for `?` or `#` in the string, so an encoded
-	// one is caught too. RawQuery is empty for both "no query" and a bare trailing `?`; ForceQuery
-	// distinguishes them, and `https://host/?` appending a key yields `…/callback/?discord`, which
-	// is as broken as the rest.
-	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" || u.User != nil {
-		return "", fmt.Errorf("public url %q: %w", publicURL, ErrPublicURLNotAnOrigin)
+		return "", err
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + path
 	return u.String(), nil
+}
+
+// originOf parses `$TOD_PUBLIC_URL` and refuses anything that is not an origin.
+//
+// It is shared by [CallbackBaseURL] and [InteractionsURL] because both render an absolute URL an
+// operator pastes into Discord's developer portal, and both are compared literally by Discord. Two
+// parsers would be two opinions about what an origin is, and the one that was laxer would produce
+// a URL that saves and never works.
+//
+// The check runs on the PARSED url rather than by looking for `?` or `#` in the string, so an
+// encoded one is caught too. RawQuery is empty for both "no query" and a bare trailing `?`;
+// ForceQuery distinguishes them, and `https://host/?` with a path appended yields `…/?…`, which is
+// as broken as the rest.
+func originOf(publicURL string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(publicURL), "/"))
+	if err != nil {
+		return nil, fmt.Errorf("parse public url %q: %w", publicURL, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return nil, fmt.Errorf("public url %q is not absolute", publicURL)
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" || u.User != nil {
+		return nil, fmt.Errorf("public url %q: %w", publicURL, ErrPublicURLNotAnOrigin)
+	}
+	return u, nil
 }

@@ -20,6 +20,16 @@ const (
 	envMetricsEnabled = "TOD_METRICS_ENABLED"
 	envMetricsToken   = "TOD_METRICS_TOKEN"
 	envMetricsAddr    = "TOD_METRICS_ADDR"
+	// envDiscordPublicKey is the Discord application's Ed25519 public key, hex, from the developer
+	// portal's General Information page. It is PUBLIC — it verifies, it does not sign — which is
+	// why it is a plain string here rather than a `core.Secret`.
+	//
+	// Unset means the interactions endpoint refuses every request, indistinguishably from a wrong
+	// signature. There is deliberately no bot-token variable beside it: the only thing a bot token
+	// would be for on this instance is registering the slash commands, and that is an outbound
+	// request law 6 confines to internal/identity. `tod-serve discord commands` prints the body
+	// and the operator sends it, so the token never reaches this process at all.
+	envDiscordPublicKey = "TOD_DISCORD_PUBLIC_KEY"
 )
 
 const (
@@ -71,6 +81,7 @@ func newRootCommand() *cobra.Command {
 		newInitCommand(),
 		newCircleCommand(),
 		newInstanceCommand(),
+		newDiscordCommand(),
 		newSeedCommand(),
 		newDoctorCommand(),
 		newBackupCommand(),

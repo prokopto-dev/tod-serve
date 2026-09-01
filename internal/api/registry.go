@@ -72,12 +72,17 @@ const (
 	OpReplayCircleEvents   OperationID = "replayCircleEvents"
 	OpListCircleAudit      OperationID = "listCircleAudit"
 
-	OpListRaidTargets           OperationID = "listRaidTargets"
-	OpGetRaidTarget             OperationID = "getRaidTarget"
-	OpResolveRaidTarget         OperationID = "resolveRaidTarget"
-	OpCreateRaidTarget          OperationID = "createRaidTarget"
-	OpUpdateRaidTarget          OperationID = "updateRaidTarget"
-	OpPutRaidTargetTimer        OperationID = "putRaidTargetTimer"
+	OpListRaidTargets            OperationID = "listRaidTargets"
+	OpGetRaidTarget              OperationID = "getRaidTarget"
+	OpResolveRaidTarget          OperationID = "resolveRaidTarget"
+	OpCreateRaidTarget           OperationID = "createRaidTarget"
+	OpUpdateRaidTarget           OperationID = "updateRaidTarget"
+	OpPutRaidTargetTimer         OperationID = "putRaidTargetTimer"
+	OpListCircleDiscordChannels  OperationID = "listCircleDiscordChannels"
+	OpBindCircleDiscordChannel   OperationID = "bindCircleDiscordChannel"
+	OpUnbindCircleDiscordChannel OperationID = "unbindCircleDiscordChannel"
+	OpHandleDiscordInteraction   OperationID = "handleDiscordInteraction"
+
 	OpListCircleTimerOverrides  OperationID = "listCircleTimerOverrides"
 	OpPutCircleTimerOverride    OperationID = "putCircleTimerOverride"
 	OpDeleteCircleTimerOverride OperationID = "deleteCircleTimerOverride"
@@ -121,6 +126,20 @@ const (
 	// whole problem first-run setup exists to solve, so a route carrying this kind reaches no
 	// permission, no circle and no membership.
 	AuthSetupToken Auth = "setup_token"
+	// AuthDiscordSignature is an Ed25519 signature by the Discord application this instance is
+	// configured with, over the raw request body. ADR-0017.
+	//
+	// It is a kind here rather than a check inside a handler for the reason every other kind is:
+	// the middleware settles it before the handler runs, the OpenAPI document publishes a scheme
+	// for it, and [DiscordRoutes] is the set the refusal tests walk — so a second signed route
+	// cannot be added with the check missing.
+	//
+	// It authenticates NO PRINCIPAL AT THE EDGE, and that is the interesting part. The signature
+	// says the payload is Discord's; it says nothing about who typed the command. The principal is
+	// resolved INSIDE the handler, from the Discord user in the verified payload through
+	// `identity` to a `membership` in the circle the channel binding resolved to — so the route
+	// carries no permission and every command carries its own. See `internal/discord`.
+	AuthDiscordSignature Auth = "discord_signature"
 )
 
 // Idempotency says who replays a retry of a state-creating POST.
@@ -281,7 +300,7 @@ func (r Route) SessionOnly() bool {
 	switch r.Auth {
 	case AuthPermission, AuthSelf:
 		return !r.AnyScope && len(r.Scopes) == 0
-	case AuthPublic, AuthMetricsToken, AuthSetupToken:
+	case AuthPublic, AuthMetricsToken, AuthSetupToken, AuthDiscordSignature:
 		return false
 	default:
 		return false
@@ -671,6 +690,60 @@ func routes() []Route {
 			IfMatch:     true, ETag: true, InvalidatesTimer: true,
 			Summary: "Set a target's respawn timer for one server",
 		},
+		// --- Discord ---
+		{
+			ID: OpListCircleDiscordChannels, Method: http.MethodGet,
+			Path: "/circles/{circle_id}/discord-channels", Versioned: true, Auth: AuthPermission,
+			Permissions:  []authz.Permission{authz.PermissionCircleSecurityManage},
+			CircleScoped: true,
+			// "Which channels does this circle disclose into?" is the question an officer asks
+			// before a raid and an audit asks afterwards, and it is the only place the answer is
+			// legible: members read the channel, they do not read `circle_discord_channel`.
+			Summary: "The Discord channels bound to this circle, and which of them may be replied to visibly",
+		},
+		{
+			ID: OpBindCircleDiscordChannel, Method: http.MethodPut,
+			Path: "/circles/{circle_id}/discord-channels/{discord_channel_id}", Versioned: true,
+			Auth:         AuthPermission,
+			Permissions:  []authz.Permission{authz.PermissionCircleSecurityManage},
+			CircleScoped: true, IfMatch: true, ETag: true,
+			// `circle.security.manage` rather than `circle.manage`, and that is ADR-0017's
+			// wording rather than a choice made here: a binding is a DISCLOSURE decision, in the
+			// same family as which identity providers a circle accepts. It is in the capability
+			// floor, so no token reaches it at any scope and the session has to be recent.
+			Summary: "Bind a Discord channel to this circle, and say whether replies there may be visible",
+		},
+		{
+			ID: OpUnbindCircleDiscordChannel, Method: http.MethodDelete,
+			Path: "/circles/{circle_id}/discord-channels/{discord_channel_id}", Versioned: true,
+			Auth:         AuthPermission,
+			Permissions:  []authz.Permission{authz.PermissionCircleSecurityManage},
+			CircleScoped: true,
+			// It stops the NEXT message and unsays nothing: what was posted while the binding was
+			// live is Discord's now, and Discord keeps it.
+			Summary: "Remove a channel binding. It stops the next reply and unsays nothing already posted",
+		},
+		{
+			ID: OpHandleDiscordInteraction, Method: http.MethodPost,
+			Path: "/integrations/discord/interactions", Versioned: true,
+			Auth: AuthDiscordSignature,
+			// NOT circle-scoped, and the path is why: the circle is DERIVED from the channel
+			// binding, so there is no `{circle_id}` for the tenancy middleware to compare against
+			// — accepting one would be the cross-circle-ids-in-bodies class #29 closed. Law 5 is
+			// still held, by TestDiscordInteraction_ACrossCircleTarget_IsAnsweredAsAbsent rather
+			// than by TestTenancy_CrossCircle_EveryOperationDenies, which walks routes that name
+			// a circle in their path.
+			//
+			// `CreatesState` is FALSE although `/tod report` appends to the log, and that is a
+			// stated fact rather than an oversight. `CreatesState` exists to make
+			// `Idempotency-Key` required, and Discord does not send one: it POSTs an interaction
+			// once, the reply is the body of that response, and there is no client-side retry to
+			// replay. What stands in its place is `ux_tod_report_natural`, which makes a second
+			// report of the same kill by the same person a REPLAY rather than a second row —
+			// TestDiscordInteraction_ARepeatedReport_AppendsOneRow drives it.
+			Summary: "Discord interactions endpoint. Verifies an Ed25519 signature; the circle comes from the channel binding",
+		},
+
 		{
 			ID: OpListCircleTimerOverrides, Method: http.MethodGet,
 			Path: "/circles/{circle_id}/timer-overrides", Versioned: true, Auth: AuthPermission,
@@ -831,6 +904,19 @@ func SetupRoutes() []Route {
 	var out []Route
 	for _, r := range routes() {
 		if r.Auth == AuthSetupToken {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// DiscordRoutes returns every route authenticated by an interaction signature — the set the
+// signature-refusal tests are driven over, so a second signed route cannot be added without them.
+// It is the same shape as [SetupRoutes] and for the same reason.
+func DiscordRoutes() []Route {
+	var out []Route
+	for _, r := range routes() {
+		if r.Auth == AuthDiscordSignature {
 			out = append(out, r)
 		}
 	}
