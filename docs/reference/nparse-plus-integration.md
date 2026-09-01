@@ -22,19 +22,37 @@ Read [§0](#0-how-to-check-everything-in-this-document) before anything else, th
 and error code. It is **generated** from the route registry (`make gen-openapi`) and checked in, so
 it cannot drift from the server without a failing build.
 
-Get it from the repository at the version your instance runs:
-
-```
-https://github.com/prokopto-dev/tod-serve/blob/main/openapi/openapi.json
-```
-
 **The running instance does not serve it.** `internal/api/server.go` sets `config.OpenAPIPath = ""`,
 `config.SchemasPath = ""` and `config.DocsPath = ""`. There is no `/api/v1/openapi.json`, no
 `/docs`, no Swagger UI. Do not write a client that fetches its own schema at runtime; there is
-nothing to fetch.
+nothing to fetch — you take the file out of the repository instead.
 
-`GET /api/v1/meta` returns the instance's `version` and its `api_versions`. Compare that against the
-tag whose `openapi.json` you took.
+**Take it at the ref your instance actually runs, never at `main`.** A deployed instance lags the
+default branch by however long it has been since the operator last upgraded, and `main` carries
+routes, fields and enum values that instance does not have. Generating against `main` produces a
+client that compiles and then 404s.
+
+The ref comes from `GET /api/v1/meta`, whose `version` is the string this binary was built with
+(`main.version`, set by `-ldflags`). It has three shapes, and they resolve differently:
+
+| `version` from `/meta` | Build | Ref to use |
+|---|---|---|
+| `1.4.0` | A tagged release. `release.yml` triggers on `v*` and strips the leading `v` | The tag: `v1.4.0` |
+| `0.0.0-edge+9f3c1a7` | An untagged build of the default branch — what the shipped `:edge` image in `deploy/env.example` is | The commit: `9f3c1a7`, the suffix after `+` |
+| `0.0.0-dev` | A local `make build`, the Makefile's default | **Nothing.** It pins to no ref. Ask the operator which commit they built |
+
+So, with `<ref>` substituted from the table:
+
+```
+# human-readable
+https://github.com/prokopto-dev/tod-serve/blob/<ref>/openapi/openapi.json
+# to fetch
+https://raw.githubusercontent.com/prokopto-dev/tod-serve/<ref>/openapi/openapi.json
+```
+
+Re-check `/meta` after any upgrade. Within `/api/v1` the surface is additive, so a newer instance
+will not break a client generated from an older ref — but the reverse is exactly the failure this
+paragraph exists to prevent.
 
 ### Recipes
 
@@ -823,6 +841,7 @@ That is the whole client. One pairing, one stored token per circle, and no login
 | Claim | Check |
 |---|---|
 | Base path is `/api/v1` | `jq '.servers' openapi/openapi.json` |
+| The three shapes of `/meta`'s `version`, and the ref each resolves to | `.github/workflows/release.yml` (`tags: ["v*"]`, `version="${GITHUB_REF_NAME#v}"`, the `0.0.0-edge+` fallback); `Makefile` (the `VERSION` default, `0.0.0-dev`); `cmd/tod-serve/main.go` (`var version`) |
 | The instance serves no spec and no docs UI | `internal/api/server.go` — `config.OpenAPIPath = ""`, `config.DocsPath = ""` |
 | Token format, and that the prefix is loggable and the secret is not | `internal/auth/pat.go`; `docs/adr/0005-pats-bound-to-memberships.md` |
 | A PAT is bound to a membership; membership is checked every request | `docs/adr/0005-pats-bound-to-memberships.md`; `docs/errors/membership_revoked.md` |
