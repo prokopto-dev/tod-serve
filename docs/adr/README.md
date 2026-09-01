@@ -34,6 +34,7 @@ directions linked.
 | [0021](0021-a-device-authorization-grant-against-this-instance.md) | A device authorization grant against this instance, not against Discord | proposed |
 | [0022](0022-a-device-grant-is-identity-scoped.md) | A device grant is identity-scoped and exchanges for per-membership tokens | proposed |
 | [0023](0023-guild-facts-come-from-browser-flows.md) | Guild facts come from browser flows, bounded by an age | proposed |
+| [0024](0024-step-up-is-graded-and-re-authentication-is-not-a-sign-in.md) | Step-up is graded, and re-authentication is not a sign-in | proposed |
 
 ## Where this project diverges from Dragon Kill Party
 
