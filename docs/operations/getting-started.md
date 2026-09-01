@@ -803,6 +803,21 @@ afterwards, and a circle chooses which of them it accepts.
 every run. What that costs is not the re-entry — it is officers believing revocation worked. Add
 Discord before the circle holds anything competitive.
 
+**A `local`-only instance cannot step up, and that has consequences an operator should hear once.**
+Changing a role, revoking a member, minting a service token or touching instance settings needs a
+session that proved its identity in the last five minutes
+([ADR-0024](../adr/0024-step-up-is-graded-and-re-authentication-is-not-a-sign-in.md)), and `local`
+mints a **new** subject every time it verifies — so there is nothing for it to re-prove.
+`stepUpSession` answers [`provider_unverifiable`](../errors/provider_unverifiable.md) rather than
+pretending, and the console draws no button it knows will fail.
+
+In practice, on a `local`-only instance those operations are reachable **for five minutes after
+redeeming an invite, and not again**. That is stronger than it sounds, because the same property
+means `POST /sessions` cannot re-authenticate a `local` identity either — it answers `404`, since
+the subject it verifies has never been seen before — so once a session lapses, a new invite is the
+only way back in. Reading is unaffected, the audit log included. Adding Discord or an OIDC provider
+is what fixes it; signing out and back in is not.
+
 **What Discord does not buy:** removing somebody's Discord role does **not** revoke a personal
 access token they already hold. The guild gate is checked when they join and when they
 re-authenticate, not on every request. `revokeMember` is the thing that takes effect on the very
